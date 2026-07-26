@@ -37,6 +37,12 @@ class Video(Base):
 
     # Relationships
     source = relationship("VideoSource", backref="videos")
+    tags = relationship(
+        "Tag",
+        secondary="video_tags",
+        back_populates="videos",
+        lazy="selectin",
+    )
 
     def __repr__(self) -> str:
         return f"<Video(id={self.id}, title='{self.title}', filepath='{self.filepath}')>"
