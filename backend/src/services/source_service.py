@@ -1,0 +1,81 @@
+"""SourceService for video source CRUD operations."""
+from datetime import datetime
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.models.source import VideoSource
+
+
+class SourceService:
+    """Service for managing video sources."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(
+        self,
+        name: str,
+        path: str,
+        type: str,  # noqa: A002
+        scan_interval: int = 3600,
+        is_active: bool = True,
+    ) -> VideoSource:
+        """Create a new video source."""
+        source = VideoSource(
+            name=name,
+            path=path,
+            type=type,
+            scan_interval=scan_interval,
+            is_active=is_active,
+        )
+        self.session.add(source)
+        await self.session.commit()
+        await self.session.refresh(source)
+        return source
+
+    async def get_by_id(self, source_id: int) -> VideoSource | None:
+        """Get a source by ID."""
+        result = await self.session.execute(
+            select(VideoSource).where(VideoSource.id == source_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_all(self, active_only: bool = False) -> list[VideoSource]:
+        """List all video sources."""
+        query = select(VideoSource)
+        if active_only:
+            query = query.where(VideoSource.is_active == True)  # noqa: E712
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def update(
+        self,
+        source_id: int,
+        **kwargs,
+    ) -> VideoSource:
+        """Update a video source."""
+        source = await self.get_by_id(source_id)
+        if not source:
+            raise ValueError(f"Source with id {source_id} not found")
+
+        for key, value in kwargs.items():
+            if hasattr(source, key):
+                setattr(source, key, value)
+
+        await self.session.commit()
+        await self.session.refresh(source)
+        return source
+
+    async def delete(self, source_id: int) -> None:
+        """Delete a video source."""
+        source = await self.get_by_id(source_id)
+        if not source:
+            raise ValueError(f"Source with id {source_id} not found")
+
+        await self.session.delete(source)
+        await self.session.commit()
+
+    async def update_last_scan(self, source_id: int) -> None:
+        """Update the last_scan_at timestamp for a source."""
+        await self.update(source_id, last_scan_at=datetime.utcnow())
