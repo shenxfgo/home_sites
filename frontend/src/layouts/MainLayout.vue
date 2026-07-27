@@ -10,6 +10,7 @@ import {
   Setting,
   Menu,
 } from '@element-plus/icons-vue'
+import NotificationCenter from '@/components/NotificationCenter.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -72,6 +73,7 @@ function navigate(path: string) {
         />
         <span class="header-title">{{ route.meta.title }}</span>
         <div class="header-spacer" />
+        <NotificationCenter />
       </el-header>
 
       <el-main class="layout-main">

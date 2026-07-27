@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.source import VideoSource
 from src.models.video import Video
 from src.models.new_video import NewVideo
+from src.services.notification_service import NotificationService
 from src.utils.file_scanner import scan_directory, extract_video_info, generate_thumbnail
 from src.config import settings
 
@@ -114,6 +115,15 @@ class ScanService:
             # Update source last_scan_at
             source.last_scan_at = datetime.now(timezone.utc)
             await self.session.commit()
+
+            # Create scan completion notification
+            notification_service = NotificationService(self.session)
+            await notification_service.create(
+                type="scan_complete",
+                title="扫描完成",
+                message=f"视频源 {source.name} 扫描完成，发现 {new_videos} 个新视频",
+                data={"source_id": source_id, "new_count": new_videos},
+            )
 
         finally:
             self._scanning = False
