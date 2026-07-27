@@ -1,5 +1,5 @@
 """SourceService for video source CRUD operations."""
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,4 +78,4 @@ class SourceService:
 
     async def update_last_scan(self, source_id: int) -> None:
         """Update the last_scan_at timestamp for a source."""
-        await self.update(source_id, last_scan_at=datetime.utcnow())
+        await self.update(source_id, last_scan_at=datetime.now(timezone.utc))
