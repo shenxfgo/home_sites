@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.source import VideoSource
+from src.scheduler import scheduler
 
 
 class SourceService:
@@ -32,6 +33,11 @@ class SourceService:
         self.session.add(source)
         await self.session.commit()
         await self.session.refresh(source)
+
+        # Auto-schedule active sources
+        if source.is_active:
+            scheduler.add_source_job(source.id, source.scan_interval)
+
         return source
 
     async def get_by_id(self, source_id: int) -> VideoSource | None:
@@ -65,6 +71,14 @@ class SourceService:
 
         await self.session.commit()
         await self.session.refresh(source)
+
+        # Sync scheduler when scan_interval or is_active changes
+        if "scan_interval" in kwargs or "is_active" in kwargs:
+            if source.is_active:
+                scheduler.add_source_job(source.id, source.scan_interval)
+            else:
+                scheduler.remove_source_job(source.id)
+
         return source
 
     async def delete(self, source_id: int) -> None:
@@ -75,6 +89,9 @@ class SourceService:
 
         await self.session.delete(source)
         await self.session.commit()
+
+        # Remove scheduled job for deleted source
+        scheduler.remove_source_job(source_id)
 
     async def update_last_scan(self, source_id: int) -> None:
         """Update the last_scan_at timestamp for a source."""

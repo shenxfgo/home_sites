@@ -4,18 +4,35 @@ from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import select
 
 from src.config import settings
-from src.database import init_db
+from src.database import init_db, async_session_maker
+from src.models.source import VideoSource
+from src.scheduler import scheduler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: startup and shutdown events."""
-    # Startup: initialize database
+    # Startup: initialize database and start scheduler
     await init_db()
+
+    # Load active sources and schedule them
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(VideoSource).where(VideoSource.is_active == True)  # noqa: E712
+        )
+        sources = list(result.scalars().all())
+        for source in sources:
+            scheduler.add_source_job(source.id, source.scan_interval)
+
+    scheduler.start()
+
     yield
-    # Shutdown: cleanup if needed
+
+    # Shutdown: stop scheduler
+    scheduler.stop()
 
 
 app = FastAPI(
@@ -53,6 +70,7 @@ from src.api.history import router as history_router  # noqa: E402
 from src.api.favorites import router as favorites_router  # noqa: E402
 from src.api.notifications import router as notifications_router  # noqa: E402
 from src.api.transcode import router as transcode_router  # noqa: E402
+from src.api.scheduler import router as scheduler_router  # noqa: E402
 
 app.include_router(sources_router)
 app.include_router(videos_router)
@@ -63,3 +81,4 @@ app.include_router(history_router)
 app.include_router(favorites_router)
 app.include_router(notifications_router)
 app.include_router(transcode_router)
+app.include_router(scheduler_router)
