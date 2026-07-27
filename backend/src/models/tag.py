@@ -1,6 +1,6 @@
 from sqlalchemy import String, DateTime, ForeignKey, Table, Column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime
+from datetime import datetime, timezone
 from src.database.base import Base
 
 
@@ -22,7 +22,7 @@ class Tag(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
     color: Mapped[str] = mapped_column(String(20), default="#409eff")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.utcnow()
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
     # Relationships

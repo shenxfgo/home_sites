@@ -1,6 +1,6 @@
 from sqlalchemy import Boolean, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
-from datetime import datetime
+from datetime import datetime, timezone
 from src.database.base import Base
 
 
@@ -17,7 +17,7 @@ class NewVideo(Base):
         ForeignKey("video_sources.id", ondelete="CASCADE")
     )
     discovered_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.utcnow()
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
     viewed: Mapped[bool] = mapped_column(Boolean, default=False)
 

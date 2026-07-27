@@ -1,6 +1,6 @@
 from sqlalchemy import String, Integer, Boolean, DateTime, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column
-from datetime import datetime
+from datetime import datetime, timezone
 from src.database.base import Base
 
 
@@ -23,7 +23,7 @@ class VideoSource(Base):
     last_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.utcnow()
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
     def __repr__(self) -> str:
