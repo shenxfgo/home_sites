@@ -17,19 +17,11 @@ class HistoryResponse(BaseModel):
 
     id: int
     video_id: int
-    played_at: str
+    played_at: datetime
     progress: int
     completed: bool
 
     model_config = {"from_attributes": True}
-
-    @field_serializer("played_at")
-    @staticmethod
-    def serialize_played_at(value: datetime | str) -> str:
-        """Serialize played_at to ISO format string."""
-        if isinstance(value, datetime):
-            return value.isoformat()
-        return value
 
 
 class HistoryListResponse(BaseModel):

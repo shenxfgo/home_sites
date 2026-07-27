@@ -1,0 +1,50 @@
+/* Global application styles */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  font-family: var(--el-font-family);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--el-text-color-primary);
+  background-color: var(--el-bg-color-page);
+}
+
+#app {
+  height: 100%;
+}
+
+/* Utility classes */
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.page-header h2 {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.page-content {
+  flex: 1;
+}
+
+/* Transition helpers for route changes */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}

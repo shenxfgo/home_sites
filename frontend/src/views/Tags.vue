@@ -69,11 +69,11 @@ async function handleSubmit() {
       }
       if (Object.keys(updateData).length > 0) {
         await updateTag(editingTag.value.id, updateData)
-        ElMessage.success('Tag updated')
+        ElMessage.success('标签已更新')
       }
     } else {
       await createTag(formData.value)
-      ElMessage.success('Tag created')
+      ElMessage.success('标签已创建')
     }
     showDialog.value = false
     await loadTags()
@@ -87,12 +87,12 @@ async function handleSubmit() {
 async function handleDelete(tag: Tag) {
   try {
     await ElMessageBox.confirm(
-      `Are you sure you want to delete "${tag.name}"? This will also remove the tag from all associated videos.`,
-      'Confirm Delete',
-      { confirmButtonText: 'Delete', cancelButtonText: 'Cancel', type: 'warning' },
+      `确定要删除标签 "${tag.name}" 吗？这将同时从所有关联的视频中移除该标签。`,
+      '确认删除',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
     )
     await deleteTag(tag.id)
-    ElMessage.success('Tag deleted')
+    ElMessage.success('标签已删除')
     await loadTags()
   } catch (err: unknown) {
     if (err !== 'cancel' && !(err instanceof Error && err.message === 'cancel')) {
@@ -111,15 +111,15 @@ onMounted(loadTags)
 <template>
   <div class="tags-page">
     <div class="page-header">
-      <h2>Tag Management</h2>
+      <h2>标签管理</h2>
       <el-button type="primary" :icon="Plus" @click="openCreateDialog">
-        Add Tag
+        添加标签
       </el-button>
     </div>
 
-    <el-empty v-if="!loading && tags.length === 0" description="No tags created yet.">
+    <el-empty v-if="!loading && tags.length === 0" description="尚未创建标签。">
       <el-button type="primary" :icon="Plus" @click="openCreateDialog">
-        Create Your First Tag
+        创建第一个标签
       </el-button>
     </el-empty>
 
@@ -137,7 +137,7 @@ onMounted(loadTags)
           <div class="tag-meta">
             <el-tag size="small" type="info">
               <el-icon><CollectionTag /></el-icon>
-              {{ tag.video_count ?? 0 }} videos
+              {{ tag.video_count ?? 0 }} 个视频
             </el-tag>
           </div>
         </div>
@@ -149,7 +149,7 @@ onMounted(loadTags)
             size="small"
             @click="openEditDialog(tag)"
           >
-            Edit
+            编辑
           </el-button>
           <el-button
             :icon="Delete"
@@ -158,7 +158,7 @@ onMounted(loadTags)
             size="small"
             @click="handleDelete(tag)"
           >
-            Delete
+            删除
           </el-button>
         </div>
       </div>
@@ -167,22 +167,22 @@ onMounted(loadTags)
     <!-- Create/Edit Dialog -->
     <el-dialog
       v-model="showDialog"
-      :title="editingTag ? 'Edit Tag' : 'Create Tag'"
+      :title="editingTag ? '编辑标签' : '创建标签'"
       width="480px"
       :close-on-click-modal="false"
       @closed="showDialog = false"
     >
       <el-form label-position="top">
-        <el-form-item label="Tag Name" required>
+        <el-form-item label="标签名称" required>
           <el-input
             v-model="formData.name"
-            placeholder="Enter tag name"
+            placeholder="请输入标签名称"
             maxlength="100"
             show-word-limit
           />
         </el-form-item>
 
-        <el-form-item label="Color">
+        <el-form-item label="颜色">
           <div class="color-section">
             <el-color-picker
               v-model="formData.color"
@@ -203,18 +203,18 @@ onMounted(loadTags)
           </div>
         </el-form-item>
 
-        <el-form-item label="Preview">
+        <el-form-item label="预览">
           <div class="tag-preview">
             <span class="preview-dot" :style="{ backgroundColor: formData.color }" />
-            <span class="preview-name">{{ formData.name || 'Tag Name' }}</span>
+            <span class="preview-name">{{ formData.name || '标签名称' }}</span>
           </div>
         </el-form-item>
       </el-form>
 
       <template #footer>
-        <el-button @click="showDialog = false">Cancel</el-button>
+        <el-button @click="showDialog = false">取消</el-button>
         <el-button type="primary" :loading="submitting" @click="handleSubmit">
-          {{ editingTag ? 'Update' : 'Create' }}
+          {{ editingTag ? '更新' : '创建' }}
         </el-button>
       </template>
     </el-dialog>

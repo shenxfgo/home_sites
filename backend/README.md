@@ -1,23 +1,23 @@
-# Video Platform Backend
+# 视频管理平台后端
 
-Backend API for video management platform.
+视频管理平台的后端 API 服务。
 
-## Development
+## 开发
 
 ```bash
-# Install dependencies
+# 安装依赖
 uv sync
 
-# Run development server
+# 运行开发服务器
 uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-## Testing
+## 测试
 
 ```bash
-# Run tests
+# 运行测试
 uv run pytest
 
-# Run with coverage
+# 运行并生成覆盖率报告
 uv run pytest --cov=src --cov-report=html
 ```

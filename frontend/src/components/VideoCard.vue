@@ -39,16 +39,16 @@ const newBadge = computed<{ label: string; type: 'danger' | 'warning' | 'info' }
   const diffHours = diffMs / (1000 * 60 * 60)
 
   if (diffHours < 24) {
-    return { label: 'NEW', type: 'danger' }
+    return { label: '新', type: 'danger' }
   }
   if (diffHours < 24 * 7) {
-    return { label: 'This Week', type: 'warning' }
+    return { label: '本周', type: 'warning' }
   }
   return null
 })
 
 /** Computed display title. */
-const displayTitle = computed(() => props.video.title || props.video.filepath.split(/[/\\]/).pop() || 'Untitled')
+const displayTitle = computed(() => props.video.title || props.video.filepath.split(/[/\\]/).pop() || '无标题')
 
 /** Display tags (limit to 3). */
 const displayTags = computed(() => props.video.tags.slice(0, 3))
@@ -108,7 +108,7 @@ function goToDetail() {
             <Star v-else />
           </el-icon>
         </template>
-        <span class="view-count">{{ video.view_count }} views</span>
+        <span class="view-count">{{ video.view_count }} 次播放</span>
       </div>
 
       <!-- Tags -->

@@ -6,43 +6,49 @@ const routes: RouteRecordRaw[] = [
     path: '/',
     name: 'home',
     component: () => import('@/views/Home.vue'),
-    meta: { title: 'Home' },
+    meta: { title: '首页' },
   },
   {
     path: '/sources',
     name: 'sources',
     component: () => import('@/views/Sources.vue'),
-    meta: { title: 'Video Sources' },
+    meta: { title: '视频源' },
   },
   {
     path: '/history',
     name: 'history',
     component: () => import('@/views/History.vue'),
-    meta: { title: 'History' },
+    meta: { title: '播放历史' },
   },
   {
     path: '/favorites',
     name: 'favorites',
     component: () => import('@/views/Favorites.vue'),
-    meta: { title: 'Favorites' },
+    meta: { title: '收藏' },
   },
   {
     path: '/tags',
     name: 'tags',
     component: () => import('@/views/Tags.vue'),
-    meta: { title: 'Tags' },
+    meta: { title: '标签管理' },
   },
   {
     path: '/videos/:id',
     name: 'video-detail',
     component: () => import('@/views/VideoDetail.vue'),
-    meta: { title: 'Video Details' },
+    meta: { title: '视频详情' },
+  },
+  {
+    path: '/videos/:id/transcode',
+    name: 'transcode',
+    component: () => import('@/views/Transcode.vue'),
+    meta: { title: '视频转码' },
   },
   {
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/Settings.vue'),
-    meta: { title: 'Settings' },
+    meta: { title: '设置' },
   },
 ]
 
@@ -53,7 +59,7 @@ const router = createRouter({
 
 // Update document title on navigation.
 router.afterEach((to) => {
-  document.title = `${to.meta.title ?? 'Home'} - Home Sites`
+  document.title = `${to.meta.title ?? '首页'} - Home Sites`
 })
 
 export default router

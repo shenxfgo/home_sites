@@ -32,15 +32,6 @@ function formatDuration(seconds: number | null): string {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-/** Format file size in bytes to human-readable string. */
-function formatFileSize(bytes: number | null): string {
-  if (bytes == null) return ''
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
-}
-
 /** Format date. */
 function formatDate(iso: string): string {
   if (!iso) return ''
@@ -76,12 +67,12 @@ async function loadContinueList() {
 async function handleDelete(item: HistoryItem) {
   try {
     await ElMessageBox.confirm(
-      'Are you sure you want to delete this history record?',
-      'Confirm Delete',
-      { confirmButtonText: 'Delete', cancelButtonText: 'Cancel', type: 'warning' },
+      '确定要删除这条播放记录吗？',
+      '确认删除',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
     )
     await deleteHistory(item.id)
-    ElMessage.success('History deleted')
+    ElMessage.success('播放记录已删除')
     loadHistory()
   } catch (err: unknown) {
     if (err !== 'cancel' && !(err instanceof Error && err.message === 'cancel')) {
@@ -115,7 +106,7 @@ onMounted(() => {
   <div class="history-page">
     <!-- Continue Watching Section -->
     <div v-if="continueVideos.length > 0" class="section">
-      <h3 class="section-title">Continue Watching</h3>
+      <h3 class="section-title">继续观看</h3>
       <div class="continue-grid">
         <el-card
           v-for="video in continueVideos"
@@ -137,7 +128,7 @@ onMounted(() => {
             </div>
           </div>
           <div class="continue-info">
-            <h4 class="continue-title">{{ video.title || video.filepath.split(/[/\\]/).pop() || 'Untitled' }}</h4>
+            <h4 class="continue-title">{{ video.title || video.filepath.split(/[/\\]/).pop() || '无标题' }}</h4>
             <span class="continue-meta">
               {{ video.resolution || '' }}
               <template v-if="video.duration"> &middot; {{ formatDuration(video.duration) }}</template>
@@ -149,12 +140,12 @@ onMounted(() => {
 
     <!-- History List Section -->
     <div class="section">
-      <h3 class="section-title">Watch History</h3>
+      <h3 class="section-title">观看历史</h3>
 
       <!-- Empty state -->
       <el-empty
         v-if="!loading && historyItems.length === 0"
-        description="No watch history yet."
+        description="暂无观看历史。"
       >
         <template #image>
           <el-icon :size="64" color="var(--el-color-primary)">
@@ -168,31 +159,31 @@ onMounted(() => {
         v-loading="loading"
         :data="historyItems"
         style="width: 100%"
-        empty-description="No history"
+        empty-description="暂无历史记录"
       >
-        <el-table-column label="Video" min-width="300">
+        <el-table-column label="视频" min-width="300">
           <template #default="{ row }">
             <div
               class="video-link"
               @click="goToVideo(row.video_id)"
             >
               <el-icon><VideoCamera /></el-icon>
-              <span>Video #{{ row.video_id }}</span>
+              <span>视频 #{{ row.video_id }}</span>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="Progress" width="120" align="center">
+        <el-table-column label="进度" width="120" align="center">
           <template #default="{ row }">
             <span>{{ formatProgress(row.progress) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="Status" width="100" align="center">
+        <el-table-column label="状态" width="100" align="center">
           <template #default="{ row }">
-            <el-tag v-if="row.completed" type="success" size="small">Completed</el-tag>
-            <el-tag v-else type="warning" size="small">In Progress</el-tag>
+            <el-tag v-if="row.completed" type="success" size="small">已完成</el-tag>
+            <el-tag v-else type="warning" size="small">播放中</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="Played At" width="180" align="center">
+        <el-table-column label="播放时间" width="180" align="center">
           <template #default="{ row }">
             <span class="date-text">{{ formatDate(row.played_at) }}</span>
           </template>
@@ -205,7 +196,7 @@ onMounted(() => {
               size="small"
               @click.stop="handleDelete(row)"
             >
-              Delete
+              删除
             </el-button>
           </template>
         </el-table-column>

@@ -17,12 +17,12 @@ const route = useRoute()
 const isCollapse = ref(false)
 
 const navItems = [
-  { path: '/', label: 'Home', icon: HomeFilled },
-  { path: '/sources', label: 'Video Sources', icon: VideoCamera },
-  { path: '/history', label: 'History', icon: Clock },
-  { path: '/favorites', label: 'Favorites', icon: Star },
-  { path: '/tags', label: 'Tags', icon: CollectionTag },
-  { path: '/settings', label: 'Settings', icon: Setting },
+  { path: '/', label: '首页', icon: HomeFilled },
+  { path: '/sources', label: '视频源', icon: VideoCamera },
+  { path: '/history', label: '播放历史', icon: Clock },
+  { path: '/favorites', label: '收藏', icon: Star },
+  { path: '/tags', label: '标签管理', icon: CollectionTag },
+  { path: '/settings', label: '设置', icon: Setting },
 ]
 
 const activeMenu = computed(() => {
@@ -87,13 +87,14 @@ function navigate(path: string) {
   </el-container>
 </template>
 
-<style scoped>
+<style>
+/* 使用全局样式以支持深色模式 */
 .layout-container {
   height: 100vh;
 }
 
 .layout-aside {
-  background-color: var(--el-menu-bg-color);
+  background-color: var(--aside-bg, var(--el-menu-bg-color));
   border-right: 1px solid var(--el-border-color-lighter);
   transition: width 0.3s;
   overflow: hidden;
@@ -135,13 +136,14 @@ function navigate(path: string) {
   height: 60px;
   padding: 0 16px;
   border-bottom: 1px solid var(--el-border-color-lighter);
-  background-color: var(--el-bg-color);
+  background-color: var(--header-bg, var(--el-bg-color));
 }
 
 .header-title {
   font-size: 16px;
   font-weight: 500;
   margin-left: 8px;
+  color: var(--el-text-color-primary);
 }
 
 .header-spacer {
@@ -150,7 +152,20 @@ function navigate(path: string) {
 
 .layout-main {
   flex: 1;
-  background-color: var(--el-bg-color-page);
+  background-color: var(--main-bg, var(--el-bg-color-page));
   overflow-y: auto;
+}
+
+/* 深色模式 */
+:root[data-theme="dark"] .layout-aside {
+  --aside-bg: #1d1e1f;
+}
+
+:root[data-theme="dark"] .layout-header {
+  --header-bg: #1d1e1f;
+}
+
+:root[data-theme="dark"] .layout-main {
+  --main-bg: #0a0a0a;
 }
 </style>

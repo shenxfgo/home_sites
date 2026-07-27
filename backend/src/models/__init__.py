@@ -6,6 +6,7 @@ from .favorite import Favorite
 from .notification import Notification
 from .new_video import NewVideo
 from .subtitle import Subtitle
+from .setting import Setting
 
 __all__ = [
     "VideoSource",
@@ -17,4 +18,5 @@ __all__ = [
     "Notification",
     "NewVideo",
     "Subtitle",
+    "Setting",
 ]

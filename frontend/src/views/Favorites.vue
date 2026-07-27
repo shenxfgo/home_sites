@@ -49,15 +49,15 @@ async function loadFavorites() {
 }
 
 async function handleRemoveFavorite(video: Video) {
-  const title = video.title || video.filepath.split(/[/\\]/).pop() || 'this video'
+  const title = video.title || video.filepath.split(/[/\\]/).pop() || '此视频'
   try {
     await ElMessageBox.confirm(
-      `Remove "${title}" from favorites?`,
-      'Confirm Remove',
-      { confirmButtonText: 'Remove', cancelButtonText: 'Cancel', type: 'warning' },
+      `确定要将 "${title}" 从收藏中移除吗？`,
+      '确认移除',
+      { confirmButtonText: '移除', cancelButtonText: '取消', type: 'warning' },
     )
     await removeFavorite(video.id)
-    ElMessage.success('Removed from favorites')
+    ElMessage.success('已从收藏中移除')
     loadFavorites()
   } catch (err: unknown) {
     if (err !== 'cancel' && !(err instanceof Error && err.message === 'cancel')) {
@@ -87,13 +87,13 @@ onMounted(loadFavorites)
 <template>
   <div class="favorites-page">
     <div class="page-header">
-      <h2>Favorites</h2>
+      <h2>我的收藏</h2>
     </div>
 
     <!-- Empty state -->
     <el-empty
       v-if="!loading && videos.length === 0"
-      description="No favorite videos yet."
+      description="暂无收藏视频。"
     >
       <template #image>
         <el-icon :size="64" color="#f7ba2a">
@@ -134,7 +134,7 @@ onMounted(loadFavorites)
             :title="video.title || video.filepath.split(/[/\\]/).pop() || 'Untitled'"
             @click="goToVideo(video.id)"
           >
-            {{ video.title || video.filepath.split(/[/\\]/).pop() || 'Untitled' }}
+            {{ video.title || video.filepath.split(/[/\\]/).pop() || '无标题' }}
           </h3>
           <div class="video-meta">
             <span v-if="video.resolution">{{ video.resolution }}</span>
@@ -146,7 +146,7 @@ onMounted(loadFavorites)
               size="small"
               @click="goToVideo(video.id)"
             >
-              Play
+              播放
             </el-button>
             <el-button
               type="danger"
@@ -154,7 +154,7 @@ onMounted(loadFavorites)
               size="small"
               @click="handleRemoveFavorite(video)"
             >
-              Remove
+              移除
             </el-button>
           </div>
         </div>

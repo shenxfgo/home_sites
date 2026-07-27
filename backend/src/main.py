@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from src.config import settings
 from src.database import init_db, async_session_maker
+from src.models import *  # noqa: F401, F403 - Import all models to register them
 from src.models.source import VideoSource
 from src.scheduler import scheduler
 
@@ -71,6 +72,7 @@ from src.api.favorites import router as favorites_router  # noqa: E402
 from src.api.notifications import router as notifications_router  # noqa: E402
 from src.api.transcode import router as transcode_router  # noqa: E402
 from src.api.scheduler import router as scheduler_router  # noqa: E402
+from src.api.settings import router as settings_router  # noqa: E402
 
 app.include_router(sources_router)
 app.include_router(videos_router)
@@ -82,3 +84,4 @@ app.include_router(favorites_router)
 app.include_router(notifications_router)
 app.include_router(transcode_router)
 app.include_router(scheduler_router)
+app.include_router(settings_router)

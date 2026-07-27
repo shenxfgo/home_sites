@@ -93,7 +93,7 @@ onMounted(() => {
     <div class="toolbar">
       <el-input
         v-model="search"
-        placeholder="Search videos..."
+        placeholder="搜索视频..."
         :prefix-icon="Search"
         clearable
         class="search-input"
@@ -102,7 +102,7 @@ onMounted(() => {
       />
       <el-select
         v-model="selectedSourceId"
-        placeholder="All Sources"
+        placeholder="所有视频源"
         clearable
         class="source-filter"
         @change="handleSourceChange"
@@ -119,7 +119,7 @@ onMounted(() => {
     <!-- Empty state -->
     <el-empty
       v-if="!loading && videos.length === 0"
-      description="No videos found"
+      description="没有找到视频"
     >
       <template #image>
         <el-icon :size="64" color="var(--el-color-primary)">
@@ -127,7 +127,7 @@ onMounted(() => {
         </el-icon>
       </template>
       <p style="color: var(--el-text-color-secondary);">
-        {{ search ? 'Try adjusting your search or filters.' : 'Add a video source and scan to get started.' }}
+        {{ search ? '请尝试调整搜索条件或筛选器。' : '添加视频源并扫描即可开始使用。' }}
       </p>
     </el-empty>
 

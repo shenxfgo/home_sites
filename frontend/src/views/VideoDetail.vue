@@ -12,6 +12,8 @@ import {
   VideoPlay,
   Collection,
   CollectionTag,
+  Setting,
+  Plus,
 } from '@element-plus/icons-vue'
 import {
   getVideo,
@@ -23,7 +25,9 @@ import {
   addFavorite,
   removeFavorite,
 } from '@/api/favorites'
+import { listTags, addTagsToVideo, removeTagFromVideo } from '@/api/tags'
 import type { Video, VideoUpdate } from '@/types/video'
+import type { Tag } from '@/types/video'
 import VideoPlayer from '@/components/VideoPlayer.vue'
 
 const route = useRoute()
@@ -39,6 +43,11 @@ const editForm = ref<{ title: string; description: string; rating: number }>({
   description: '',
   rating: 0,
 })
+
+// Tag management
+const allTags = ref<Tag[]>([])
+const selectedTagIds = ref<number[]>([])
+const showTagDialog = ref(false)
 
 const videoId = computed(() => Number(route.params.id))
 
@@ -72,7 +81,7 @@ function formatFileSize(bytes: number | null): string {
 
 /** Format date. */
 function formatDate(iso: string | null): string {
-  if (!iso) return 'Never'
+  if (!iso) return '从未'
   return new Date(iso).toLocaleString()
 }
 
@@ -94,17 +103,56 @@ async function loadVideo() {
   }
 }
 
+async function loadAllTags() {
+  try {
+    allTags.value = await listTags()
+  } catch {
+    // Silently ignore
+  }
+}
+
+function openTagDialog() {
+  if (!video.value) return
+  selectedTagIds.value = video.value.tags.map(t => t.id)
+  showTagDialog.value = true
+}
+
+async function handleSaveTags() {
+  if (!video.value) return
+
+  const currentTagIds = video.value.tags.map(t => t.id)
+  const tagsToAdd = selectedTagIds.value.filter(id => !currentTagIds.includes(id))
+  const tagsToRemove = currentTagIds.filter(id => !selectedTagIds.value.includes(id))
+
+  try {
+    if (tagsToAdd.length > 0) {
+      await addTagsToVideo(video.value.id, tagsToAdd)
+    }
+    if (tagsToRemove.length > 0) {
+      for (const tagId of tagsToRemove) {
+        await removeTagFromVideo(video.value.id, tagId)
+      }
+    }
+    // Reload video to get updated tags
+    video.value = await getVideo(videoId.value)
+    showTagDialog.value = false
+    ElMessage.success('标签已更新')
+  } catch (err: unknown) {
+    ElMessage.error(`Failed: ${err instanceof Error ? err.message : err}`)
+  }
+}
+
 async function toggleFavorite() {
   if (!video.value) return
   try {
     if (isFavorite.value) {
       await removeFavorite(video.value.id)
       isFavorite.value = false
-      ElMessage.success('Removed from favorites')
+      ElMessage.success('已取消收藏')
     } else {
       await addFavorite(video.value.id)
       isFavorite.value = true
-      ElMessage.success('Added to favorites')
+      ElMessage.success('已添加到收藏')
     }
   } catch (err: unknown) {
     ElMessage.error(`Failed: ${err instanceof Error ? err.message : err}`)
@@ -135,7 +183,7 @@ async function saveEdit() {
   try {
     video.value = await updateVideo(video.value.id, data)
     editing.value = false
-    ElMessage.success('Video updated')
+    ElMessage.success('视频信息已更新')
   } catch (err: unknown) {
     ElMessage.error(`Update failed: ${err instanceof Error ? err.message : err}`)
   }
@@ -145,12 +193,12 @@ async function handleDelete() {
   if (!video.value) return
   try {
     await ElMessageBox.confirm(
-      `Are you sure you want to delete "${video.value.title ?? video.value.filepath}"?`,
-      'Confirm Delete',
-      { confirmButtonText: 'Delete', cancelButtonText: 'Cancel', type: 'warning' },
+      `确定要删除 "${video.value.title ?? video.value.filepath}" 吗？`,
+      '确认删除',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
     )
     await deleteVideo(video.value.id)
-    ElMessage.success('Video deleted')
+    ElMessage.success('视频已删除')
     router.push({ name: 'home' })
   } catch (err: unknown) {
     if (err !== 'cancel' && !(err instanceof Error && err.message === 'cancel')) {
@@ -169,16 +217,13 @@ function handlePlayerEnded() {
 
 function handlePlayerError(error: Event) {
   console.error('Player error:', error)
-  ElMessage.error('Video playback failed')
+  ElMessage.error('视频播放失败')
 }
 
-function setRating(value: number) {
-  if (editing.value) {
-    editForm.value.rating = value
-  }
-}
-
-onMounted(loadVideo)
+onMounted(() => {
+  loadVideo()
+  loadAllTags()
+})
 </script>
 
 <template>
@@ -186,7 +231,7 @@ onMounted(loadVideo)
     <!-- Back button -->
     <div class="top-bar">
       <el-button :icon="ArrowLeft" text @click="router.push({ name: 'home' })">
-        Back to list
+        返回列表
       </el-button>
     </div>
 
@@ -216,9 +261,9 @@ onMounted(loadVideo)
             <el-icon :size="72" color="#c0c4cc">
               <VideoCamera />
             </el-icon>
-            <span>No preview available</span>
+            <span>暂无预览</span>
             <el-button type="primary" :icon="VideoPlay" @click.stop="handlePlay">
-              Play Video
+              播放视频
             </el-button>
           </div>
         </div>
@@ -227,7 +272,7 @@ onMounted(loadVideo)
         <div class="info-section">
           <template v-if="!editing">
             <div class="header-row">
-              <h1 class="video-title">{{ video.title || video.filepath.split(/[/\\]/).pop() || 'Untitled' }}</h1>
+              <h1 class="video-title">{{ video.title || video.filepath.split(/[/\\]/).pop() || '无标题' }}</h1>
               <div class="action-buttons">
                 <el-button
                   v-if="!isPlaying"
@@ -235,34 +280,37 @@ onMounted(loadVideo)
                   type="primary"
                   @click="handlePlay"
                 >
-                  Play
+                  播放
                 </el-button>
                 <el-button
                   v-else
                   type="warning"
                   @click="isPlaying = false"
                 >
-                  Stop
+                  停止
                 </el-button>
                 <el-button
                   :icon="isFavorite ? CollectionTag : Collection"
                   :type="isFavorite ? 'warning' : 'default'"
                   @click="toggleFavorite"
                 >
-                  {{ isFavorite ? 'Favorited' : 'Favorite' }}
+                  {{ isFavorite ? '已收藏' : '收藏' }}
+                </el-button>
+                <el-button :icon="Setting" @click="router.push({ name: 'transcode', params: { id: video.id } })">
+                  转码
                 </el-button>
                 <el-button :icon="Edit" @click="startEdit">
-                  Edit
+                  编辑
                 </el-button>
                 <el-button :icon="Delete" type="danger" @click="handleDelete">
-                  Delete
+                  删除
                 </el-button>
               </div>
             </div>
 
             <!-- Rating -->
             <div class="rating-row">
-              <span class="label">Rating:</span>
+              <span class="label">评分：</span>
               <template v-for="i in 5" :key="i">
                 <el-icon
                   :size="18"
@@ -280,8 +328,8 @@ onMounted(loadVideo)
             <p v-if="video.description" class="description">{{ video.description }}</p>
 
             <!-- Tags -->
-            <div v-if="video.tags.length" class="tags-section">
-              <span class="label">Tags:</span>
+            <div class="tags-section">
+              <span class="label">标签：</span>
               <div class="tags-list">
                 <el-tag
                   v-for="tag in video.tags"
@@ -291,45 +339,51 @@ onMounted(loadVideo)
                 >
                   {{ tag.name }}
                 </el-tag>
+                <el-button
+                  :icon="Plus"
+                  size="small"
+                  circle
+                  @click="openTagDialog"
+                />
               </div>
             </div>
 
             <!-- Metadata -->
             <div class="meta-grid">
               <div class="meta-item">
-                <span class="label">Duration</span>
+                <span class="label">时长</span>
                 <span>{{ formatDuration(video.duration) }}</span>
               </div>
               <div class="meta-item">
-                <span class="label">Resolution</span>
-                <span>{{ video.resolution || 'N/A' }}</span>
+                <span class="label">分辨率</span>
+                <span>{{ video.resolution || '未知' }}</span>
               </div>
               <div class="meta-item">
-                <span class="label">Format</span>
-                <span>{{ video.format || 'N/A' }}</span>
+                <span class="label">格式</span>
+                <span>{{ video.format || '未知' }}</span>
               </div>
               <div class="meta-item">
-                <span class="label">File Size</span>
+                <span class="label">文件大小</span>
                 <span>{{ formatFileSize(video.file_size) }}</span>
               </div>
               <div class="meta-item">
-                <span class="label">Views</span>
+                <span class="label">播放次数</span>
                 <span>{{ video.view_count }}</span>
               </div>
               <div class="meta-item">
-                <span class="label">Last Played</span>
+                <span class="label">上次播放</span>
                 <span>{{ formatDate(video.last_played_at) }}</span>
               </div>
               <div class="meta-item full-width">
-                <span class="label">File Path</span>
+                <span class="label">文件路径</span>
                 <span class="filepath">{{ video.filepath }}</span>
               </div>
               <div class="meta-item">
-                <span class="label">Created</span>
+                <span class="label">创建时间</span>
                 <span>{{ formatDate(video.created_at) }}</span>
               </div>
               <div class="meta-item">
-                <span class="label">Updated</span>
+                <span class="label">更新时间</span>
                 <span>{{ formatDate(video.updated_at) }}</span>
               </div>
             </div>
@@ -337,24 +391,24 @@ onMounted(loadVideo)
 
           <!-- Edit mode -->
           <template v-else>
-            <h2 class="edit-title">Edit Video</h2>
+            <h2 class="edit-title">编辑视频信息</h2>
             <el-form label-width="100px" label-position="right" class="edit-form">
-              <el-form-item label="Title">
+              <el-form-item label="标题">
                 <el-input
                   v-model="editForm.title"
-                  placeholder="Video title"
+                  placeholder="视频标题"
                   maxlength="512"
                 />
               </el-form-item>
-              <el-form-item label="Description">
+              <el-form-item label="描述">
                 <el-input
                   v-model="editForm.description"
                   type="textarea"
                   :rows="3"
-                  placeholder="Video description"
+                  placeholder="视频描述"
                 />
               </el-form-item>
-              <el-form-item label="Rating">
+              <el-form-item label="评分">
                 <div class="edit-rating">
                   <template v-for="i in 5" :key="i">
                     <el-icon
@@ -371,13 +425,35 @@ onMounted(loadVideo)
               </el-form-item>
             </el-form>
             <div class="edit-actions">
-              <el-button @click="cancelEdit">Cancel</el-button>
-              <el-button type="primary" @click="saveEdit">Save</el-button>
+              <el-button @click="cancelEdit">取消</el-button>
+              <el-button type="primary" @click="saveEdit">保存</el-button>
             </div>
           </template>
         </div>
       </div>
     </template>
+
+    <!-- Tag Edit Dialog -->
+    <el-dialog
+      v-model="showTagDialog"
+      title="编辑标签"
+      width="400px"
+    >
+      <el-checkbox-group v-model="selectedTagIds">
+        <div v-for="tag in allTags" :key="tag.id" class="tag-checkbox-item">
+          <el-checkbox :label="tag.id">
+            <el-tag :color="tag.color" effect="dark" size="small">
+              {{ tag.name }}
+            </el-tag>
+          </el-checkbox>
+        </div>
+      </el-checkbox-group>
+
+      <template #footer>
+        <el-button @click="showTagDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveTags">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -596,5 +672,14 @@ onMounted(loadVideo)
   display: flex;
   gap: 8px;
   margin-top: 8px;
+}
+
+/* Tag dialog */
+.tag-checkbox-item {
+  margin-bottom: 12px;
+}
+
+.tag-checkbox-item:last-child {
+  margin-bottom: 0;
 }
 </style>
