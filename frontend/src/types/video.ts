@@ -3,6 +3,19 @@ export interface Tag {
   id: number
   name: string
   color: string
+  video_count?: number
+}
+
+/** Request body for creating a tag. */
+export interface TagCreate {
+  name: string
+  color?: string
+}
+
+/** Request body for updating a tag. */
+export interface TagUpdate {
+  name?: string
+  color?: string
 }
 
 /** A video record matching the backend API schema. */

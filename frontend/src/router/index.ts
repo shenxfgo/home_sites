@@ -27,6 +27,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'Favorites' },
   },
   {
+    path: '/tags',
+    name: 'tags',
+    component: () => import('@/views/Tags.vue'),
+    meta: { title: 'Tags' },
+  },
+  {
     path: '/videos/:id',
     name: 'video-detail',
     component: () => import('@/views/VideoDetail.vue'),
