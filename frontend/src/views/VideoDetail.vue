@@ -10,14 +10,21 @@ import {
   Star,
   StarFilled,
   VideoPlay,
+  Collection,
+  CollectionTag,
 } from '@element-plus/icons-vue'
 import {
   getVideo,
   updateVideo,
   deleteVideo,
-  recordPlay,
 } from '@/api/videos'
+import {
+  checkFavorite,
+  addFavorite,
+  removeFavorite,
+} from '@/api/favorites'
 import type { Video, VideoUpdate } from '@/types/video'
+import VideoPlayer from '@/components/VideoPlayer.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,6 +32,8 @@ const router = useRouter()
 const video = ref<Video | null>(null)
 const loading = ref(true)
 const editing = ref(false)
+const isPlaying = ref(false)
+const isFavorite = ref(false)
 const editForm = ref<{ title: string; description: string; rating: number }>({
   title: '',
   description: '',
@@ -32,6 +41,13 @@ const editForm = ref<{ title: string; description: string; rating: number }>({
 })
 
 const videoId = computed(() => Number(route.params.id))
+
+/** Get the video stream URL. */
+function getVideoUrl(): string {
+  if (!video.value) return ''
+  // Vite proxy forwards /api to backend
+  return `/api/videos/${video.value.id}/stream`
+}
 
 /** Format duration in seconds to HH:MM:SS or MM:SS. */
 function formatDuration(seconds: number | null): string {
@@ -64,11 +80,34 @@ async function loadVideo() {
   loading.value = true
   try {
     video.value = await getVideo(videoId.value)
+    // Load favorite status
+    try {
+      isFavorite.value = await checkFavorite(videoId.value)
+    } catch {
+      // Silently ignore favorite check failure
+    }
   } catch (err: unknown) {
     ElMessage.error(`Failed to load video: ${err instanceof Error ? err.message : err}`)
     router.push({ name: 'home' })
   } finally {
     loading.value = false
+  }
+}
+
+async function toggleFavorite() {
+  if (!video.value) return
+  try {
+    if (isFavorite.value) {
+      await removeFavorite(video.value.id)
+      isFavorite.value = false
+      ElMessage.success('Removed from favorites')
+    } else {
+      await addFavorite(video.value.id)
+      isFavorite.value = true
+      ElMessage.success('Added to favorites')
+    }
+  } catch (err: unknown) {
+    ElMessage.error(`Failed: ${err instanceof Error ? err.message : err}`)
   }
 }
 
@@ -121,15 +160,16 @@ async function handleDelete() {
 }
 
 async function handlePlay() {
-  if (!video.value) return
-  try {
-    await recordPlay(video.value.id)
-    video.value.view_count++
-    video.value.last_played_at = new Date().toISOString()
-    ElMessage.success('Playback recorded')
-  } catch (err: unknown) {
-    ElMessage.error(`Play failed: ${err instanceof Error ? err.message : err}`)
-  }
+  isPlaying.value = true
+}
+
+function handlePlayerEnded() {
+  isPlaying.value = false
+}
+
+function handlePlayerError(error: Event) {
+  console.error('Player error:', error)
+  ElMessage.error('Video playback failed')
 }
 
 function setRating(value: number) {
@@ -152,16 +192,34 @@ onMounted(loadVideo)
 
     <template v-if="video">
       <div class="detail-content">
-        <!-- Video preview / thumbnail -->
-        <div class="preview-area">
+        <!-- Video Player or Thumbnail -->
+        <div v-if="isPlaying" class="player-area">
+          <VideoPlayer
+            :video-id="video.id"
+            :video-url="getVideoUrl()"
+            @ended="handlePlayerEnded"
+            @error="handlePlayerError"
+          />
+        </div>
+        <div v-else class="preview-area" @click="handlePlay">
           <div v-if="video.thumbnail_path" class="preview-thumbnail">
             <img :src="video.thumbnail_path" :alt="video.title ?? 'Video'" />
+            <div class="play-overlay">
+              <div class="play-button-large">
+                <el-icon :size="48" color="white">
+                  <VideoPlay />
+                </el-icon>
+              </div>
+            </div>
           </div>
           <div v-else class="preview-placeholder">
             <el-icon :size="72" color="#c0c4cc">
               <VideoCamera />
             </el-icon>
             <span>No preview available</span>
+            <el-button type="primary" :icon="VideoPlay" @click.stop="handlePlay">
+              Play Video
+            </el-button>
           </div>
         </div>
 
@@ -171,8 +229,27 @@ onMounted(loadVideo)
             <div class="header-row">
               <h1 class="video-title">{{ video.title || video.filepath.split(/[/\\]/).pop() || 'Untitled' }}</h1>
               <div class="action-buttons">
-                <el-button :icon="VideoPlay" type="primary" @click="handlePlay">
+                <el-button
+                  v-if="!isPlaying"
+                  :icon="VideoPlay"
+                  type="primary"
+                  @click="handlePlay"
+                >
                   Play
+                </el-button>
+                <el-button
+                  v-else
+                  type="warning"
+                  @click="isPlaying = false"
+                >
+                  Stop
+                </el-button>
+                <el-button
+                  :icon="isFavorite ? CollectionTag : Collection"
+                  :type="isFavorite ? 'warning' : 'default'"
+                  @click="toggleFavorite"
+                >
+                  {{ isFavorite ? 'Favorited' : 'Favorite' }}
                 </el-button>
                 <el-button :icon="Edit" @click="startEdit">
                   Edit
@@ -319,6 +396,12 @@ onMounted(loadVideo)
   gap: 24px;
 }
 
+.player-area {
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
 .preview-area {
   width: 100%;
   aspect-ratio: 16 / 9;
@@ -326,17 +409,50 @@ onMounted(loadVideo)
   border-radius: 8px;
   overflow: hidden;
   background-color: #f5f7fa;
+  cursor: pointer;
+  position: relative;
 }
 
 .preview-thumbnail {
   width: 100%;
   height: 100%;
+  position: relative;
 }
 
 .preview-thumbnail img {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+.play-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.preview-area:hover .play-overlay {
+  opacity: 1;
+}
+
+.play-button-large {
+  width: 80px;
+  height: 80px;
+  background: rgba(64, 158, 255, 0.9);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s;
+}
+
+.preview-area:hover .play-button-large {
+  transform: scale(1.1);
 }
 
 .preview-placeholder {

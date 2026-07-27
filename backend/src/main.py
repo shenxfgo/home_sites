@@ -49,9 +49,13 @@ from src.api.videos import router as videos_router  # noqa: E402
 from src.api.tags import router as tags_router  # noqa: E402
 from src.api.scan import router as scan_router  # noqa: E402
 from src.api.stream import router as stream_router  # noqa: E402
+from src.api.history import router as history_router  # noqa: E402
+from src.api.favorites import router as favorites_router  # noqa: E402
 
 app.include_router(sources_router)
 app.include_router(videos_router)
 app.include_router(tags_router)
 app.include_router(scan_router)
 app.include_router(stream_router)
+app.include_router(history_router)
+app.include_router(favorites_router)
