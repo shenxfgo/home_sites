@@ -64,6 +64,7 @@ async def health_check() -> dict[str, str]:
 # Include API routers
 from src.api.sources import router as sources_router  # noqa: E402
 from src.api.videos import router as videos_router  # noqa: E402
+from src.api.subtitles import router as subtitles_router  # noqa: E402
 from src.api.tags import router as tags_router  # noqa: E402
 from src.api.scan import router as scan_router  # noqa: E402
 from src.api.stream import router as stream_router  # noqa: E402
@@ -76,6 +77,7 @@ from src.api.settings import router as settings_router  # noqa: E402
 
 app.include_router(sources_router)
 app.include_router(videos_router)
+app.include_router(subtitles_router)
 app.include_router(tags_router)
 app.include_router(scan_router)
 app.include_router(stream_router)

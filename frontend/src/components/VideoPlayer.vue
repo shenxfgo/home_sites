@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { recordPlay, updateProgress } from '@/api/videos'
+import { listSubtitles, subtitleTrackUrl } from '@/api/subtitles'
+import type { Subtitle } from '@/types/subtitle'
 
 interface Props {
   videoId: number
@@ -32,6 +34,9 @@ const isFullscreen = ref(false)
 const loading = ref(true)
 const hasError = ref(false)
 const errorMessage = ref('')
+const subtitles = ref<Subtitle[]>([])
+const activeSubtitleId = ref<number | null>(null)
+const showSubtitleMenu = ref(false)
 
 let controlsTimeout: ReturnType<typeof setTimeout> | null = null
 let progressInterval: ReturnType<typeof setInterval> | null = null
@@ -130,6 +135,45 @@ function toggleMute() {
     videoRef.value.muted = true
     isMuted.value = true
   }
+}
+
+async function loadSubtitles() {
+  activeSubtitleId.value = null
+  showSubtitleMenu.value = false
+  subtitles.value = []
+  if (!props.videoId) return
+
+  try {
+    subtitles.value = await listSubtitles(props.videoId)
+  } catch (err) {
+    console.error('Failed to load subtitles:', err)
+  }
+}
+
+function applyTrackMode() {
+  const tracks = videoRef.value?.textTracks
+  if (!tracks) return
+  subtitles.value.forEach((subtitle, index) => {
+    const track = tracks[index]
+    if (track) {
+      track.mode = subtitle.id === activeSubtitleId.value ? 'showing' : 'hidden'
+    }
+  })
+}
+
+async function selectSubtitle(subtitleId: number | null) {
+  activeSubtitleId.value = subtitleId
+  showSubtitleMenu.value = false
+  await nextTick()
+  applyTrackMode()
+}
+
+function toggleSubtitleMenu() {
+  showSubtitleMenu.value = !showSubtitleMenu.value
+}
+
+function subtitleLabel(subtitle: Subtitle): string {
+  return subtitle.label || subtitle.language || `字幕 ${subtitle.id}`
 }
 
 function toggleFullscreen() {
@@ -232,6 +276,7 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 onMounted(() => {
+  loadSubtitles()
   startProgressReporting()
   document.addEventListener('fullscreenchange', handleFullscreenChange)
   document.addEventListener('keydown', handleKeydown)
@@ -261,6 +306,7 @@ watch(() => props.videoId, () => {
   progress.value = 0
   loading.value = true
   hasError.value = false
+  loadSubtitles()
 })
 </script>
 
@@ -286,7 +332,16 @@ watch(() => props.videoId, () => {
       @pause="handlePause"
       @error="handleError"
       @click="togglePlay"
-    />
+    >
+      <track
+        v-for="subtitle in subtitles"
+        :key="subtitle.id"
+        kind="subtitles"
+        :src="subtitleTrackUrl(videoId, subtitle.id)"
+        :srclang="subtitle.language || 'und'"
+        :label="subtitleLabel(subtitle)"
+      />
+    </video>
 
     <!-- Loading indicator -->
     <div v-if="loading" class="loading-overlay">
@@ -350,6 +405,36 @@ watch(() => props.videoId, () => {
           </div>
         </div>
 
+        <!-- Subtitles -->
+        <div v-if="subtitles.length" class="subtitle-control">
+          <button
+            class="control-btn subtitle-btn"
+            :class="{ 'is-active': activeSubtitleId !== null }"
+            title="字幕"
+            @click.stop="toggleSubtitleMenu"
+          >
+            CC
+          </button>
+          <div v-if="showSubtitleMenu" class="subtitle-menu">
+            <button
+              class="subtitle-menu-item"
+              :class="{ 'is-active': activeSubtitleId === null }"
+              @click.stop="selectSubtitle(null)"
+            >
+              关闭
+            </button>
+            <button
+              v-for="subtitle in subtitles"
+              :key="subtitle.id"
+              class="subtitle-menu-item"
+              :class="{ 'is-active': activeSubtitleId === subtitle.id }"
+              @click.stop="selectSubtitle(subtitle.id)"
+            >
+              {{ subtitleLabel(subtitle) }}
+            </button>
+          </div>
+        </div>
+
         <!-- Fullscreen -->
         <button class="control-btn" title="全屏" @click.stop="toggleFullscreen">
           <span v-if="isFullscreen">&#9747;</span>
@@ -385,6 +470,12 @@ video {
   cursor: pointer;
 }
 
+video::cue {
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-family: inherit;
+}
+
 /* Loading overlay */
 .loading-overlay {
   position: absolute;
@@ -399,7 +490,7 @@ video {
   width: 48px;
   height: 48px;
   border: 4px solid rgba(255, 255, 255, 0.3);
-  border-top-color: #409eff;
+  border-top-color: #7c6cff;
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -439,7 +530,7 @@ video {
 
 .retry-btn {
   padding: 8px 24px;
-  background: #409eff;
+  background: #7c6cff;
   color: white;
   border: none;
   border-radius: 4px;
@@ -448,7 +539,7 @@ video {
 }
 
 .retry-btn:hover {
-  background: #66b1ff;
+  background: #9d8fff;
 }
 
 /* Controls */
@@ -520,7 +611,7 @@ video {
 
 .progress-fill {
   height: 100%;
-  background: #409eff;
+  background: #7c6cff;
   border-radius: 2px;
   position: relative;
 }
@@ -533,7 +624,7 @@ video {
   transform: translateY(-50%);
   width: 12px;
   height: 12px;
-  background: #409eff;
+  background: #7c6cff;
   border-radius: 50%;
   opacity: 0;
   transition: opacity 0.2s;
@@ -575,6 +666,52 @@ video {
   height: 100%;
   background: white;
   border-radius: 2px;
+}
+
+/* Subtitle control */
+.subtitle-control {
+  position: relative;
+}
+
+.subtitle-btn {
+  font-size: 12px;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+}
+
+.subtitle-btn.is-active {
+  color: #7c6cff;
+}
+
+.subtitle-menu {
+  position: absolute;
+  bottom: 44px;
+  left: 0;
+  min-width: 120px;
+  background: rgba(0, 0, 0, 0.9);
+  border-radius: 6px;
+  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.subtitle-menu-item {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 13px;
+  text-align: left;
+  padding: 8px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.subtitle-menu-item:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.subtitle-menu-item.is-active {
+  color: #7c6cff;
 }
 
 /* Big play button */

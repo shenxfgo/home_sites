@@ -4,9 +4,13 @@ import tempfile
 import pytest
 from unittest.mock import patch, MagicMock
 
+from sqlalchemy import select
+
 from src.models.source import VideoSource
+from src.models.subtitle import Subtitle
 from src.models.video import Video
 from src.models.new_video import NewVideo
+from src.services import scan_service as scan_module
 from src.services.scan_service import ScanService
 
 
@@ -158,6 +162,7 @@ async def test_scan_all_active(db_session):
         assert result["sources_scanned"] == 2
         assert result["total_files"] == 1
         assert result["total_new_videos"] == 1
+        assert result["total_subtitles"] == 0
 
 
 @pytest.mark.asyncio
@@ -186,17 +191,54 @@ async def test_get_scan_progress(db_session):
 
 
 @pytest.mark.asyncio
-async def test_stop_scan(db_session):
-    """Test stopping a scan."""
+async def test_stop_scan_skips_remaining_sources(db_session, monkeypatch):
+    """A stop request must make scan_all_active abandon untouched sources."""
+    first = await _create_source(db_session, name="first")
+    await _create_source(db_session, name="second")
+
     service = ScanService(db_session)
-    service._scanning = True
-    service._progress["is_scanning"] = True
+    visited: list[int] = []
 
-    await service.stop_scan()
+    async def fake_scan_source(source_id: int) -> dict:
+        visited.append(source_id)
+        scan_module._scan_state["stop_requested"] = True
+        return {"source_id": source_id, "files_found": 0, "new_videos": 0, "subtitles_found": 0}
 
-    assert service.is_scanning is False
-    progress = service.get_scan_progress()
-    assert progress["is_scanning"] is False
+    monkeypatch.setattr(service, "scan_source", fake_scan_source)
+
+    result = await service.scan_all_active()
+
+    assert visited == [first.id]
+    assert result["sources_scanned"] == 1
+    assert scan_module._scan_state["is_scanning"] is False
+
+
+@pytest.mark.asyncio
+async def test_scan_progress_visible_to_other_service_instances(db_session, monkeypatch):
+    """Progress lives at module level so a separate request can observe it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = await _create_source(db_session, name="正在扫描", path=tmpdir)
+        observed: list[dict] = []
+
+        def fake_scan_directory(path: str) -> list:
+            observed.append(ScanService(db_session).get_scan_progress())
+            return []
+
+        monkeypatch.setattr(scan_module, "scan_directory", fake_scan_directory)
+
+        await ScanService(db_session).scan_source(source.id)
+
+        assert observed[0]["is_scanning"] is True
+        assert observed[0]["current_source"] == "正在扫描"
+        # The scan is over, so the shared state must be back at idle.
+        assert ScanService(db_session).get_scan_progress() == {
+            "is_scanning": False,
+            "current_source": None,
+            "sources_total": 0,
+            "sources_completed": 0,
+            "files_found": 0,
+            "new_videos": 0,
+        }
 
 
 @pytest.mark.asyncio
@@ -209,3 +251,103 @@ async def test_scan_source_nonexistent_directory(db_session):
 
     assert result["files_found"] == 0
     assert result["new_videos"] == 0
+
+
+async def _subtitles_of(db_session, video_id: int) -> list[Subtitle]:
+    result = await db_session.execute(
+        select(Subtitle).where(Subtitle.video_id == video_id).order_by(Subtitle.id)
+    )
+    return list(result.scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_scan_source_registers_sidecar_subtitles(db_session):
+    """A new video's sidecar subtitle files become tracks of that video."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _write_video(tmpdir, "movie.mp4")
+        _write_text(os.path.join(tmpdir, "movie.zh.srt"))
+        _write_text(os.path.join(tmpdir, "movie.en.vtt"))
+
+        source = await _create_source(db_session, path=tmpdir)
+        service = ScanService(db_session)
+
+        with patch("src.services.scan_service.extract_video_info") as mock_info, \
+             patch("src.services.scan_service.generate_thumbnail") as mock_thumb:
+            mock_info.return_value = {"duration": 10, "resolution": None, "format": "mp4"}
+            mock_thumb.return_value = ""
+            result = await service.scan_source(source.id)
+
+        video = (await db_session.execute(
+            select(Video).where(Video.source_id == source.id)
+        )).scalars().one()
+        stored = await _subtitles_of(db_session, video.id)
+
+        assert result["subtitles_found"] == 2
+        assert [s.language for s in stored] == ["en", "zh"]
+
+
+@pytest.mark.asyncio
+async def test_scan_source_subtitles_are_idempotent(db_session):
+    """Re-scanning the same directory must not duplicate subtitle rows."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _write_video(tmpdir, "movie.mp4")
+        _write_text(os.path.join(tmpdir, "movie.zh.srt"))
+
+        source = await _create_source(db_session, path=tmpdir)
+        service = ScanService(db_session)
+
+        with patch("src.services.scan_service.extract_video_info") as mock_info, \
+             patch("src.services.scan_service.generate_thumbnail") as mock_thumb:
+            mock_info.return_value = {"duration": 10, "resolution": None, "format": "mp4"}
+            mock_thumb.return_value = ""
+            first = await service.scan_source(source.id)
+            second = await service.scan_source(source.id)
+
+        video = (await db_session.execute(
+            select(Video).where(Video.source_id == source.id)
+        )).scalars().one()
+
+        assert first["subtitles_found"] == 1
+        assert second["subtitles_found"] == 0
+        assert len(await _subtitles_of(db_session, video.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_source_adds_subtitles_to_existing_video(db_session):
+    """A subtitle dropped next to an already indexed video is found on the next scan."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _write_video(tmpdir, "movie.mp4")
+
+        source = await _create_source(db_session, path=tmpdir)
+        service = ScanService(db_session)
+
+        with patch("src.services.scan_service.extract_video_info") as mock_info, \
+             patch("src.services.scan_service.generate_thumbnail") as mock_thumb:
+            mock_info.return_value = {"duration": 10, "resolution": None, "format": "mp4"}
+            mock_thumb.return_value = ""
+            await service.scan_source(source.id)
+
+        _write_text(os.path.join(tmpdir, "movie.ja.ass"))
+        result = await service.scan_source(source.id)
+
+        video = (await db_session.execute(
+            select(Video).where(Video.source_id == source.id)
+        )).scalars().one()
+        stored = await _subtitles_of(db_session, video.id)
+
+        assert result["new_videos"] == 0
+        assert result["subtitles_found"] == 1
+        assert [s.language for s in stored] == ["ja"]
+
+
+def _write_video(directory: str, name: str) -> str:
+    path = os.path.join(directory, name)
+    with open(path, "w") as f:
+        f.write("dummy content")
+    return path
+
+
+def _write_text(path: str) -> str:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("1\n00:00:01,000 --> 00:00:02,000\nhi\n")
+    return path

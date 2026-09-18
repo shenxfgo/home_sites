@@ -15,9 +15,11 @@ class ScanResultResponse(BaseModel):
     source_id: int | None = None
     files_found: int = 0
     new_videos: int = 0
+    subtitles_found: int = 0
     sources_scanned: int | None = None
     total_files: int | None = None
     total_new_videos: int | None = None
+    total_subtitles: int | None = None
 
 
 class ScanProgressResponse(BaseModel):
