@@ -167,8 +167,12 @@ uv run pytest              # 运行测试
 cd frontend
 npm install                # 安装依赖
 npm run dev                # 启动开发服务器
-npm run build              # 构建生产版本
-npm run lint               # 代码检查
+npm run build              # 构建生产版本（vue-tsc -b && vite build）
+npm run test               # 单元测试（Vitest，tests/ 目录）
+npm run test:watch         # 单元测试 watch 模式
+npm run test:coverage      # 单元测试 + 覆盖率
+npm run test:e2e           # 端到端测试（Playwright，自动拉起 dev server）
+npm run typecheck:test     # 只检查测试代码类型
 ```
 
 ## API 文档

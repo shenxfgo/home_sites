@@ -8,6 +8,7 @@
 |------|------|
 | 📁 视频源管理 | 支持本地目录、NAS、MinIO 多种视频源 |
 | 🎥 视频播放 | 流式播放、进度记忆、键盘快捷键 |
+| 💬 字幕支持 | 扫描自动识别外挂字幕，播放器可切换轨道（SRT/ASS/VTT → WebVTT） |
 | 🏷️ 标签管理 | 创建标签、为视频打标签、按标签筛选 |
 | 📊 播放历史 | 记录播放进度、继续观看 |
 | ⭐ 收藏功能 | 视频收藏/取消收藏 |
@@ -77,7 +78,7 @@ npm run dev
 home_sites/
 ├── backend/                 # 后端服务
 │   ├── src/
-│   │   ├── api/            # API 路由（41 个端点）
+│   │   ├── api/            # API 路由（55 个端点）
 │   │   ├── models/         # 数据模型（10 个）
 │   │   ├── services/       # 业务逻辑
 │   │   ├── scheduler/      # 定时任务
@@ -88,11 +89,15 @@ home_sites/
 │   ├── src/
 │   │   ├── api/            # API 调用模块
 │   │   ├── components/     # 可复用组件
-│   │   ├── views/          # 页面组件（9 个）
+│   │   ├── views/          # 页面组件（10 个）
 │   │   ├── composables/    # 组合式函数
 │   │   ├── layouts/        # 布局组件
 │   │   ├── styles/         # 样式文件
 │   │   └── router/         # 路由配置
+│   ├── tests/              # 单元测试（Vitest + jsdom）
+│   ├── e2e/                # 端到端测试（Playwright）
+│   ├── vitest.config.ts
+│   ├── playwright.config.ts
 │   └── package.json
 ├── docs/                    # 文档
 │   ├── specs/              # 设计文档
@@ -112,6 +117,7 @@ home_sites/
 |------|------|------|
 | 视频源 | `/api/sources` | 视频源 CRUD |
 | 视频 | `/api/videos` | 视频管理、播放 |
+| 字幕 | `/api/videos/{id}/subtitles` | 字幕轨道管理与 WebVTT 输出 |
 | 标签 | `/api/tags` | 标签管理 |
 | 历史 | `/api/history` | 播放历史 |
 | 收藏 | `/api/favorites` | 收藏功能 |
@@ -149,6 +155,12 @@ home_sites/
 2. 在"界面设置"中选择主题
 3. 支持浅色/深色/跟随系统
 
+### 5. 外挂字幕
+
+1. 把字幕文件放在视频同目录，命名为 `视频名.srt`、`视频名.zh.srt`、`视频名.中文.vtt` 等（支持 srt / ass / ssa / vtt）
+2. 在视频源页面点击"扫描"，字幕会自动登记为该视频的轨道
+3. 播放视频中点击右下角 `CC` 按钮选择字幕，浏览器只渲染 WebVTT，其他格式由后端实时转换
+
 ## 🔧 环境变量
 
 创建 `backend/.env` 文件：
@@ -169,8 +181,14 @@ CORS_ORIGINS=http://localhost:3000,http://localhost:5173
 cd backend
 uv run pytest
 
-# 前端构建检查
+# 前端单元测试（Vitest + jsdom）
 cd frontend
+npm run test
+
+# 前端端到端测试（Playwright，自带接口 mock，无需启动后端）
+npm run test:e2e
+
+# 前端构建检查
 npm run build
 ```
 

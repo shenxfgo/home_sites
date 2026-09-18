@@ -103,6 +103,7 @@ frontend/
 │   ├── api/                # API 调用模块
 │   │   ├── client.ts      # Axios 实例
 │   │   ├── videos.ts      # 视频 API
+│   │   ├── subtitles.ts   # 字幕 API（列表/登记/删除 + WebVTT 地址）
 │   │   ├── sources.ts     # 视频源 API
 │   │   ├── settings.ts    # 设置 API
 │   │   └── ...
@@ -125,6 +126,7 @@ frontend/
 │   │   └── index.ts
 │   ├── types/              # TypeScript 类型
 │   │   ├── video.ts
+│   │   ├── subtitle.ts
 │   │   └── source.ts
 │   ├── styles/             # 全局样式
 │   │   ├── global.css
@@ -555,25 +557,33 @@ export const videosApi = {
 
 ## 测试规范
 
-### 组件测试
+### 单元测试（Vitest）
 
-```typescript
-// src/components/__tests__/VideoCard.test.ts
-import { describe, it, expect } from 'vitest'
-import { mount } from '@vue/test-utils'
-import VideoCard from '../VideoCard.vue'
+测试代码统一放在 `frontend/tests/`，文件名 `*.spec.ts`，**不要放进 `src/`**（`src/**` 由 `tsconfig.app.json` 纳入生产构建的类型检查）。
 
-describe('VideoCard', () => {
-  it('renders video title', () => {
-    const wrapper = mount(VideoCard, {
-      props: {
-        video: { id: 1, title: '测试视频' },
-      },
-    })
-    expect(wrapper.text()).toContain('测试视频')
-  })
-})
 ```
+tests/
+├── setup.ts            # 全局注册 Element Plus 与图标、ResizeObserver 兜底、用例间状态清理
+├── factories.ts        # makeVideo / makeSource / makeTag 等数据工厂
+├── helpers.ts          # buttonByText / CONFIRMED 等断言辅助
+├── api/                # axios 实例与请求路径
+├── components/         # 组件级用例
+├── composables/        # 组合式函数
+├── views/              # 页面级用例
+└── router.spec.ts      # 路由表与 404 兜底
+```
+
+约定：
+
+- 页面/组件依赖 `useRouter`、`useRoute` 时按文件 `vi.mock('vue-router', ...)`，不要安装真实路由。
+- 视图里的请求走 `@/api/client`，用 `vi.hoisted` + `vi.mock('@/api/client')` 记录 `url`，再断言路径**不带 `/api` 前缀**（`baseURL` 已经是 `/api`）；`tests/api/paths.spec.ts` 会自动遍历所有 api 模块做同样校验。
+- 只测 api 模块本身时，可以改用 `client.defaults.adapter` 拦截，能顺带验证 `baseURL + url` 拼出的完整地址。
+- Element Plus 的弹层（popover / dialog）会 teleport 到 `document.body`，挂载时传 `attachTo: document.body` 并用 `document.body.querySelector` 查询。
+- 定时器轮询用 `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync()`，用例结束前 `vi.useRealTimers()`。
+
+### 端到端测试（Playwright）
+
+`frontend/e2e/`，由 `playwright.config.ts` 自动拉起 `localhost:4173` 的 dev server。`e2e/fixtures.ts` 里的 `mockApi(page)` 用带状态的假接口替换整个 `/api` 面，因此 **E2E 不需要启动后端**；注意路由要按 `url.pathname.startsWith('/api/')` 匹配，用 `**/api/**` 通配会把 Vite 的 `/src/api/*.ts` 模块请求一起拦掉导致白屏。
 
 ## 常见问题
 
@@ -628,9 +638,15 @@ npm run build
 # 预览构建结果
 npm run preview
 
-# 代码检查
-npm run lint
+# 单元测试（Vitest + jsdom + @vue/test-utils）
+npm run test
+npm run test:watch
+npm run test:coverage
 
-# 类型检查
-npm run type-check
+# 端到端测试（Playwright，自动启动 4173 端口的 dev server）
+npm run test:e2e
+
+# 类型检查（含测试代码）
+npm run build
+npm run typecheck:test
 ```
