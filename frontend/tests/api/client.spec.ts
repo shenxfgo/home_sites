@@ -1,0 +1,42 @@
+import { describe, expect, it } from 'vitest'
+import { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
+import client from '@/api/client'
+
+function failingAdapter(status: number, data: unknown, message: string) {
+  return (config: InternalAxiosRequestConfig) => {
+    const response = { status, statusText: '', headers: {}, config, data } as AxiosResponse
+    return Promise.reject(new AxiosError(message, 'ERR_BAD_RESPONSE', config, {}, response))
+  }
+}
+
+describe('api client', () => {
+  it('uses /api as its base url so call sites stay prefix-free', () => {
+    expect(client.defaults.baseURL).toBe('/api')
+  })
+
+  it('surfaces the backend detail message as the rejection reason', async () => {
+    const adapter = failingAdapter(400, { detail: '扫描间隔不能小于 60 秒' }, 'Request failed')
+
+    await expect(client.get('/sources', { adapter })).rejects.toThrow('扫描间隔不能小于 60 秒')
+  })
+
+  it('falls back to the transport message when the payload has no detail', async () => {
+    const adapter = failingAdapter(0, undefined, 'Network Error')
+
+    await expect(client.get('/sources', { adapter })).rejects.toThrow('Network Error')
+  })
+
+  it('leaves successful responses untouched', async () => {
+    const payload = { items: [], total: 0 }
+    const adapter = (config: InternalAxiosRequestConfig) =>
+      Promise.resolve({
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+        data: payload,
+      } as AxiosResponse)
+
+    await expect(client.get('/videos', { adapter })).resolves.toMatchObject({ data: payload })
+  })
+})
