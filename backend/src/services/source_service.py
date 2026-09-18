@@ -5,7 +5,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.source import VideoSource
+from src.models.video import Video
 from src.scheduler import scheduler
+from src.services.video_service import delete_videos_cascade
 
 
 class SourceService:
@@ -82,11 +84,14 @@ class SourceService:
         return source
 
     async def delete(self, source_id: int) -> None:
-        """Delete a video source."""
+        """Delete a video source and everything discovered from it."""
         source = await self.get_by_id(source_id)
         if not source:
             raise ValueError(f"Source with id {source_id} not found")
 
+        # videos.source_id is NOT NULL, so the source cannot be removed while
+        # its videos still point at it.
+        await delete_videos_cascade(self.session, Video.source_id == source_id)
         await self.session.delete(source)
         await self.session.commit()
 

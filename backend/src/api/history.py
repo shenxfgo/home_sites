@@ -20,6 +20,7 @@ class HistoryResponse(BaseModel):
     played_at: datetime
     progress: int
     completed: bool
+    video_title: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -49,7 +50,17 @@ async def list_history(
     """Get playback history."""
     history, total = await service.get_history(page=page, page_size=page_size)
     return HistoryListResponse(
-        items=history,
+        items=[
+            HistoryResponse(
+                id=record.id,
+                video_id=record.video_id,
+                played_at=record.played_at,
+                progress=record.progress,
+                completed=record.completed,
+                video_title=record.video.title if record.video else None,
+            )
+            for record in history
+        ],
         total=total,
         page=page,
         page_size=page_size,

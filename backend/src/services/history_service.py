@@ -27,6 +27,7 @@ class HistoryService:
         query = (
             select(PlayHistory)
             .order_by(desc(PlayHistory.played_at))
+            .options(selectinload(PlayHistory.video))
             .offset((page - 1) * page_size)
             .limit(page_size)
         )

@@ -1,4 +1,5 @@
 """File scanning utilities for discovering video files on disk."""
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -66,12 +67,14 @@ def extract_video_info(filepath: str) -> dict:
             ],
             capture_output=True,
             text=True,
+            # ffprobe 输出含 UTF-8 文件名；按系统区域编码（如 cp936）解码会抛
+            # UnicodeDecodeError 并使 stdout 变成 None
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
-        if result.returncode != 0:
+        if result.returncode != 0 or not result.stdout:
             return info
-
-        import json
 
         probe = json.loads(result.stdout)
 
@@ -116,6 +119,8 @@ def generate_thumbnail(video_path: str, output_path: str) -> str:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         if result.returncode == 0 and os.path.exists(output_path):

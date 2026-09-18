@@ -27,6 +27,46 @@ async def _create_video(session, source_id=1, title="Test Video", filepath="/tes
 
 
 @pytest.mark.asyncio
+async def test_delete_video_removes_dependent_rows(db_session):
+    """SQLite ignores the schema's ON DELETE CASCADE, so the service must not."""
+    from sqlalchemy import func, select
+
+    from src.models.favorite import Favorite
+    from src.models.new_video import NewVideo
+    from src.models.tag import Tag, video_tags
+
+    video = await _create_video(db_session, title="Doomed", filepath="/d.mp4")
+    tag = Tag(name="恐怖")
+    db_session.add(tag)
+    await db_session.commit()
+
+    db_session.add_all(
+        [
+            Favorite(video_id=video.id),
+            NewVideo(video_id=video.id, source_id=video.source_id),
+            PlayHistory(video_id=video.id, progress=10),
+        ]
+    )
+    await db_session.execute(
+        video_tags.insert().values(video_id=video.id, tag_id=tag.id)
+    )
+    await db_session.commit()
+
+    service = VideoService(db_session)
+    await service.delete_video(video.id)
+
+    async def count(model):
+        result = await db_session.execute(select(func.count()).select_from(model))
+        return result.scalar()
+
+    assert await count(Video) == 0
+    assert await count(Favorite) == 0
+    assert await count(NewVideo) == 0
+    assert await count(PlayHistory) == 0
+    assert await count(video_tags) == 0
+
+
+@pytest.mark.asyncio
 async def test_get_videos_empty(db_session):
     """Test getting videos from empty database."""
     service = VideoService(db_session)

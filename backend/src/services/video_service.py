@@ -1,13 +1,36 @@
 """VideoService for video CRUD operations and playback tracking."""
 from datetime import datetime, timezone
 
-from sqlalchemy import select, func
+from sqlalchemy import delete, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.video import Video
+from src.models.favorite import Favorite
 from src.models.new_video import NewVideo
 from src.models.history import PlayHistory
+from src.models.subtitle import Subtitle
 from src.models.tag import video_tags
+
+
+async def delete_videos_cascade(
+    session: AsyncSession, video_filter
+) -> None:
+    """Delete the matching videos together with every row pointing at them.
+
+    The schema declares ``ondelete="CASCADE"``, but SQLite only honours that
+    when foreign key enforcement is enabled, which this project does not do.
+    Without these explicit deletes, removing a video (or its source) leaves
+    orphaned history, favorite and new-video rows behind.
+    """
+    video_ids = select(Video.id).where(video_filter)
+    for model in (PlayHistory, Favorite, NewVideo, Subtitle):
+        await session.execute(
+            delete(model).where(model.video_id.in_(video_ids))
+        )
+    await session.execute(
+        delete(video_tags).where(video_tags.c.video_id.in_(video_ids))
+    )
+    await session.execute(delete(Video).where(video_filter))
 
 
 class VideoService:
@@ -84,7 +107,7 @@ class VideoService:
         if not video:
             raise ValueError(f"Video with id {video_id} not found")
 
-        await self.session.delete(video)
+        await delete_videos_cascade(self.session, Video.id == video_id)
         await self.session.commit()
 
     async def get_new_videos(self, source_id: int | None = None) -> list[Video]:

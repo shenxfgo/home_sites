@@ -149,6 +149,50 @@ async def test_delete_source_not_found(db_session):
 
 
 @pytest.mark.asyncio
+async def test_delete_source_removes_videos_and_dependents(db_session):
+    """videos.source_id is NOT NULL, so a source with videos used to fail to delete."""
+    from sqlalchemy import func, select
+
+    from src.models.favorite import Favorite
+    from src.models.history import PlayHistory
+    from src.models.new_video import NewVideo
+    from src.models.video import Video
+    from src.services.source_service import SourceService
+
+    service = SourceService(db_session)
+    doomed = await service.create(name="Doomed", path="/doomed", type="local")
+    keeper = await service.create(name="Keeper", path="/keeper", type="local")
+
+    doomed_video = Video(source_id=doomed.id, filepath="/doomed/a.mp4", title="a")
+    keeper_video = Video(source_id=keeper.id, filepath="/keeper/b.mp4", title="b")
+    db_session.add_all([doomed_video, keeper_video])
+    await db_session.commit()
+
+    db_session.add_all(
+        [
+            NewVideo(video_id=doomed_video.id, source_id=doomed.id),
+            Favorite(video_id=doomed_video.id),
+            PlayHistory(video_id=doomed_video.id, progress=42),
+            NewVideo(video_id=keeper_video.id, source_id=keeper.id),
+        ]
+    )
+    await db_session.commit()
+
+    await service.delete(doomed.id)
+
+    async def count(model):
+        result = await db_session.execute(select(func.count()).select_from(model))
+        return result.scalar()
+
+    assert await count(Video) == 1
+    assert await count(NewVideo) == 1
+    assert await count(Favorite) == 0
+    assert await count(PlayHistory) == 0
+    assert await service.get_by_id(doomed.id) is None
+    assert await service.get_by_id(keeper.id) is not None
+
+
+@pytest.mark.asyncio
 async def test_update_last_scan(db_session):
     """Test updating last_scan_at timestamp."""
     from src.services.source_service import SourceService

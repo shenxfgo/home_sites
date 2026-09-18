@@ -27,6 +27,10 @@ class TranscodeStatusResponse(BaseModel):
     video_id: int
     is_transcoding: bool
     status: str
+    progress: float = 0.0
+    target_format: str | None = None
+    output_path: str | None = None
+    error: str | None = None
 
 
 class FormatInfo(BaseModel):

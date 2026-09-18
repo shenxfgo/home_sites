@@ -8,6 +8,7 @@ export interface HistoryItem {
   played_at: string
   progress: number
   completed: boolean
+  video_title: string | null
 }
 
 /** Paginated history list response. */

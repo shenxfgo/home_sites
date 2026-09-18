@@ -13,6 +13,11 @@ export function getVideo(id: number): Promise<Video> {
   return client.get<Video>(`/videos/${id}`).then((r) => r.data)
 }
 
+/** Build the image URL for a video thumbnail. */
+export function thumbnailUrl(id: number): string {
+  return `/api/videos/${id}/thumbnail`
+}
+
 /** Update video information. */
 export function updateVideo(id: number, data: VideoUpdate): Promise<Video> {
   return client.put<Video>(`/videos/${id}`, data).then((r) => r.data)
