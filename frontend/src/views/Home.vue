@@ -89,8 +89,16 @@ onMounted(() => {
 
 <template>
   <div class="home-page">
+    <!-- Hero -->
+    <div class="hero glass-panel">
+      <h1 class="hero-title">
+        你好，<span class="gradient-text">放映时光</span>
+      </h1>
+      <p class="hero-sub">共 {{ total }} 个视频，挑一部开始今天的观影吧</p>
+    </div>
+
     <!-- Toolbar -->
-    <div class="toolbar">
+    <div class="toolbar glass-panel">
       <el-input
         v-model="search"
         placeholder="搜索视频..."
@@ -157,11 +165,48 @@ onMounted(() => {
   padding: 4px 0;
 }
 
+.hero {
+  padding: 28px 32px;
+  margin-bottom: 20px;
+  border-radius: 24px;
+  overflow: hidden;
+  position: relative;
+}
+
+.hero::after {
+  content: "";
+  position: absolute;
+  right: -60px;
+  top: -60px;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: var(--grad-primary);
+  opacity: 0.18;
+  filter: blur(30px);
+  pointer-events: none;
+}
+
+.hero-title {
+  margin: 0 0 6px;
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--text-glass);
+}
+
+.hero-sub {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-glass-secondary);
+}
+
 .toolbar {
   display: flex;
   gap: 12px;
   margin-bottom: 20px;
   flex-wrap: wrap;
+  padding: 14px 16px;
+  border-radius: 18px;
 }
 
 .search-input {

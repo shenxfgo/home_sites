@@ -9,6 +9,7 @@ import {
   deleteHistory,
 } from '@/api/history'
 import type { HistoryItem } from '@/api/history'
+import { thumbnailUrl } from '@/api/videos'
 import type { Video } from '@/types/video'
 
 const router = useRouter()
@@ -118,7 +119,7 @@ onMounted(() => {
           <div class="continue-thumb">
             <img
               v-if="video.thumbnail_path"
-              :src="video.thumbnail_path"
+              :src="thumbnailUrl(video.id)"
               :alt="video.title ?? 'Video'"
             />
             <div v-else class="thumb-placeholder">
@@ -168,7 +169,7 @@ onMounted(() => {
               @click="goToVideo(row.video_id)"
             >
               <el-icon><VideoCamera /></el-icon>
-              <span>视频 #{{ row.video_id }}</span>
+              <span>{{ row.video_title || `视频 #${row.video_id}` }}</span>
             </div>
           </template>
         </el-table-column>
@@ -254,8 +255,8 @@ onMounted(() => {
   width: 100%;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border-radius: 4px;
-  background-color: #f5f7fa;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(124, 108, 255, 0.12), rgba(255, 107, 157, 0.12));
   margin-bottom: 8px;
 }
 

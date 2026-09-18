@@ -109,13 +109,26 @@ function formatTime(dateStr: string): string {
 </script>
 
 <style scoped>
+.notification-badge :deep(.el-button) {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  color: var(--text-glass);
+}
+
+.notification-badge :deep(.el-button:hover) {
+  background: rgba(124, 108, 255, 0.12);
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+}
+
 .notification-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 0;
-  border-bottom: 1px solid #ebeef5;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--glass-border);
   margin-bottom: 8px;
+  color: var(--text-glass);
 }
 
 .notification-item {
@@ -123,16 +136,16 @@ function formatTime(dateStr: string): string {
   gap: 12px;
   padding: 12px;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 14px;
   transition: background-color 0.2s;
 }
 
 .notification-item:hover {
-  background-color: #f5f7fa;
+  background-color: rgba(124, 108, 255, 0.1);
 }
 
 .notification-item.unread {
-  background-color: #ecf5ff;
+  background: linear-gradient(135deg, rgba(124, 108, 255, 0.14), rgba(255, 107, 157, 0.08));
 }
 
 .notification-icon {
@@ -149,22 +162,23 @@ function formatTime(dateStr: string): string {
 .notification-title {
   font-weight: 500;
   margin-bottom: 4px;
+  color: var(--text-glass);
 }
 
 .notification-message {
   font-size: 13px;
-  color: #606266;
+  color: var(--text-glass-secondary);
   margin-bottom: 4px;
 }
 
 .notification-time {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-glass-secondary);
 }
 
 .empty-state {
   text-align: center;
-  color: #909399;
+  color: var(--text-glass-secondary);
   padding: 40px 0;
 }
 </style>

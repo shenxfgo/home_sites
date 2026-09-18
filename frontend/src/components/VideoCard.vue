@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { VideoCamera, Star, StarFilled } from '@element-plus/icons-vue'
+import { thumbnailUrl } from '@/api/videos'
 import type { Video } from '@/types/video'
 
 const props = defineProps<{
@@ -64,7 +65,7 @@ function goToDetail() {
     <div class="thumbnail-area">
       <img
         v-if="video.thumbnail_path"
-        :src="video.thumbnail_path"
+        :src="thumbnailUrl(video.id)"
         :alt="displayTitle"
         class="thumbnail-img"
       />
@@ -134,12 +135,23 @@ function goToDetail() {
 <style scoped>
 .video-card {
   cursor: pointer;
-  transition: transform 0.2s;
   overflow: hidden;
+  background: var(--glass-bg) !important;
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border) !important;
+  border-radius: 20px !important;
+  box-shadow: var(--glass-shadow) !important;
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease;
 }
 
 .video-card:hover {
-  transform: translateY(-2px);
+  transform: translateY(-6px) scale(1.01);
+  box-shadow: var(--glass-shadow-hover) !important;
+}
+
+.video-card :deep(.el-card__body) {
+  padding: 14px;
 }
 
 .thumbnail-area {
@@ -147,8 +159,8 @@ function goToDetail() {
   width: 100%;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  background-color: #f5f7fa;
-  border-radius: 4px;
+  background-color: rgba(124, 108, 255, 0.08);
+  border-radius: 14px;
   margin-bottom: 12px;
 }
 
@@ -156,6 +168,11 @@ function goToDetail() {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: transform 0.35s ease;
+}
+
+.video-card:hover .thumbnail-img {
+  transform: scale(1.05);
 }
 
 .thumbnail-placeholder {
@@ -164,18 +181,20 @@ function goToDetail() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #f5f7fa;
+  background: linear-gradient(135deg, rgba(124, 108, 255, 0.12), rgba(255, 107, 157, 0.12));
 }
 
 .duration-badge {
   position: absolute;
   bottom: 8px;
   right: 8px;
-  background-color: rgba(0, 0, 0, 0.75);
+  background-color: rgba(10, 8, 24, 0.65);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   color: #fff;
   font-size: 12px;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -184,6 +203,9 @@ function goToDetail() {
   top: 8px;
   left: 8px;
   font-weight: 600;
+  border-radius: 999px !important;
+  border: none !important;
+  background: var(--grad-warm) !important;
 }
 
 .card-info {
@@ -196,6 +218,7 @@ function goToDetail() {
   font-size: 14px;
   font-weight: 600;
   margin: 0;
+  color: var(--text-glass);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

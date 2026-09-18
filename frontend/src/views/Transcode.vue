@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { VideoPlay } from '@element-plus/icons-vue'
@@ -13,22 +13,25 @@ interface FormatInfo {
 
 interface Video {
   id: number
-  title: string
-  filename: string
-  format: string
+  title: string | null
+  filepath: string
+  format: string | null
   duration: number | null
-  status: string
 }
 
 interface TranscodeStatus {
   video_id: number
   is_transcoding: boolean
   status: string
+  progress: number
+  target_format: string | null
+  output_path: string | null
+  error: string | null
 }
 
 const route = useRoute()
 const router = useRouter()
-const videoId = Number(route.params.id)
+const videoId = ref(Number(route.params.id))
 
 const video = ref<Video | null>(null)
 const formats = ref<FormatInfo[]>([])
@@ -36,9 +39,38 @@ const selectedFormat = ref('')
 const transcodeStatus = ref<TranscodeStatus | null>(null)
 const transcoding = ref(false)
 
+const filename = computed(
+  () => video.value?.filepath.split(/[/\\]/).pop() ?? '',
+)
+
+const statusLabels: Record<string, string> = {
+  idle: '空闲',
+  running: '转码中',
+  completed: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+}
+
+const statusLabel = computed(
+  () => statusLabels[transcodeStatus.value?.status ?? 'idle'] ?? transcodeStatus.value?.status,
+)
+
+const statusTagType = computed(() => {
+  switch (transcodeStatus.value?.status) {
+    case 'completed':
+      return 'success'
+    case 'failed':
+      return 'danger'
+    case 'running':
+      return 'warning'
+    default:
+      return 'info'
+  }
+})
+
 const fetchVideo = async () => {
   try {
-    const response = await api.get(`/api/videos/${videoId}`)
+    const response = await api.get(`/videos/${videoId.value}`)
     video.value = response.data
   } catch (error) {
     ElMessage.error('获取视频信息失败')
@@ -48,7 +80,7 @@ const fetchVideo = async () => {
 
 const fetchFormats = async () => {
   try {
-    const response = await api.get('/api/transcode/formats')
+    const response = await api.get('/transcode/formats')
     formats.value = response.data
   } catch (error) {
     console.error('获取格式列表失败:', error)
@@ -57,11 +89,36 @@ const fetchFormats = async () => {
 
 const fetchStatus = async () => {
   try {
-    const response = await api.get(`/api/transcode/${videoId}/status`)
+    const response = await api.get(`/transcode/${videoId.value}/status`)
     transcodeStatus.value = response.data
+    if (transcodeStatus.value?.status === 'completed' && pollTimer) {
+      ElMessage.success('转码完成')
+    }
+    if (transcodeStatus.value?.status === 'failed' && pollTimer) {
+      ElMessage.error(transcodeStatus.value.error ?? '转码失败')
+    }
   } catch (error) {
     console.error('获取转码状态失败:', error)
   }
+}
+
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+function startPolling() {
+  stopPolling()
+  pollTimer = setInterval(async () => {
+    await fetchStatus()
+    if (!transcodeStatus.value?.is_transcoding) {
+      stopPolling()
+    }
+  }, 1500)
 }
 
 const startTranscode = async () => {
@@ -78,12 +135,13 @@ const startTranscode = async () => {
     )
 
     transcoding.value = true
-    await api.post(`/api/transcode/${videoId}`, {
+    await api.post(`/transcode/${videoId.value}`, {
       target_format: selectedFormat.value
     })
 
     ElMessage.success('转码任务已启动')
-    fetchStatus()
+    await fetchStatus()
+    startPolling()
   } catch (error: any) {
     if (error !== 'cancel') {
       ElMessage.error(error.response?.data?.detail || '转码失败')
@@ -101,9 +159,10 @@ const cancelTranscode = async () => {
       { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
     )
 
-    await api.post(`/api/transcode/${videoId}/cancel`)
+    await api.post(`/transcode/${videoId.value}/cancel`)
     ElMessage.success('转码已取消')
-    fetchStatus()
+    stopPolling()
+    await fetchStatus()
   } catch (error: any) {
     if (error !== 'cancel') {
       ElMessage.error(error.response?.data?.detail || '取消失败')
@@ -118,11 +177,26 @@ const formatDuration = (seconds: number | null) => {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 }
 
-onMounted(() => {
-  fetchVideo()
-  fetchFormats()
-  fetchStatus()
-})
+watch(
+  () => route.params.id,
+  (id) => {
+    if (id == null) return
+    stopPolling()
+    videoId.value = Number(id)
+    transcodeStatus.value = null
+    loadAll()
+  }
+)
+
+const loadAll = async () => {
+  await Promise.all([fetchVideo(), fetchFormats(), fetchStatus()])
+  if (transcodeStatus.value?.is_transcoding) {
+    startPolling()
+  }
+}
+
+onMounted(loadAll)
+onUnmounted(stopPolling)
 </script>
 
 <template>
@@ -135,8 +209,8 @@ onMounted(() => {
 
     <div v-if="video" class="content-card">
       <el-descriptions title="视频信息" :column="2" border>
-        <el-descriptions-item label="视频标题">{{ video.title }}</el-descriptions-item>
-        <el-descriptions-item label="文件名">{{ video.filename }}</el-descriptions-item>
+        <el-descriptions-item label="视频标题">{{ video.title || filename }}</el-descriptions-item>
+        <el-descriptions-item label="文件名">{{ filename }}</el-descriptions-item>
         <el-descriptions-item label="当前格式">{{ video.format?.toUpperCase() }}</el-descriptions-item>
         <el-descriptions-item label="时长">{{ formatDuration(video.duration) }}</el-descriptions-item>
       </el-descriptions>
@@ -192,9 +266,24 @@ onMounted(() => {
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="当前状态">
-            <el-tag :type="transcodeStatus?.status === 'completed' ? 'success' : 'primary'">
-              {{ transcodeStatus?.status || '未知' }}
+            <el-tag :type="statusTagType">
+              {{ statusLabel || '未知' }}
             </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item v-if="transcodeStatus?.target_format" label="目标格式">
+            {{ transcodeStatus.target_format.toUpperCase() }}
+          </el-descriptions-item>
+          <el-descriptions-item v-if="transcodeStatus?.is_transcoding" label="进度">
+            <el-progress
+              :percentage="Math.round(transcodeStatus?.progress ?? 0)"
+              :stroke-width="14"
+              striped
+              striped-flow
+              style="width: 320px"
+            />
+          </el-descriptions-item>
+          <el-descriptions-item v-if="transcodeStatus?.error" label="失败原因">
+            <span class="status-error">{{ transcodeStatus.error }}</span>
           </el-descriptions-item>
         </el-descriptions>
       </div>
@@ -220,16 +309,23 @@ onMounted(() => {
 }
 
 .page-title {
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 800;
+  background: var(--grad-text);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .content-card {
   margin-top: 20px;
-  padding: 20px;
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  padding: 24px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  box-shadow: var(--glass-shadow);
 }
 
 .transcode-section,
@@ -242,6 +338,11 @@ onMounted(() => {
 .status-section h3,
 .formats-section h3 {
   margin-bottom: 15px;
-  color: #303133;
+  color: var(--text-glass);
+}
+
+.status-error {
+  color: var(--el-color-danger);
+  word-break: break-all;
 }
 </style>

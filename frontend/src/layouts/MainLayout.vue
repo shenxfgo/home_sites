@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   HomeFilled,
@@ -8,13 +8,11 @@ import {
   Star,
   CollectionTag,
   Setting,
-  Menu,
 } from '@element-plus/icons-vue'
 import NotificationCenter from '@/components/NotificationCenter.vue'
 
 const router = useRouter()
 const route = useRoute()
-const isCollapse = ref(false)
 
 const navItems = [
   { path: '/', label: '首页', icon: HomeFilled },
@@ -39,133 +37,116 @@ function navigate(path: string) {
 </script>
 
 <template>
-  <el-container class="layout-container">
-    <!-- Sidebar -->
-    <el-aside :width="isCollapse ? '64px' : '220px'" class="layout-aside">
-      <div class="logo-area">
-        <span v-if="!isCollapse" class="logo-text">Home Sites</span>
-        <span v-else class="logo-text-short">HS</span>
-      </div>
-      <el-menu
-        :default-active="activeMenu"
-        :collapse="isCollapse"
-        class="layout-menu"
-        @select="navigate"
-      >
-        <el-menu-item
+  <div class="layout-root">
+    <!-- 顶部玻璃导航栏 -->
+    <header class="top-nav glass-panel">
+      <div class="logo-area gradient-text" @click="navigate('/')">Home Sites</div>
+
+      <nav class="nav-menu">
+        <button
           v-for="item in navItems"
           :key="item.path"
-          :index="item.path"
+          class="nav-item"
+          :class="{ active: activeMenu === item.path }"
+          @click="navigate(item.path)"
         >
-          <el-icon><component :is="item.icon" /></el-icon>
-          <template #title>{{ item.label }}</template>
-        </el-menu-item>
-      </el-menu>
-    </el-aside>
+          <el-icon :size="15"><component :is="item.icon" /></el-icon>
+          <span>{{ item.label }}</span>
+        </button>
+      </nav>
 
-    <!-- Main area -->
-    <el-container class="layout-main-container">
-      <el-header class="layout-header">
-        <el-button
-          :icon="Menu"
-          text
-          @click="isCollapse = !isCollapse"
-        />
-        <span class="header-title">{{ route.meta.title }}</span>
-        <div class="header-spacer" />
+      <div class="nav-right">
         <NotificationCenter />
-      </el-header>
+      </div>
+    </header>
 
-      <el-main class="layout-main">
-        <router-view v-slot="{ Component }">
-          <transition name="fade" mode="out-in">
-            <component :is="Component" />
-          </transition>
-        </router-view>
-      </el-main>
-    </el-container>
-  </el-container>
+    <!-- 内容区 -->
+    <main class="layout-main">
+      <router-view v-slot="{ Component }">
+        <transition name="pop" mode="out-in">
+          <component :is="Component" />
+        </transition>
+      </router-view>
+    </main>
+  </div>
 </template>
 
-<style>
-/* 使用全局样式以支持深色模式 */
-.layout-container {
+<style scoped>
+.layout-root {
+  display: flex;
+  flex-direction: column;
   height: 100vh;
 }
 
-.layout-aside {
-  background-color: var(--aside-bg, var(--el-menu-bg-color));
-  border-right: 1px solid var(--el-border-color-lighter);
-  transition: width 0.3s;
-  overflow: hidden;
+.top-nav {
+  position: sticky;
+  top: 12px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin: 12px 16px 0;
+  padding: 0 20px;
+  height: 58px;
+  border-radius: 999px;
 }
 
 .logo-area {
-  height: 60px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-bottom: 1px solid var(--el-border-color-lighter);
-}
-
-.logo-text {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--el-color-primary);
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  cursor: pointer;
   white-space: nowrap;
+  user-select: none;
 }
 
-.logo-text-short {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--el-color-primary);
-}
-
-.layout-menu {
-  border-right: none;
-}
-
-.layout-main-container {
-  display: flex;
-  flex-direction: column;
-}
-
-.layout-header {
+.nav-menu {
   display: flex;
   align-items: center;
-  height: 60px;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--el-border-color-lighter);
-  background-color: var(--header-bg, var(--el-bg-color));
-}
-
-.header-title {
-  font-size: 16px;
-  font-weight: 500;
-  margin-left: 8px;
-  color: var(--el-text-color-primary);
-}
-
-.header-spacer {
+  gap: 6px;
   flex: 1;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.nav-menu::-webkit-scrollbar {
+  display: none;
+}
+
+.nav-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-glass);
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.22s ease;
+}
+
+.nav-item:hover {
+  background: rgba(124, 108, 255, 0.12);
+  transform: translateY(-1px);
+}
+
+.nav-item.active {
+  background: var(--grad-primary);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(124, 108, 255, 0.4);
+}
+
+.nav-right {
+  display: flex;
+  align-items: center;
 }
 
 .layout-main {
   flex: 1;
-  background-color: var(--main-bg, var(--el-bg-color-page));
   overflow-y: auto;
-}
-
-/* 深色模式 */
-:root[data-theme="dark"] .layout-aside {
-  --aside-bg: #1d1e1f;
-}
-
-:root[data-theme="dark"] .layout-header {
-  --header-bg: #1d1e1f;
-}
-
-:root[data-theme="dark"] .layout-main {
-  --main-bg: #0a0a0a;
+  padding: 24px;
 }
 </style>

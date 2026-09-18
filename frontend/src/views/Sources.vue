@@ -79,7 +79,7 @@ async function handleDelete(source: Source) {
 async function handleScanAll() {
   scanning.value = true
   try {
-    const result = await api.post('/api/scan/all')
+    const result = await api.post('/scan/all')
     ElMessage.success(`扫描完成: 发现 ${result.data.total_files} 个文件, ${result.data.total_new_videos} 个新视频`)
     await loadSources()
   } catch (err: unknown) {
@@ -91,7 +91,7 @@ async function handleScanAll() {
 
 async function handleScanSource(source: Source) {
   try {
-    const result = await api.post(`/api/sources/${source.id}/scan`)
+    const result = await api.post(`/sources/${source.id}/scan`)
     ElMessage.success(`扫描 "${source.name}" 完成: 发现 ${result.data.files_found} 个文件, ${result.data.new_videos} 个新视频`)
     await loadSources()
   } catch (err: unknown) {

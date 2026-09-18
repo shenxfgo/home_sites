@@ -86,12 +86,25 @@ function formatDateTime(iso: string | null): string {
 .source-card {
   display: flex;
   flex-direction: column;
+  background: var(--glass-bg) !important;
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border) !important;
+  border-radius: 20px !important;
+  box-shadow: var(--glass-shadow) !important;
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease;
+}
+
+.source-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--glass-shadow-hover) !important;
 }
 
 .source-card :deep(.el-card__body) {
   flex: 1;
   display: flex;
   flex-direction: column;
+  padding: 18px;
 }
 
 .card-header {
@@ -104,13 +117,22 @@ function formatDateTime(iso: string | null): string {
 .card-title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 16px;
   font-weight: 600;
+  color: var(--text-glass);
 }
 
 .type-icon {
-  color: var(--el-color-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: var(--grad-primary);
+  color: #fff !important;
+  box-shadow: 0 4px 12px rgba(124, 108, 255, 0.35);
 }
 
 .card-body {

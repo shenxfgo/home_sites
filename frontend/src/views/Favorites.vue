@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { StarFilled, VideoCamera } from '@element-plus/icons-vue'
 import { listFavorites, removeFavorite } from '@/api/favorites'
+import { thumbnailUrl } from '@/api/videos'
 import type { Video } from '@/types/video'
 
 const router = useRouter()
@@ -114,7 +115,7 @@ onMounted(loadFavorites)
         <div class="card-thumb" @click="goToVideo(video.id)">
           <img
             v-if="video.thumbnail_path"
-            :src="video.thumbnail_path"
+            :src="thumbnailUrl(video.id)"
             :alt="video.title ?? 'Video'"
           />
           <div v-else class="thumb-placeholder">
@@ -207,8 +208,8 @@ onMounted(loadFavorites)
   width: 100%;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border-radius: 4px;
-  background-color: #f5f7fa;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(124, 108, 255, 0.12), rgba(255, 107, 157, 0.12));
   margin-bottom: 12px;
   cursor: pointer;
   position: relative;
@@ -232,11 +233,12 @@ onMounted(loadFavorites)
   position: absolute;
   bottom: 8px;
   right: 8px;
-  background-color: rgba(0, 0, 0, 0.75);
+  background-color: rgba(10, 8, 24, 0.65);
+  backdrop-filter: blur(6px);
   color: #fff;
   font-size: 12px;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
   font-variant-numeric: tabular-nums;
 }
 

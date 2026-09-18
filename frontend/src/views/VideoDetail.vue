@@ -19,6 +19,7 @@ import {
   getVideo,
   updateVideo,
   deleteVideo,
+  thumbnailUrl,
 } from '@/api/videos'
 import {
   checkFavorite,
@@ -248,7 +249,7 @@ onMounted(() => {
         </div>
         <div v-else class="preview-area" @click="handlePlay">
           <div v-if="video.thumbnail_path" class="preview-thumbnail">
-            <img :src="video.thumbnail_path" :alt="video.title ?? 'Video'" />
+            <img :src="thumbnailUrl(video.id)" :alt="video.title ?? 'Video'" />
             <div class="play-overlay">
               <div class="play-button-large">
                 <el-icon :size="48" color="white">
@@ -482,9 +483,9 @@ onMounted(() => {
   width: 100%;
   aspect-ratio: 16 / 9;
   max-height: 480px;
-  border-radius: 8px;
+  border-radius: 16px;
   overflow: hidden;
-  background-color: #f5f7fa;
+  background: linear-gradient(135deg, rgba(124, 108, 255, 0.12), rgba(255, 107, 157, 0.12));
   cursor: pointer;
   position: relative;
 }
