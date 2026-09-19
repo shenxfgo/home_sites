@@ -97,7 +97,7 @@ onMounted(loadFavorites)
       description="暂无收藏视频。"
     >
       <template #image>
-        <el-icon :size="64" color="#f7ba2a">
+        <el-icon :size="64" color="var(--star-filled)">
           <StarFilled />
         </el-icon>
       </template>
@@ -119,7 +119,7 @@ onMounted(loadFavorites)
             :alt="video.title ?? 'Video'"
           />
           <div v-else class="thumb-placeholder">
-            <el-icon :size="48" color="#c0c4cc">
+            <el-icon :size="48" color="var(--text-glass-secondary)">
               <VideoCamera />
             </el-icon>
           </div>
@@ -208,8 +208,8 @@ onMounted(loadFavorites)
   width: 100%;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgba(124, 108, 255, 0.12), rgba(255, 107, 157, 0.12));
+  border-radius: var(--radius-tile);
+  background: var(--tile-bg);
   margin-bottom: 12px;
   cursor: pointer;
   position: relative;
@@ -233,12 +233,11 @@ onMounted(loadFavorites)
   position: absolute;
   bottom: 8px;
   right: 8px;
-  background-color: rgba(10, 8, 24, 0.65);
-  backdrop-filter: blur(6px);
+  background-color: var(--overlay-badge);
   color: #fff;
   font-size: 12px;
-  padding: 3px 9px;
-  border-radius: 999px;
+  padding: 2px 7px;
+  border-radius: 6px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -259,7 +258,7 @@ onMounted(loadFavorites)
 }
 
 .video-title:hover {
-  color: var(--el-color-primary);
+  color: var(--accent);
 }
 
 .video-meta {

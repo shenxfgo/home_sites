@@ -7,7 +7,7 @@ const router = useRouter()
 <template>
   <div class="not-found">
     <div class="glass-panel notice">
-      <p class="code gradient-text">404</p>
+      <p class="code accent-text">404</p>
       <h2 class="title">页面不存在</h2>
       <p class="desc">地址可能拼错了，或者这个页面还没有上线</p>
       <div class="actions">
@@ -29,7 +29,7 @@ const router = useRouter()
   max-width: 420px;
   padding: 40px 48px;
   text-align: center;
-  border-radius: 24px;
+  border-radius: var(--radius-panel);
 }
 
 .code {

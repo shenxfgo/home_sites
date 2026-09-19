@@ -123,7 +123,7 @@ onMounted(() => {
               :alt="video.title ?? 'Video'"
             />
             <div v-else class="thumb-placeholder">
-              <el-icon :size="36" color="#c0c4cc">
+              <el-icon :size="36" color="var(--text-glass-secondary)">
                 <VideoCamera />
               </el-icon>
             </div>
@@ -255,8 +255,8 @@ onMounted(() => {
   width: 100%;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgba(124, 108, 255, 0.12), rgba(255, 107, 157, 0.12));
+  border-radius: var(--radius-tile);
+  background: var(--tile-bg);
   margin-bottom: 8px;
 }
 
@@ -300,7 +300,7 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  color: var(--el-color-primary);
+  color: var(--accent);
 }
 
 .video-link:hover {

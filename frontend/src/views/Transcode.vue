@@ -310,21 +310,16 @@ onUnmounted(stopPolling)
 
 .page-title {
   font-size: 22px;
-  font-weight: 800;
-  background: var(--grad-text);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  font-weight: 700;
+  color: var(--text-glass);
 }
 
 .content-card {
   margin-top: 20px;
   padding: 24px;
   background: var(--glass-bg);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
+  border-radius: var(--radius-panel);
   box-shadow: var(--glass-shadow);
 }
 

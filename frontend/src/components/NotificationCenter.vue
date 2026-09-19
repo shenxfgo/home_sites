@@ -116,9 +116,9 @@ function formatTime(dateStr: string): string {
 }
 
 .notification-badge :deep(.el-button:hover) {
-  background: rgba(124, 108, 255, 0.12);
-  border-color: var(--el-color-primary);
-  color: var(--el-color-primary);
+  background: var(--tile-bg);
+  border-color: var(--glass-border-strong);
+  color: var(--accent);
 }
 
 .notification-header {
@@ -136,16 +136,16 @@ function formatTime(dateStr: string): string {
   gap: 12px;
   padding: 12px;
   cursor: pointer;
-  border-radius: 14px;
-  transition: background-color 0.2s;
+  border-radius: var(--radius-tile);
+  transition: background-color 0.16s ease;
 }
 
 .notification-item:hover {
-  background-color: rgba(124, 108, 255, 0.1);
+  background-color: var(--tile-bg);
 }
 
 .notification-item.unread {
-  background: linear-gradient(135deg, rgba(124, 108, 255, 0.14), rgba(255, 107, 157, 0.08));
+  background: var(--accent-soft);
 }
 
 .notification-icon {

@@ -34,7 +34,7 @@ import 'element-plus/theme-chalk/dark/css-vars.css'
 import router from './router'
 import App from './App.vue'
 import './styles/global.css'
-import './styles/glass.css'
+import './styles/theme.css'
 
 // 只注册模板里真正用到的组件：app.use(ElementPlus) 会引用全部组件，
 // tree-shaking 完全失效，入口 chunk 因此多出约 600 kB。

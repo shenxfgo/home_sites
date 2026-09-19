@@ -38,9 +38,9 @@ function navigate(path: string) {
 
 <template>
   <div class="layout-root">
-    <!-- 顶部玻璃导航栏 -->
-    <header class="top-nav glass-panel">
-      <div class="logo-area gradient-text" @click="navigate('/')">Home Sites</div>
+    <!-- 顶部导航栏 -->
+    <header class="top-nav">
+      <div class="logo-area accent-text" @click="navigate('/')">Home Sites</div>
 
       <nav class="nav-menu">
         <button
@@ -80,21 +80,21 @@ function navigate(path: string) {
 
 .top-nav {
   position: sticky;
-  top: 12px;
+  top: 0;
   z-index: 100;
   display: flex;
   align-items: center;
   gap: 24px;
-  margin: 12px 16px 0;
-  padding: 0 20px;
-  height: 58px;
-  border-radius: 999px;
+  padding: 0 24px;
+  height: 56px;
+  background: var(--surface-bg);
+  border-bottom: 1px solid var(--glass-border);
 }
 
 .logo-area {
-  font-size: 20px;
-  font-weight: 800;
-  letter-spacing: 0.5px;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
@@ -117,26 +117,26 @@ function navigate(path: string) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
+  padding: 7px 14px;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-tile);
   background: transparent;
-  color: var(--text-glass);
+  color: var(--text-glass-secondary);
   font-size: 14px;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.22s ease;
+  transition: color 0.16s ease, background-color 0.16s ease;
 }
 
 .nav-item:hover {
-  background: rgba(124, 108, 255, 0.12);
-  transform: translateY(-1px);
+  background: var(--tile-bg);
+  color: var(--text-glass);
 }
 
 .nav-item.active {
-  background: var(--grad-primary);
-  color: #fff;
-  box-shadow: 0 4px 14px rgba(124, 108, 255, 0.4);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .nav-right {

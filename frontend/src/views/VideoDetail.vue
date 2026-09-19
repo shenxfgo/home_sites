@@ -259,7 +259,7 @@ onMounted(() => {
             </div>
           </div>
           <div v-else class="preview-placeholder">
-            <el-icon :size="72" color="#c0c4cc">
+            <el-icon :size="72" color="var(--text-glass-secondary)">
               <VideoCamera />
             </el-icon>
             <span>暂无预览</span>
@@ -483,9 +483,9 @@ onMounted(() => {
   width: 100%;
   aspect-ratio: 16 / 9;
   max-height: 480px;
-  border-radius: 16px;
+  border-radius: var(--radius-tile);
   overflow: hidden;
-  background: linear-gradient(135deg, rgba(124, 108, 255, 0.12), rgba(255, 107, 157, 0.12));
+  background: var(--tile-bg);
   cursor: pointer;
   position: relative;
 }
@@ -520,7 +520,7 @@ onMounted(() => {
 .play-button-large {
   width: 80px;
   height: 80px;
-  background: rgba(64, 158, 255, 0.9);
+  background: var(--accent-fill);
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -576,12 +576,14 @@ onMounted(() => {
 }
 
 .star-icon {
-  color: #dcdfe6;
+  color: var(--text-glass-secondary);
+  opacity: 0.4;
   cursor: default;
 }
 
 .star-icon.filled {
-  color: #f7ba2a;
+  color: var(--star-filled);
+  opacity: 1;
 }
 
 .star-icon.editable {

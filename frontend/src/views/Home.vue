@@ -92,13 +92,13 @@ onMounted(() => {
     <!-- Hero -->
     <div class="hero glass-panel">
       <h1 class="hero-title">
-        你好，<span class="gradient-text">放映时光</span>
+        你好，<span class="accent-text">放映时光</span>
       </h1>
       <p class="hero-sub">共 {{ total }} 个视频，挑一部开始今天的观影吧</p>
     </div>
 
     <!-- Toolbar -->
-    <div class="toolbar glass-panel">
+    <div class="toolbar">
       <el-input
         v-model="search"
         placeholder="搜索视频..."
@@ -166,31 +166,19 @@ onMounted(() => {
 }
 
 .hero {
-  padding: 28px 32px;
-  margin-bottom: 20px;
-  border-radius: 24px;
+  padding: 26px 28px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-panel);
+  border-left: 3px solid var(--accent);
   overflow: hidden;
   position: relative;
 }
 
-.hero::after {
-  content: "";
-  position: absolute;
-  right: -60px;
-  top: -60px;
-  width: 220px;
-  height: 220px;
-  border-radius: 50%;
-  background: var(--grad-primary);
-  opacity: 0.18;
-  filter: blur(30px);
-  pointer-events: none;
-}
-
 .hero-title {
   margin: 0 0 6px;
-  font-size: 26px;
-  font-weight: 800;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
   color: var(--text-glass);
 }
 
@@ -205,8 +193,6 @@ onMounted(() => {
   gap: 12px;
   margin-bottom: 20px;
   flex-wrap: wrap;
-  padding: 14px 16px;
-  border-radius: 18px;
 }
 
 .search-input {
@@ -219,8 +205,8 @@ onMounted(() => {
 
 .video-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
   min-height: 200px;
 }
 

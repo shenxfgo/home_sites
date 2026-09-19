@@ -70,7 +70,7 @@ function goToDetail() {
         class="thumbnail-img"
       />
       <div v-else class="thumbnail-placeholder">
-        <el-icon :size="48" color="#c0c4cc">
+        <el-icon :size="48" color="var(--text-glass-secondary)">
           <VideoCamera />
         </el-icon>
       </div>
@@ -135,23 +135,19 @@ function goToDetail() {
 <style scoped>
 .video-card {
   cursor: pointer;
-  overflow: hidden;
-  background: var(--glass-bg) !important;
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-border) !important;
-  border-radius: 20px !important;
-  box-shadow: var(--glass-shadow) !important;
-  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  transition: transform 0.18s ease-out;
 }
 
 .video-card:hover {
-  transform: translateY(-6px) scale(1.01);
-  box-shadow: var(--glass-shadow-hover) !important;
+  transform: translateY(-2px);
 }
 
 .video-card :deep(.el-card__body) {
-  padding: 14px;
+  padding: 0;
 }
 
 .thumbnail-area {
@@ -159,9 +155,14 @@ function goToDetail() {
   width: 100%;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  background-color: rgba(124, 108, 255, 0.08);
-  border-radius: 14px;
-  margin-bottom: 12px;
+  background-color: var(--tile-bg);
+  border-radius: var(--radius-tile);
+  margin-bottom: 10px;
+  transition: box-shadow 0.18s ease-out;
+}
+
+.video-card:hover .thumbnail-area {
+  box-shadow: var(--glass-shadow-hover);
 }
 
 .thumbnail-img {
@@ -172,7 +173,7 @@ function goToDetail() {
 }
 
 .video-card:hover .thumbnail-img {
-  transform: scale(1.05);
+  transform: scale(1.04);
 }
 
 .thumbnail-placeholder {
@@ -181,20 +182,18 @@ function goToDetail() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, rgba(124, 108, 255, 0.12), rgba(255, 107, 157, 0.12));
+  background: var(--tile-bg);
 }
 
 .duration-badge {
   position: absolute;
   bottom: 8px;
   right: 8px;
-  background-color: rgba(10, 8, 24, 0.65);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background-color: var(--overlay-badge);
   color: #fff;
   font-size: 12px;
-  padding: 3px 9px;
-  border-radius: 999px;
+  padding: 2px 7px;
+  border-radius: 6px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -203,15 +202,16 @@ function goToDetail() {
   top: 8px;
   left: 8px;
   font-weight: 600;
-  border-radius: 999px !important;
+  border-radius: 6px !important;
   border: none !important;
-  background: var(--grad-warm) !important;
+  background: var(--accent-fill) !important;
 }
 
 .card-info {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+  padding: 0 2px;
 }
 
 .video-title {
@@ -238,11 +238,13 @@ function goToDetail() {
 }
 
 .star-icon {
-  color: #dcdfe6;
+  color: var(--text-glass-secondary);
+  opacity: 0.4;
 }
 
 .star-icon.filled {
-  color: #f7ba2a;
+  color: var(--star-filled);
+  opacity: 1;
 }
 
 .view-count {
@@ -256,10 +258,5 @@ function goToDetail() {
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 2px;
-}
-
-.tag-item {
-  color: #fff;
-  border: none;
 }
 </style>

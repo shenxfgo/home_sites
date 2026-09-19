@@ -31,11 +31,8 @@ html, body {
 
 .page-header h2 {
   font-size: 22px;
-  font-weight: 800;
-  background: var(--grad-text);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  font-weight: 700;
+  color: var(--text-glass);
 }
 
 .page-content {

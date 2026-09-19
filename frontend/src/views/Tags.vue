@@ -248,14 +248,14 @@ onMounted(loadTags)
 .tag-card {
   background: var(--el-bg-color);
   border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   padding: 16px;
-  transition: box-shadow 0.2s, border-color 0.2s;
+  transition: box-shadow 0.18s ease-out, border-color 0.18s ease-out;
 }
 
 .tag-card:hover {
-  border-color: var(--el-color-primary-light-5);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  border-color: var(--glass-border-strong);
+  box-shadow: var(--glass-shadow-hover);
 }
 
 .tag-card-content {

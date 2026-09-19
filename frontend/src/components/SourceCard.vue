@@ -87,16 +87,14 @@ function formatDateTime(iso: string | null): string {
   display: flex;
   flex-direction: column;
   background: var(--glass-bg) !important;
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-border) !important;
-  border-radius: 20px !important;
+  border-radius: var(--radius-panel) !important;
   box-shadow: var(--glass-shadow) !important;
-  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease;
+  transition: border-color 0.18s ease-out, box-shadow 0.18s ease-out;
 }
 
 .source-card:hover {
-  transform: translateY(-4px);
+  border-color: var(--glass-border-strong) !important;
   box-shadow: var(--glass-shadow-hover) !important;
 }
 
@@ -129,10 +127,9 @@ function formatDateTime(iso: string | null): string {
   justify-content: center;
   width: 36px;
   height: 36px;
-  border-radius: 12px;
-  background: var(--grad-primary);
+  border-radius: var(--radius-tile);
+  background: var(--accent-fill);
   color: #fff !important;
-  box-shadow: 0 4px 12px rgba(124, 108, 255, 0.35);
 }
 
 .card-body {

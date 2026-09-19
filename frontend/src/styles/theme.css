@@ -1,0 +1,344 @@
+/* ===== 影院主题基座 =====
+ * 两套主题同源：近黑影院黑 + 纸白变体，封面优先、单一强调色、无磨砂无光斑
+ * 主题切换：html[data-theme="light"|"dark"]（由 useTheme 管理，同时挂 html.dark 给 Element Plus）
+ * --glass-* 与 .glass-panel 是历史命名，保留为主题钩子，各组件只消费这些变量
+ */
+
+/* ---- 强调色与圆角 ----
+ * --accent 是"写在表面上"的强调色，--accent-fill 是"垫在文字下面"的实底色，
+ * 同一个紫色同时满足白字 4.5:1 与深底 4.5:1 做不到，所以拆成两个 */
+:root {
+  --accent-fill: #6a58f5;
+  --accent-hover: #5b48e0;
+  --accent-soft: rgba(124, 108, 255, 0.12);
+  --accent-ring: rgba(124, 108, 255, 0.35);
+  --star-filled: #f5a623;
+
+  /* 语义色同样分两种用途：垫白字的实底色、写在表面上的文字色。
+     浅色下两者同色，深色下 Element Plus 的默认色只能当文字色，实底必须更深 */
+  --success-solid: #1e7a45;
+  --danger-solid: #c0392b;
+  --warning-solid: #a15c07;
+
+  --radius-panel: 12px;
+  --radius-tile: 10px;
+  --radius-pill: 999px;
+}
+
+/* ---- 浅色：纸白分层 ---- */
+:root {
+  /* 浅色下强调色要压在 12% 紫染的导航选中底上，#6a58f5 只有 4.2:1，取深一档 */
+  --accent: #5b48e0;
+  --page-bg: #f5f6f8;
+  --surface-bg: #ffffff;
+  --surface-bg-strong: #ffffff;
+  --tile-bg: #eef0f4;
+
+  --glass-bg: var(--surface-bg);
+  --glass-bg-strong: var(--surface-bg-strong);
+  --glass-border: #e2e4ea;
+  --glass-border-strong: #d3d6de;
+  --glass-shadow: 0 1px 2px rgba(18, 20, 26, 0.06);
+  --glass-shadow-hover: 0 10px 24px rgba(18, 20, 26, 0.1);
+
+  --text-glass: #17191f;
+  --text-glass-secondary: #5f6673;
+
+  --chrome-bg: rgba(255, 255, 255, 0.94);
+  --overlay-badge: rgba(18, 20, 26, 0.78);
+}
+
+/* ---- 深色：影院黑 ---- */
+:root[data-theme="dark"] {
+  --accent: #a99dff;
+  --page-bg: #0b0d12;
+  --surface-bg: #14171e;
+  --surface-bg-strong: #1a1e27;
+  --tile-bg: #1e222b;
+
+  --glass-bg: var(--surface-bg);
+  --glass-bg-strong: var(--surface-bg-strong);
+  --glass-border: #262b36;
+  --glass-border-strong: #333a48;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --glass-shadow-hover: 0 14px 32px rgba(0, 0, 0, 0.55);
+
+  --text-glass: #e9ebef;
+  --text-glass-secondary: #98a0ad;
+
+  --accent-soft: rgba(124, 108, 255, 0.12);
+  --chrome-bg: rgba(11, 13, 18, 0.92);
+  --overlay-badge: rgba(0, 0, 0, 0.72);
+
+  --success-solid: #1f7a44;
+  --danger-solid: #a83232;
+  --warning-solid: #8a5c07;
+}
+
+/* ---- Element Plus 变量映射 ---- */
+:root {
+  --el-color-primary: var(--accent-fill);
+  --el-color-primary-light-3: var(--accent-hover);
+  --el-color-primary-light-5: #a99dff;
+  --el-color-primary-light-7: #cbc3ff;
+  --el-color-primary-light-8: #ddd7ff;
+  --el-color-primary-light-9: #ece9ff;
+  --el-color-primary-dark-2: #6355cc;
+
+  /* 浅色的语义色兼作实底与文字，取深色档：白字与页面底都到 4.5:1 以上。
+     Element Plus 的 light-N 色阶是按它原来的亮色基色算死的，这里只换基色，
+     浅染底（light-9）仍成立且更衬文字 */
+  --el-color-success: var(--success-solid);
+  --el-color-warning: var(--warning-solid);
+  --el-color-danger: var(--danger-solid);
+  --el-color-error: var(--danger-solid);
+  --el-color-info: #5f6673;
+
+  --el-border-radius-base: var(--radius-tile);
+  --el-border-radius-small: 8px;
+  --el-font-size-base: 14px;
+
+  --el-bg-color: var(--surface-bg);
+  --el-bg-color-page: var(--page-bg);
+  --el-bg-color-overlay: var(--surface-bg-strong);
+  --el-fill-color-lighter: var(--tile-bg);
+  --el-fill-color-light: var(--tile-bg);
+  --el-text-color-primary: var(--text-glass);
+  --el-text-color-regular: var(--text-glass);
+  --el-text-color-secondary: var(--text-glass-secondary);
+  /* Element Plus 的占位色 #a8abb2 在白底只有 2.3:1，浅色下并到次要文字色 */
+  --el-text-color-placeholder: var(--text-glass-secondary);
+  --el-border-color: var(--glass-border);
+  --el-border-color-light: var(--glass-border);
+  --el-border-color-lighter: var(--glass-border);
+  --el-border-color-extra-light: var(--glass-border);
+}
+
+/* 深色要整组重申：Element Plus 自带的 html.dark 优先级高于 :root，
+   只改个别变量会让主色退回它默认的蓝色 */
+:root[data-theme="dark"] {
+  --el-color-primary: var(--accent-fill);
+  --el-color-primary-light-3: #6355cc;
+  --el-color-primary-light-5: #473f7a;
+  --el-color-primary-light-7: #2e2a4d;
+  --el-color-primary-light-8: #262343;
+  --el-color-primary-light-9: #1d1b33;
+  --el-color-primary-dark-2: #9386ff;
+
+  --el-bg-color: var(--surface-bg);
+  --el-bg-color-page: var(--page-bg);
+  --el-bg-color-overlay: var(--surface-bg-strong);
+  --el-fill-color-lighter: var(--tile-bg);
+  --el-fill-color-light: var(--tile-bg);
+  --el-fill-color-blank: var(--surface-bg);
+  --el-text-color-primary: var(--text-glass);
+  --el-text-color-regular: var(--text-glass);
+  --el-text-color-secondary: var(--text-glass-secondary);
+  --el-border-color: var(--glass-border);
+  --el-border-color-light: var(--glass-border);
+  --el-border-color-lighter: var(--glass-border);
+  --el-border-color-extra-light: var(--glass-border);
+  --el-mask-color: rgba(0, 0, 0, 0.6);
+}
+
+/* ---- 页面底色：深色只留一道顶部微光，不做流动光斑 ---- */
+body {
+  min-height: 100vh;
+  background: var(--page-bg);
+  color: var(--text-glass);
+  -webkit-font-smoothing: antialiased;
+}
+
+:root[data-theme="dark"] body {
+  background:
+    radial-gradient(1100px 380px at 50% -200px, rgba(124, 108, 255, 0.13), transparent 72%)
+      no-repeat fixed,
+    var(--page-bg);
+}
+
+/* ---- 面板工具类 ---- */
+.glass-panel {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--glass-shadow);
+}
+
+.accent-text {
+  color: var(--accent);
+}
+
+/* ---- Element Plus 组件：扁平分层，无磨砂 ---- */
+.el-card {
+  background: var(--glass-bg) !important;
+  border: 1px solid var(--glass-border) !important;
+  border-radius: var(--radius-panel) !important;
+  box-shadow: var(--glass-shadow) !important;
+}
+
+.el-card__header {
+  border-bottom: 1px solid var(--glass-border) !important;
+}
+
+.el-dialog,
+.el-drawer,
+.el-popper.el-popover,
+.el-message-box,
+.el-notification,
+.el-message {
+  background: var(--glass-bg-strong) !important;
+  border: 1px solid var(--glass-border) !important;
+  border-radius: var(--radius-panel) !important;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28) !important;
+}
+
+.el-table,
+.el-table__inner-wrapper,
+.el-table tr,
+.el-table th.el-table__cell {
+  background-color: transparent !important;
+}
+
+.el-table {
+  --el-table-border-color: var(--glass-border);
+  --el-table-header-bg-color: transparent;
+  --el-table-row-hover-bg-color: var(--accent-soft);
+}
+
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  background-color: var(--surface-bg) !important;
+  border-radius: var(--radius-tile) !important;
+  box-shadow: 0 0 0 1px var(--glass-border-strong) inset !important;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused {
+  box-shadow:
+    0 0 0 1px var(--accent) inset,
+    0 0 0 3px var(--accent-ring) !important;
+}
+
+.el-button {
+  border-radius: var(--radius-tile) !important;
+}
+
+/* 主按钮不覆写 background：会连 is-text / is-plain 一起涂上底色，文字与底色同源就看不见字了。
+   深色下 Element Plus 的主按钮文字取 --el-color-primary（实底色，偏暗），换成 --accent 才够对比 */
+:root[data-theme="dark"] .el-button--primary.is-text,
+:root[data-theme="dark"] .el-button--primary.is-link,
+:root[data-theme="dark"] .el-button--primary.is-plain {
+  --el-button-text-color: var(--accent);
+}
+
+/* 实底的语义按钮：深色下 Element Plus 的语义基色是为当文字用的（偏亮），
+   直接垫白字只有 2~3:1，换成同色相的深色档；hover / active 沿同方向再压暗 */
+.el-button--success:not(.is-text):not(.is-link):not(.is-plain),
+.el-button--warning:not(.is-text):not(.is-link):not(.is-plain),
+.el-button--danger:not(.is-text):not(.is-link):not(.is-plain) {
+  --el-button-text-color: #fff;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-text-color: #fff;
+  --el-button-disabled-text-color: rgba(255, 255, 255, 0.6);
+}
+
+.el-button--success:not(.is-text):not(.is-link):not(.is-plain) {
+  --el-button-bg-color: var(--success-solid);
+  --el-button-border-color: var(--success-solid);
+  --el-button-hover-bg-color: color-mix(in srgb, var(--success-solid), #000 12%);
+  --el-button-hover-border-color: color-mix(in srgb, var(--success-solid), #000 12%);
+  --el-button-active-bg-color: color-mix(in srgb, var(--success-solid), #000 20%);
+}
+
+.el-button--warning:not(.is-text):not(.is-link):not(.is-plain) {
+  --el-button-bg-color: var(--warning-solid);
+  --el-button-border-color: var(--warning-solid);
+  --el-button-hover-bg-color: color-mix(in srgb, var(--warning-solid), #000 12%);
+  --el-button-hover-border-color: color-mix(in srgb, var(--warning-solid), #000 12%);
+  --el-button-active-bg-color: color-mix(in srgb, var(--warning-solid), #000 20%);
+}
+
+.el-button--danger:not(.is-text):not(.is-link):not(.is-plain) {
+  --el-button-bg-color: var(--danger-solid);
+  --el-button-border-color: var(--danger-solid);
+  --el-button-hover-bg-color: color-mix(in srgb, var(--danger-solid), #000 12%);
+  --el-button-hover-border-color: color-mix(in srgb, var(--danger-solid), #000 12%);
+  --el-button-active-bg-color: color-mix(in srgb, var(--danger-solid), #000 20%);
+}
+
+.el-badge__content--danger {
+  background-color: var(--danger-solid);
+}
+
+/* 数据色标签：el-tag 的 color 属性落成内联 background-color，色相由用户自选，
+   白字压在上面无法保证对比度。用主题底色覆一层半透明膜把它压成同色相浅染，
+   文字回到主题文字色，色相由浅染和边框保留 */
+.el-tag[style*="background-color"] {
+  position: relative;
+  overflow: hidden;
+  color: var(--text-glass);
+}
+
+.el-tag[style*="background-color"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--surface-bg);
+  opacity: 0.78;
+}
+
+.el-tag[style*="background-color"] .el-tag__content {
+  position: relative;
+}
+
+.el-tag {
+  border-radius: 6px !important;
+}
+
+.el-pagination.is-background .el-pager li,
+.el-pagination.is-background .btn-prev,
+.el-pagination.is-background .btn-next {
+  background: var(--glass-bg) !important;
+  border-radius: 8px !important;
+}
+
+.el-pagination.is-background .el-pager li.is-active {
+  background: var(--accent-fill) !important;
+  color: #fff !important;
+}
+
+.el-popper.el-select-dropdown,
+.el-popper.el-dropdown__popper,
+.el-picker-panel {
+  background: var(--glass-bg-strong) !important;
+  border: 1px solid var(--glass-border) !important;
+  border-radius: var(--radius-panel) !important;
+}
+
+/* ---- 路由切换：轻微上浮淡入 ---- */
+.pop-enter-active {
+  transition:
+    opacity 0.18s ease-out,
+    transform 0.18s ease-out;
+}
+
+.pop-leave-active {
+  transition: opacity 0.12s ease-in;
+}
+
+.pop-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.pop-leave-to {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pop-enter-active,
+  .pop-leave-active {
+    transition: none;
+  }
+}
