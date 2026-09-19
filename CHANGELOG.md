@@ -2,6 +2,17 @@
 
 ## 2026-09-20
 
+### 新增功能：片单/合集，"今晚看这些"先排成一份队列
+
+- **两张表而不是一个 JSON 字段**：`watchlists(name, description, created_at)` + `watchlist_items(watchlist_id, video_id, added_at)`，后者带 `UniqueConstraint(watchlist_id, video_id)` 与 `cascade="all, delete-orphan"`。用真正的关联实体而不是 `Table` 中间表，是因为接口要立刻把刚改完的队列返回去。顺序按加入时间排（`order_by("WatchlistItem.id")`），没有 `position` 列——本片单不支持手工拖动排序
+- **一个 SQLAlchemy 异步坑**：同一个 session 里做了原始插入/删除之后，身份映射中的 ORM 对象仍持有**旧的集合**，直接返回会给前端一份过期的队列（实测 11 个用例连片单都读成空的）。`watchlist_service._with_videos()` 统一带 `execution_options(populate_existing=True)`，写入方法一律重新查一遍再返回；`create()` 也不能直接返回刚 `add` 的对象，那时集合根本还没加载，访问即 `MissingGreenlet`
+- **端点**：新增 7 个普通 CRUD —— `GET/POST /api/watchlists`（`GET` 支持 `?video_id=` 反查这部片在哪些片单里）、`GET/PUT/DELETE /api/watchlists/{id}`、`POST /api/watchlists/{id}/videos`、`DELETE /api/watchlists/{id}/videos/{video_id}`。**没有新增任何能碰磁盘或提权的端点**，删除片单只删排队行，删影片时 `WatchlistItem` 已加进 `delete_videos_cascade` 的表清单
+- **界面**：顶栏第 6 项"片单"→ `/watchlists`，每份片单一张卡：片名按序号排列、显示"已看"位置、时长求和（`2 部 · 共 1:01:05`），可新建/重命名/移出/删除。影片详情页加「片单」按钮，弹窗里勾选归属（进入时按后端返回的队列预勾），保存只发差集；弹窗底部还能直接"新建片单并加入"
+- **文案讲清楚边界**：移出的 toast 明写"已把「X」移出片单，影片仍在库里"，删除片单的确认框明写"影片本身不会被动"——都是实测行为，不是措辞
+- **测试**：后端 245 → 261 passed（服务层 9 例、新端点 7 例，含"删片单不动影片""删影片清队列"）；前端单测 182 → 199 passed（片单页 13 例、详情页弹窗 4 例）；Playwright e2e 50 → 55 passed；`npm run build`、`npm run typecheck:test` 通过
+- **验证**：隔离后端（临时库 + `:8010`，前端 `:4173` 代理过去，用完即删），种 3 部片 + 2 份片单（一份两条队列、一份空）。真实浏览器实测：顶栏顺序 `首页/视频源/播放历史/观影统计/收藏/片单/标签管理/设置`，页首"2 个片单 · 2 条排队"，队列两行 `1 深夜测试 1:05 · 已看 0:42`、`2 周末纪录片 1:00:00`（行高 56/53px），空片单只留一句"这个片单还空着，去影片详情页点「加入片单」"。详情页弹窗预勾正确（`今晚看这些 2 部` checked、`还没排片 0 部` 未勾），勾上后者保存 → 页首变"3 条排队"且空片单里出现该片；点"移出" → toast"已把「深夜测试」移出片单，影片仍在库里"，同时直接 `GET /api/videos/1` 仍是 **200 `深夜测试`**，库里那行确实没动；删除片单先弹确认（文案含"影片本身不会被动"），取消后仍是 2 张卡、确认后 1 张且 `GET /api/watchlists` 只剩 `还没排片`。两套主题取值：浅色卡底 `rgb(255,255,255)` / 边框 `rgb(226,228,234)` / 圆角 12px / 正文 `rgb(23,25,31)`，深色卡底 `rgb(20,23,30)` / 边框 `rgb(38,43,54)` / 正文 `rgb(233,235,239)` / 页面底 `rgb(11,13,18)`
+- **已知边界**：片单不支持拖拽排序与跨片单去重（同一部片可以同时在几份片单里，各占一条），也不做"看完自动出队"——那需要另一套与统计页联动的规则
+
 ### 新增功能：观影统计页，本月看了多少小时、连看了几天
 
 - **为什么要加一张表**：`play_history` 每部片只有一行，存的是"看到哪儿"，问不出"这个月看了多久"。新增追加式日志 `watch_events(video_id, seconds, occurred_at)`，`occurred_at` 上建索引；删除视频时随级联一起清（`delete_videos_cascade` 的表清单已加）

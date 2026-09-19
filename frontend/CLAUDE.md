@@ -106,6 +106,7 @@ frontend/
 │   │   ├── subtitles.ts   # 字幕 API（列表/登记/删除 + WebVTT 地址）
 │   │   ├── sources.ts     # 视频源 API
 │   │   ├── settings.ts    # 设置 API
+│   │   ├── watchlists.ts  # 片单 API（队列读写 + 进出队列）
 │   │   └── ...
 │   ├── components/         # 可复用组件
 │   │   ├── VideoCard.vue
@@ -119,6 +120,7 @@ frontend/
 │   │   ├── Home.vue       # 首页/视频列表
 │   │   ├── Sources.vue    # 视频源管理
 │   │   ├── Stats.vue      # 观影统计（数字卡 + 纯 CSS 柱状图 + 标签分布）
+│   │   ├── Watchlists.vue # 片单（一份份手排队列，移出/删除只动队列行）
 │   │   ├── Tags.vue       # 标签管理
 │   │   ├── Settings.vue   # 应用设置
 │   │   └── ...

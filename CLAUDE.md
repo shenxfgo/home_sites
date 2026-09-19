@@ -33,6 +33,7 @@
 | 库内核对 | 扫描时找不到的文件只置 `videos.is_missing`，行与历史保留；源目录整体不可访问时不判定；首页横幅可逐条走 `DELETE /api/videos/{id}` 清理 |
 | 重复文件检测 | `GET /api/videos/duplicates`（只读）按 `file_size`+`duration` 分组后再读文件首尾各 1MB 做 SHA-256 确认，给出 `keep_id`（看过优先）与可回收空间；视频源页按需检测，删除仍走既有 DELETE |
 | 观影统计 | 追加式日志 `watch_events` 记录每次进度的正增量，`GET /api/history/stats?days=N`（只读）按 UTC 日历天聚合出本月/区间时长、看过部数、最长连看与标签分布；`/stats` 页纯 CSS 画图，未引入图表库 |
+| 片单/合集 | `watchlists` + `watchlist_items` 两张表存手排队列（按加入顺序，不记位置），`/api/watchlists` 7 个普通 CRUD 端点（含进出队列与 `?video_id=` 反查）；`/watchlists` 页可新建/改名/删除，影片详情页「片单」按钮勾选归属，移出与删除只动队列行、影片留在库里 |
 | 应用设置 | 主题切换、扫描配置 |
 | 深色模式 | 支持浅色/深色/跟随系统 |
 | 全局快捷键 | `/` 聚焦搜索框、`?` 打开快捷键说明（输入框内不拦截） |

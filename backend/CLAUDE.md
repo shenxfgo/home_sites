@@ -65,9 +65,11 @@ backend/
 │   │   ├── video.py       # Video 模型
 │   │   ├── source.py      # VideoSource 模型
 │   │   ├── watch_event.py # WatchEvent 模型（观看时长的追加式日志）
+│   │   ├── watchlist.py   # Watchlist / WatchlistItem 模型（手排队列，一行一条排队记录）
 │   │   └── ...
 │   ├── services/          # 业务逻辑层
 │   │   ├── video_service.py
+│   │   ├── watchlist_service.py # 片单读写，返回前一定重新查，别拿身份映射里的旧集合
 │   │   └── ...
 │   ├── utils/             # 工具函数
 │   │   ├── ffmpeg.py      # FFmpeg 工具
