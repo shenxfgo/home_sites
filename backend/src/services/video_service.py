@@ -1,15 +1,18 @@
 """VideoService for video CRUD operations and playback tracking."""
+import operator
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, select, func
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.video import Video
 from src.models.favorite import Favorite
 from src.models.new_video import NewVideo
 from src.models.history import PlayHistory
+from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
-from src.models.tag import video_tags
+from src.models.tag import Tag, video_tags
+from src.utils.video_search import VideoSearchQuery, parse_video_search
 
 
 def is_completed(progress: int, duration: int | None) -> bool:
@@ -45,6 +48,94 @@ async def delete_videos_cascade(
     await session.execute(delete(Video).where(video_filter))
 
 
+_COMPARATORS = {
+    ">=": operator.ge,
+    ">": operator.gt,
+    "<=": operator.le,
+    "<": operator.lt,
+    "=": operator.eq,
+}
+
+# Correlated EXISTS fragments: a filter on a child table must not multiply the
+# video rows, which is why these stay subqueries instead of joins.
+_PLAYED = select(PlayHistory.id).where(PlayHistory.video_id == Video.id).exists()
+_FINISHED = (
+    select(PlayHistory.id)
+    .where(PlayHistory.video_id == Video.id, PlayHistory.completed == True)  # noqa: E712
+    .exists()
+)
+
+
+def _like(column, term: str):
+    """A ``LIKE`` for a user typed term, with the wildcards inside it escaped."""
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return column.ilike(f"%{escaped}%", escape="\\")
+
+
+def _tagged_with(predicate):
+    """EXISTS for a video carrying a tag that satisfies ``predicate``."""
+    return (
+        select(video_tags.c.video_id)
+        .where(video_tags.c.video_id == Video.id)
+        .join(Tag, Tag.id == video_tags.c.tag_id)
+        .where(predicate)
+        .exists()
+    )
+
+
+def _term_filter(term: str):
+    """Where a single keyword may be found: title, description or tag name."""
+    return or_(_like(Video.title, term), _like(Video.description, term), _tagged_with(_like(Tag.name, term)))
+
+
+def _term_relevance(term: str):
+    """How strongly one keyword matches: a title hit outranks the rest."""
+    return case(
+        (_like(Video.title, term), 2),
+        (_like(Video.description, term), 1),
+        (_tagged_with(_like(Tag.name, term)), 1),
+        else_=0,
+    )
+
+
+def _search_filters(query: VideoSearchQuery) -> list:
+    """Turn a parsed search box into WHERE clauses, terms combined with AND."""
+    filters = [_term_filter(term) for term in query.terms]
+
+    if query.source_name:
+        filters.append(
+            Video.source_id.in_(
+                select(VideoSource.id).where(_like(VideoSource.name, query.source_name))
+            )
+        )
+    if query.tag_name:
+        filters.append(_tagged_with(_like(Tag.name, query.tag_name)))
+    if query.rating:
+        compare, value = query.rating
+        filters.append(_COMPARATORS[compare](Video.rating, value))
+    if query.duration:
+        compare, seconds = query.duration
+        filters.append(_COMPARATORS[compare](Video.duration, seconds))
+    if query.watch_state == "never":
+        filters.append(~_PLAYED)
+    elif query.watch_state == "unfinished":
+        filters.append(_PLAYED & ~_FINISHED)
+    elif query.watch_state == "finished":
+        filters.append(_FINISHED)
+
+    return filters
+
+
+def _search_order(query: VideoSearchQuery) -> list:
+    """Order results, by relevance while keywords are in play."""
+    if query.terms:
+        score = _term_relevance(query.terms[0])
+        for term in query.terms[1:]:
+            score = score + _term_relevance(term)
+        return [score.desc(), Video.created_at.desc(), Video.id.desc()]
+    return [Video.created_at.desc(), Video.id.desc()]
+
+
 class VideoService:
     """Service for managing videos."""
 
@@ -61,23 +152,28 @@ class VideoService:
     ) -> tuple[list[Video], int]:
         """Get videos with optional filtering, search, and pagination.
 
+        ``search`` is free text from the home page and is parsed here; see
+        :mod:`src.utils.video_search` for the operators it accepts.
+
         Returns a tuple of (videos, total_count).
         """
+        filters = []
+        if source_id is not None:
+            filters.append(Video.source_id == source_id)
+        if tag_id is not None:
+            filters.append(
+                Video.id.in_(
+                    select(video_tags.c.video_id).where(video_tags.c.tag_id == tag_id)
+                )
+            )
+        parsed_search = parse_video_search(search)
+        filters.extend(_search_filters(parsed_search))
+
         query = select(Video)
         count_query = select(func.count(Video.id))
-
-        if source_id is not None:
-            query = query.where(Video.source_id == source_id)
-            count_query = count_query.where(Video.source_id == source_id)
-
-        if tag_id is not None:
-            query = query.join(video_tags).where(video_tags.c.tag_id == tag_id)
-            count_query = count_query.join(video_tags).where(video_tags.c.tag_id == tag_id)
-
-        if search:
-            pattern = f"%{search}%"
-            query = query.where(Video.title.ilike(pattern))
-            count_query = count_query.where(Video.title.ilike(pattern))
+        if filters:
+            query = query.where(*filters)
+            count_query = count_query.where(*filters)
 
         # Get total count
         total_result = await self.session.execute(count_query)
@@ -85,7 +181,7 @@ class VideoService:
 
         # Apply pagination
         offset = (page - 1) * page_size
-        query = query.order_by(Video.created_at.desc()).offset(offset).limit(page_size)
+        query = query.order_by(*_search_order(parsed_search)).offset(offset).limit(page_size)
 
         result = await self.session.execute(query)
         videos = list(result.scalars().all())

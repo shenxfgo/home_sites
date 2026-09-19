@@ -23,13 +23,75 @@ test('首页渲染视频卡片和真实缩略图', async ({ page }) => {
   await expect(thumb).toHaveJSProperty('naturalWidth', 1)
 })
 
-test('搜索框按标题过滤视频', async ({ page }) => {
+test('搜索框支持片名、简介、标签、评分、时长与观看状态', async ({ page }) => {
   await page.goto('/')
 
-  await page.getByPlaceholder('搜索视频...').fill('纪录')
+  const box = page.getByPlaceholder('搜索片名、简介或标签…')
+  const cards = page.locator('.video-card')
+
+  // 只出现在片名里
+  await box.fill('深夜')
+  await expect(cards).toHaveCount(1)
+  await expect(cards.first()).toContainText('深夜测试')
+
+  // 只出现在简介里
+  await box.fill('极地')
+  await expect(cards).toHaveCount(1)
+  await expect(cards.first()).toContainText('周末纪录片')
+
+  // 只出现在标签名里
+  await box.fill('动作片')
+  await expect(cards).toHaveCount(1)
+  await expect(cards.first()).toContainText('深夜测试')
+
+  // 多个词之间是且的关系
+  await box.fill('深夜 测试')
+  await expect(cards).toHaveCount(1)
+  await box.fill('深夜 纪录片')
+  await expect(cards).toHaveCount(0)
+
+  await box.fill('评分>=4')
+  await expect(cards).toHaveCount(1)
+  await expect(cards.first()).toContainText('深夜测试')
+
+  await box.fill('时长>40分钟')
+  await expect(cards).toHaveCount(1)
+  await expect(cards.first()).toContainText('周末纪录片')
+
+  await box.fill('源:NAS')
+  await expect(cards).toHaveCount(1)
+  await expect(cards.first()).toContainText('周末纪录片')
+
+  await box.fill('没看过')
+  await expect(cards).toHaveCount(1)
+  await expect(cards.first()).toContainText('周末纪录片')
+
+  await box.fill('未看完')
+  await expect(cards).toHaveCount(1)
+  await expect(cards.first()).toContainText('深夜测试')
+})
+
+test('搜索无结果时给出提示并能一键清除筛选', async ({ page }) => {
+  await page.goto('/')
+
+  await page.getByPlaceholder('搜索片名、简介或标签…').fill('查无此片')
+
+  await expect(page.locator('.empty-hint')).toContainText('没有与「查无此片」匹配的结果')
+
+  await page.getByRole('button', { name: '清除筛选' }).click()
+
+  await expect(page.locator('.video-card')).toHaveCount(2)
+  await expect(page.getByPlaceholder('搜索片名、简介或标签…')).toHaveValue('')
+})
+
+test('标签下拉按标签过滤首页', async ({ page }) => {
+  await page.goto('/')
+
+  await page.locator('.tag-filter').click()
+  await page.getByRole('option', { name: '动作片' }).click()
 
   await expect(page.locator('.video-card')).toHaveCount(1)
-  await expect(page.locator('.video-card').first()).toContainText('周末纪录片')
+  await expect(page.locator('.video-card').first()).toContainText('深夜测试')
 })
 
 test('点击卡片进入视频详情页', async ({ page }) => {

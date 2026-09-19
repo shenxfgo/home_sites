@@ -63,7 +63,7 @@ export const videos: StubVideo[] = [
     source_id: 2,
     filepath: '\\\\nas\\media\\周末纪录片.mkv',
     title: '周末纪录片',
-    description: null,
+    description: '关于极地科考的长纪录片',
     duration: 3600,
     file_size: 4096,
     format: 'mkv',
@@ -131,6 +131,99 @@ export const subtitles = [
 /** WebVTT body the subtitle stream route answers with. */
 export const SAMPLE_VTT = 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n中文测试\n'
 
+/** Which stub videos the fake playback history marks as started. */
+const WATCH_STATE: Record<number, 'never' | 'unfinished' | 'finished'> = { 1: 'unfinished' }
+
+const WATCH_STATE_LABELS: Record<string, string> = {
+  没看过: 'never',
+  未看完: 'unfinished',
+  已看完: 'finished',
+}
+
+const DURATION_UNITS: Record<string, number> = {
+  小时: 3600,
+  分钟: 60,
+  秒: 1,
+  h: 3600,
+  min: 60,
+  m: 60,
+  s: 1,
+}
+
+const NAMED_FILTER = /^(源|视频源|标签)[:：](.+)$/
+const COMPARISON = /^(评分|时长)?\s*(>=|<=|≥|≤|>|<|=)\s*(\S+)$/
+
+function secondsOf(value: string): number | null {
+  const match = /^(\d+(?:\.\d+)?)(小时|分钟|秒|h|min|m|s)?$/i.exec(value)
+  if (!match) return null
+  const unit = match[2] ? DURATION_UNITS[match[2].toLowerCase()] : 60
+  return Math.round(Number(match[1]) * unit)
+}
+
+function satisfies(actual: number | null, op: string, expected: number): boolean {
+  if (actual == null) return false
+  const normalized = op === '≥' ? '>=' : op === '≤' ? '<=' : op
+  if (normalized === '>=') return actual >= expected
+  if (normalized === '<=') return actual <= expected
+  if (normalized === '>') return actual > expected
+  if (normalized === '<') return actual < expected
+  return actual === expected
+}
+
+/**
+ * 搜索框的替身语义，与后端 `src/utils/video_search.py` 同义：关键词同时匹配片名、
+ * 简介和标签名，多个词之间是且的关系。浏览器用例只覆盖"界面把整串发出去并按返回
+ * 渲染"，所以这里不做空格容错，只保证同一种写法两边得到同一批视频。
+ */
+function matchesSearch(video: StubVideo, raw: string): boolean {
+  const haystack = [
+    video.title ?? video.filepath,
+    video.description ?? '',
+    ...video.tags.map((tag) => tag.name),
+  ].map((field) => field.toLowerCase())
+
+  for (const token of raw.match(/"[^"]+"|\S+/g) ?? []) {
+    const quoted = token.startsWith('"')
+    const text = quoted ? token.slice(1, -1) : token
+    const lower = text.toLowerCase()
+
+    if (!quoted) {
+      const named = NAMED_FILTER.exec(text)
+      if (named) {
+        const [, key, value] = named
+        const pool =
+          key === '标签'
+            ? video.tags.map((tag) => tag.name)
+            : [sources.find((source) => source.id === video.source_id)?.name ?? '']
+        if (!pool.some((field) => field.includes(value))) return false
+        continue
+      }
+
+      const comparison = COMPARISON.exec(text)
+      if (comparison) {
+        const [, key, op, value] = comparison
+        const seconds = secondsOf(value)
+        if (key === '时长' || (!key && seconds !== null)) {
+          if (!satisfies(video.duration, op, seconds ?? 0)) return false
+          continue
+        }
+        if (key === '评分' && /^\d+$/.test(value)) {
+          if (!satisfies(video.rating, op, Number(value))) return false
+          continue
+        }
+      }
+
+      if (text in WATCH_STATE_LABELS) {
+        if ((WATCH_STATE[video.id] ?? 'never') !== WATCH_STATE_LABELS[text]) return false
+        continue
+      }
+    }
+
+    if (!haystack.some((field) => field.includes(lower))) return false
+  }
+  return true
+}
+
 /**
  * Stub the whole `/api` surface with a small stateful fake so the browser tests
  * exercise the real app (routing, components, axios layer) without a backend.
@@ -196,10 +289,12 @@ export async function mockApi(page: Page): Promise<void> {
       if (path === '/videos') {
         const search = (url.searchParams.get('search') ?? '').trim()
         const sourceId = url.searchParams.get('source_id')
+        const tagId = url.searchParams.get('tag_id')
         const items = videos.filter(
           (video) =>
-            (!search || (video.title ?? video.filepath).includes(search)) &&
-            (!sourceId || video.source_id === Number(sourceId)),
+            (!search || matchesSearch(video, search)) &&
+            (!sourceId || video.source_id === Number(sourceId)) &&
+            (!tagId || video.tags.some((tag) => tag.id === Number(tagId))),
         )
         return respond(route, { items, total: items.length, page: 1, page_size: 20 })
       }

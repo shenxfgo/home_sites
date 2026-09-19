@@ -1,24 +1,32 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
-import { Search, VideoCamera } from '@element-plus/icons-vue'
+import { computed, ref, watch, onMounted } from 'vue'
+import { QuestionFilled, Search, VideoCamera } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import VideoCard from '@/components/VideoCard.vue'
 import { listVideos } from '@/api/videos'
 import { listSources } from '@/api/sources'
-import type { Video, VideoQueryParams } from '@/types/video'
+import { listTags } from '@/api/tags'
+import type { Tag, Video, VideoQueryParams } from '@/types/video'
 import type { Source } from '@/types/source'
 
 // State
 const videos = ref<Video[]>([])
 const sources = ref<Source[]>([])
+const tags = ref<Tag[]>([])
 const loading = ref(false)
 const total = ref(0)
 
 // Filters
 const search = ref('')
 const selectedSourceId = ref<number | undefined>(undefined)
+const selectedTagId = ref<number | undefined>(undefined)
 const currentPage = ref(1)
 const pageSize = ref(20)
+
+const activeSearch = computed(() => search.value.trim())
+const hasFilters = computed(
+  () => Boolean(activeSearch.value) || selectedSourceId.value != null || selectedTagId.value != null,
+)
 
 async function loadVideos() {
   loading.value = true
@@ -30,8 +38,11 @@ async function loadVideos() {
     if (selectedSourceId.value != null) {
       params.source_id = selectedSourceId.value
     }
-    if (search.value.trim()) {
-      params.search = search.value.trim()
+    if (selectedTagId.value != null) {
+      params.tag_id = selectedTagId.value
+    }
+    if (activeSearch.value) {
+      params.search = activeSearch.value
     }
     const result = await listVideos(params)
     videos.value = result.items
@@ -51,12 +62,33 @@ async function loadSources() {
   }
 }
 
+async function loadTags() {
+  try {
+    tags.value = await listTags()
+  } catch {
+    // Silently ignore — filter will just be empty
+  }
+}
+
 function handleSearch() {
   currentPage.value = 1
   loadVideos()
 }
 
 function handleSourceChange() {
+  currentPage.value = 1
+  loadVideos()
+}
+
+function handleTagChange() {
+  currentPage.value = 1
+  loadVideos()
+}
+
+function clearFilters() {
+  search.value = ''
+  selectedSourceId.value = undefined
+  selectedTagId.value = undefined
   currentPage.value = 1
   loadVideos()
 }
@@ -83,6 +115,7 @@ watch(search, onSearchInput)
 
 onMounted(() => {
   loadSources()
+  loadTags()
   loadVideos()
 })
 </script>
@@ -101,7 +134,7 @@ onMounted(() => {
     <div class="toolbar">
       <el-input
         v-model="search"
-        placeholder="搜索视频..."
+        placeholder="搜索片名、简介或标签…"
         :prefix-icon="Search"
         clearable
         class="search-input"
@@ -122,21 +155,58 @@ onMounted(() => {
           :value="source.id"
         />
       </el-select>
+      <el-select
+        v-model="selectedTagId"
+        placeholder="所有标签"
+        clearable
+        filterable
+        class="tag-filter"
+        @change="handleTagChange"
+      >
+        <el-option v-for="tag in tags" :key="tag.id" :label="tag.name" :value="tag.id" />
+      </el-select>
+      <el-popover placement="bottom-end" :width="330" trigger="click" :persistent="false">
+        <template #reference>
+          <el-button class="syntax-btn" :icon="QuestionFilled" circle text />
+        </template>
+        <div class="syntax-help">
+          <p class="syntax-lead">关键词会同时搜片名、简介和标签名，多个词之间是“且”的关系。</p>
+          <dl>
+            <dt>暗涌 第一季</dt>
+            <dd>两个词都要命中</dd>
+            <dt>"dark hero"</dt>
+            <dd>引号内整体匹配</dd>
+            <dt>标签:悬疑</dt>
+            <dd>只看标签名</dd>
+            <dt>源:剧集</dt>
+            <dd>限定某个视频源</dd>
+            <dt>评分&gt;=4</dt>
+            <dd>也可用 &gt; &lt; &lt;= =</dd>
+            <dt>时长&gt;40分钟</dt>
+            <dd>支持 小时/分钟/秒，省略单位按分钟</dd>
+            <dt>没看过 / 未看完 / 已看完</dt>
+            <dd>按播放进度筛选</dd>
+          </dl>
+        </div>
+      </el-popover>
     </div>
 
     <!-- Empty state -->
     <el-empty
       v-if="!loading && videos.length === 0"
-      description="没有找到视频"
+      :description="activeSearch ? '没有匹配的视频' : '没有找到视频'"
     >
       <template #image>
         <el-icon :size="64" color="var(--el-color-primary)">
           <VideoCamera />
         </el-icon>
       </template>
-      <p style="color: var(--el-text-color-secondary);">
-        {{ search ? '请尝试调整搜索条件或筛选器。' : '添加视频源并扫描即可开始使用。' }}
+      <p v-if="activeSearch" class="empty-hint">
+        没有与「{{ activeSearch }}」匹配的结果，换个关键词或去掉部分筛选试试。
       </p>
+      <p v-else-if="hasFilters" class="empty-hint">当前筛选条件下没有视频，可以清除筛选查看全库。</p>
+      <p v-else class="empty-hint">添加视频源并扫描即可开始使用。</p>
+      <el-button v-if="hasFilters" class="empty-clear" @click="clearFilters">清除筛选</el-button>
     </el-empty>
 
     <!-- Video grid -->
@@ -201,6 +271,54 @@ onMounted(() => {
 
 .source-filter {
   width: 200px;
+}
+
+.tag-filter {
+  width: 160px;
+}
+
+.syntax-btn {
+  align-self: center;
+  color: var(--el-text-color-secondary);
+}
+
+.syntax-btn:hover {
+  color: var(--accent);
+}
+
+.syntax-lead {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
+}
+
+.syntax-help dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 0;
+}
+
+.syntax-help dt {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--accent);
+}
+
+.syntax-help dd {
+  margin: 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.empty-hint {
+  color: var(--el-text-color-secondary);
+}
+
+.empty-clear {
+  margin-top: 12px;
 }
 
 .video-grid {
