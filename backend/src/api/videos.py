@@ -92,6 +92,22 @@ class SeriesProgressResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DuplicateGroupResponse(BaseModel):
+    """Library entries confirmed to hold the same bytes."""
+
+    file_size: int
+    duration: int | None
+    count: int
+    #: Bytes freed if every copy but the first is deleted.
+    wasted_bytes: int
+    #: The entry the scan would keep: the copy with the richest watch history.
+    keep_id: int
+    #: Copies, ``keep_id`` first.
+    items: list[VideoResponse]
+
+    model_config = {"from_attributes": True}
+
+
 class ProgressRequest(BaseModel):
     """Request model for reporting playback progress."""
 
@@ -146,6 +162,18 @@ async def list_series_progress(
 ) -> list[SeriesProgressResponse]:
     """Get every recognised series with how many episodes are done."""
     return await service.get_series_progress()
+
+
+@router.get("/duplicates", response_model=list[DuplicateGroupResponse])
+async def list_duplicates(
+    service: VideoService = Depends(get_video_service),
+) -> list[DuplicateGroupResponse]:
+    """Report library entries whose files were confirmed byte-identical.
+
+    Read-only, and on demand: it opens video files to hash them, which is far
+    too slow to run while the home page loads.
+    """
+    return await service.get_duplicates()
 
 
 @router.get("/{video_id}", response_model=VideoResponse)

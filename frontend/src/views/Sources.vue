@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
 import SourceCard from '@/components/SourceCard.vue'
 import SourceForm from '@/components/SourceForm.vue'
+import DuplicateChecker from '@/components/DuplicateChecker.vue'
 import api from '@/api/client'
 import {
   listSources,
@@ -132,6 +133,8 @@ onMounted(loadSources)
         @scan="handleScanSource"
       />
     </div>
+
+    <DuplicateChecker />
 
     <SourceForm
       v-model:visible="showForm"

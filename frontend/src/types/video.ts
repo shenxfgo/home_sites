@@ -66,6 +66,19 @@ export interface SeriesProgress {
   next: Video | null
 }
 
+/** Library entries whose files were confirmed to be the same bytes. */
+export interface DuplicateGroup {
+  file_size: number
+  duration: number | null
+  count: number
+  /** Bytes freed once every copy but the kept one is gone. */
+  wasted_bytes: number
+  /** The entry to keep: the copy with the richest watch history. */
+  keep_id: number
+  /** Copies, the one to keep first. */
+  items: Video[]
+}
+
 /** Query parameters for listing videos. */
 export interface VideoQueryParams {
   source_id?: number

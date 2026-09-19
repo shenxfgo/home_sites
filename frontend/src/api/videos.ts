@@ -1,5 +1,6 @@
 import client from './client'
 import type {
+  DuplicateGroup,
   SeriesProgress,
   Video,
   VideoListResponse,
@@ -17,6 +18,11 @@ export function listVideos(params: VideoQueryParams = {}): Promise<VideoListResp
 /** Get how far each recognised series has been watched. */
 export function listSeriesProgress(): Promise<SeriesProgress[]> {
   return client.get<SeriesProgress[]>('/videos/series').then((r) => r.data)
+}
+
+/** Get groups of library entries whose files hold the same bytes, on demand. */
+export function listDuplicates(): Promise<DuplicateGroup[]> {
+  return client.get<DuplicateGroup[]>('/videos/duplicates').then((r) => r.data)
 }
 
 /** Get a single video by ID. */

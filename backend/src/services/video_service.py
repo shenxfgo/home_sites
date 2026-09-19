@@ -1,4 +1,5 @@
 """VideoService for video CRUD operations and playback tracking."""
+import asyncio
 import operator
 from datetime import datetime, timezone
 
@@ -12,6 +13,7 @@ from src.models.history import PlayHistory
 from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
 from src.models.tag import Tag, video_tags
+from src.utils.file_fingerprint import edge_fingerprint
 from src.utils.video_search import VideoSearchQuery, parse_video_search
 
 
@@ -160,6 +162,24 @@ def _search_order(query: VideoSearchQuery) -> list:
     return [Video.created_at.desc(), Video.id.desc()]
 
 
+#: Candidate files one duplicate check may open. Each costs a fixed 2 MB read
+#: from the share, and a home NAS answers slowly enough that an unbounded
+#: sweep over a big library would hold the request open for minutes.
+_DUPLICATE_PROBE_MAX = 300
+
+
+def _keep_candidate(videos: list[Video]) -> Video:
+    """Pick the copy worth keeping when several hold the same bytes.
+
+    The one that has been watched is the one whose history matters, so progress
+    decides first and the oldest row breaks the tie.
+    """
+    return max(
+        videos,
+        key=lambda v: (v.view_count, v.progress or 0, -v.id),
+    )
+
+
 class VideoService:
     """Service for managing videos."""
 
@@ -213,6 +233,87 @@ class VideoService:
             entry["next"] = video
 
         return sorted(series.values(), key=lambda entry: entry["series"])
+
+    async def get_duplicates(self) -> list[dict]:
+        """List copies of the same file that are both in the library.
+
+        Size and duration are compared in SQL, which costs nothing, and only
+        the handful of rows that already share both get their first and last
+        megabyte hashed. Two entries for a file the share will not open are
+        left out rather than guessed at, and the copy whose watch history is
+        richest is named as the one to keep.
+        """
+        buckets = await self.session.execute(
+            select(Video.file_size, Video.duration)
+            .where(Video.file_size.is_not(None))
+            .group_by(Video.file_size, Video.duration)
+            .having(func.count(Video.id) > 1)
+        )
+        sizes = [size for size, _ in buckets.all()]
+        if not sizes:
+            return []
+
+        result = await self.session.execute(
+            select(Video)
+            .where(Video.file_size.in_(sizes))
+            .order_by(Video.file_size.asc(), Video.duration.asc(), Video.id.asc())
+        )
+        by_size_and_duration: dict[tuple[int, int | None], list[Video]] = {}
+        for video in result.scalars().all():
+            by_size_and_duration.setdefault(
+                (video.file_size, video.duration), []
+            ).append(video)
+
+        # Biggest reclaimable group first, so a request that runs out of read
+        # budget spends it on the copies worth deleting.
+        candidates = [
+            group for group in by_size_and_duration.values() if len(group) > 1
+        ]
+        candidates.sort(
+            key=lambda group: (len(group) - 1) * group[0].file_size, reverse=True
+        )
+        probed: list[list[Video]] = []
+        budget = _DUPLICATE_PROBE_MAX
+        for group in candidates:
+            if len(group) > budget:
+                continue
+            budget -= len(group)
+            probed.append(group)
+        if not probed:
+            return []
+
+        flat = [video for group in probed for video in group]
+        await attach_watch_progress(self.session, flat)
+        digests = await asyncio.gather(
+            *(asyncio.to_thread(edge_fingerprint, video.filepath) for video in flat)
+        )
+        fingerprints = dict(zip((video.id for video in flat), digests))
+
+        groups = []
+        for group in probed:
+            by_digest: dict[str, list[Video]] = {}
+            for video in group:
+                digest = fingerprints.get(video.id)
+                if digest is not None:
+                    by_digest.setdefault(digest, []).append(video)
+            for members in by_digest.values():
+                if len(members) < 2:
+                    continue
+                keep = _keep_candidate(members)
+                size = keep.file_size
+                groups.append(
+                    {
+                        "file_size": size,
+                        "duration": keep.duration,
+                        "count": len(members),
+                        "wasted_bytes": size * (len(members) - 1),
+                        "keep_id": keep.id,
+                        "items": sorted(members, key=lambda v: v.id != keep.id),
+                    }
+                )
+
+        groups.sort(key=lambda group: (group["wasted_bytes"], group["count"]), reverse=True)
+        return groups
 
     async def get_videos(
         self,
