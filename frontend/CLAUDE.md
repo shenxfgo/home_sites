@@ -118,6 +118,7 @@ frontend/
 │   ├── views/              # 页面组件
 │   │   ├── Home.vue       # 首页/视频列表
 │   │   ├── Sources.vue    # 视频源管理
+│   │   ├── Stats.vue      # 观影统计（数字卡 + 纯 CSS 柱状图 + 标签分布）
 │   │   ├── Tags.vue       # 标签管理
 │   │   ├── Settings.vue   # 应用设置
 │   │   └── ...

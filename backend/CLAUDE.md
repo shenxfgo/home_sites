@@ -64,6 +64,7 @@ backend/
 │   ├── models/            # 数据模型层
 │   │   ├── video.py       # Video 模型
 │   │   ├── source.py      # VideoSource 模型
+│   │   ├── watch_event.py # WatchEvent 模型（观看时长的追加式日志）
 │   │   └── ...
 │   ├── services/          # 业务逻辑层
 │   │   ├── video_service.py
