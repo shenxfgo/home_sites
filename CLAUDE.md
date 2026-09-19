@@ -8,7 +8,7 @@
 
 | 层级 | 技术 |
 |------|------|
-| 前端 | Vue 3 + TypeScript + Vite + Element Plus + Video.js |
+| 前端 | Vue 3 + TypeScript + Vite + Element Plus（播放器为手写组件，未引入 Video.js） |
 | 后端 | Python 3.11+ + FastAPI + SQLAlchemy 2.0+ + APScheduler |
 | 数据库 | SQLite 3（aiosqlite 异步驱动） |
 | 视频处理 | FFmpeg |
@@ -21,7 +21,8 @@
 |------|------|
 | 视频源管理 | 本地/NAS/MinIO 视频源配置 |
 | 视频列表 | 搜索、筛选、分页 |
-| 视频播放 | 流式播放、进度记录 |
+| 视频播放 | 流式播放、进度记录、A-B 段重放 |
+| 字幕支持 | 扫描登记外挂字幕，后端转 WebVTT，播放器可切换轨道 |
 | 标签管理 | 创建标签、视频打标签 |
 | 播放历史 | 记录播放进度、继续观看 |
 | 收藏功能 | 视频收藏/取消收藏 |

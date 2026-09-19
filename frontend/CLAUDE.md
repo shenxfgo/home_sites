@@ -619,12 +619,19 @@ export default defineConfig({
 ### 3. Element Plus 按需导入
 
 ```typescript
-// main.ts
-import ElementPlus from 'element-plus'
+// main.ts：只 app.use() 模板里真正用到的组件，图标由各组件局部导入
+import { ElButton, ElCard, /* ... */ ElLoading } from 'element-plus'
 import 'element-plus/dist/index.css'
+import 'element-plus/theme-chalk/dark/css-vars.css'
 
-app.use(ElementPlus)
+for (const component of [ElButton, ElCard /* ... */]) {
+  app.use(component)
+}
+// v-loading 指令随 ElLoading 插件注册，不在组件列表里
+app.use(ElLoading)
 ```
+
+`app.use(ElementPlus)` 会引用全部组件、`import * as Icons` 会注册 293 个图标组件，两者都会让 tree-shaking 失效、入口 chunk 从 276 kB 涨回 769 kB。新增页面若用到列表外的组件，需要一并加入注册列表。
 
 ## 构建和部署
 

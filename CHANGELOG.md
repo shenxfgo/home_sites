@@ -2,6 +2,31 @@
 
 ## 2026-09-18
 
+### 新增功能：播放器 A-B 段重放
+
+- **控制条新增 A-B 组**：`VideoPlayer.vue` 在快进按钮之后加入 `A` / `B` / `✕` 三个按钮，`A` 记录当前播放位置为起点，`B` 记录终点，`✕` 仅在已标记时出现用于清除；鼠标悬停时按钮标题实时显示 `A 点：0:10` 这样的时间戳
+- **区间校验**：`B` 按钮在播放位置尚未越过 `A` 之前保持禁用，重复标记 `A` 时若已落在旧终点之后则一并清掉旧终点，避免出现无意义区间
+- **循环行为**：`timeupdate` 中检测播放位置到达 `B` 即回到 `A` 继续播放；拖动进度条越过 `B` 同样会被拉回 `A`，清除区间后恢复正常；切换视频自动清除
+- **可视化**：进度条上用半透明高亮段（`.progress-loop`）画出 A-B 区间，两端是亮紫描边加柔光；区间有效时 A-B 组浮出一枚淡紫玻璃胶囊，与控制条的玻璃拟态风格一致，未标记时保持透明、不与相邻图标按钮抢视觉
+- **测试**：`tests/components/VideoPlayer.spec.ts` 新增 5 例（B 在播放位置越过 A 前禁用、终点不晚于起点时拒绝、经过 B 回到 A 且高亮区间、进度条高亮段的绘制与清除、拖到 B 之后被拉回并在清除后放行），前端单测 78 → 83；另有 2 例浏览器端用例见下方"E2E 首次在本机跑通"
+
+### 性能优化：入口 chunk 由 769 kB 降到 276 kB
+
+- **告警真实原因不是路由分割**：`src/router/index.ts` 的 9 条路由本来就是 `() => import(...)` 动态导入。体积来自 `main.ts` 的 `app.use(ElementPlus)` 与 `import * as ElementPlusIconsVue` 后逐个 `app.component()`：前者引用了全部组件、后者把 293 个图标组件全部打进入口，tree-shaking 完全失效
+- **改为按需注册**：`main.ts` 只 `app.use()` 模板里真正出现的 27 个组件（与 `grep -rhoE '<el-[a-z-]+'` 的结果逐一对应），图标交给各组件从 `@element-plus/icons-vue` 局部导入，不做全局注册；未新增任何依赖
+- **`v-loading` 指令随组件一起丢了**：去掉 `app.use(ElementPlus)` 后 7 个视图的 `v-loading` 全部报 `Failed to resolve directive: loading`（在跑起来的页面里逐个路由验证时发现的，构建与单测都不会报）。补 `app.use(ElLoading)` 注册指令
+- **效果**：`dist/assets/index-*.js` 769.67 kB / gzip 243.56 kB → 276.08 kB / gzip 90.25 kB，`client-*.js` 134.69 kB → 111.78 kB，`npm run build` 不再输出 "Some chunks are larger than 500 kB"
+- **仍保留**：`element-plus/dist/index.css` 整包引入（入口 CSS 367.89 kB / gzip 50.45 kB）。改成按需样式需要引入 `unplugin-vue-components` 之类的插件并调整 CSS 顺序，玻璃拟态主题大量覆盖 Element Plus 样式，顺序一变就可能整片失效，本轮不动
+
+### 修复问题：拖动进度条不是跳到点击位置
+
+- **进度条按整台播放器的宽度算比例**：`VideoPlayer.vue` 的 `seek()` 用 `.video-player` 的矩形换算百分比，而点击目标是控制条中间那一段 `.progress-bar`，因此点击位置与落点时间不成比例、且随窗口宽度变化，表现为"随机跳动"。改为以进度条自身的矩形换算，并钳制在 0 ~ 时长之间
+- **只有 click、没有真正的拖拽**：改为 `pointerdown` 起拖、在 `window` 上监听 `pointermove` / `pointerup` / `pointercancel`，指针移出进度条仍然跟手；组件卸载与切换视频时清理监听。拖拽期间填充条直接跟随指针（`fillPercent`），避免浏览器尚未完成 seek 时进度条回跳。`.progress-bar` 增加 `touch-action: none`，触屏拖动不再变成页面滚动
+- **暂停时进度条完全点不到**：`v-if` 的大播放按钮覆盖层 `inset: 0` 覆盖整个画面且绘制在控制条之上，暂停状态点击进度条会命中它并变成"继续播放"。控制条加 `z-index: 2`
+- **后缀 Range 返回了错误的字节**：`bytes=-N` 被解析成"前 N 字节"，而按 RFC 7233 它是"最后 N 字节"（moov 在文件尾部的 mp4 会用到），浏览器拿到错误字节会导致 seek 失败或重载。同时把超出文件末尾的区间收敛到 EOF 而不是回 416
+- **验证**：真实浏览器（60 秒样片）点击进度条 25% / 50% / 90% 分别落在 14.9s / 29.9s / 53.9s（旧算法为 16s / 24.6s / 38.4s）；暂停态命中测试确认最上层元素为进度条
+- **测试**：新增 `frontend/tests/components/VideoPlayer.spec.ts` 拖拽/点击跳转 7 例、`backend/tests/test_api/test_stream.py` Range 语义 10 例；前端单测 62 → 78 passed，后端 145 → 155 passed，`npm run build` 通过
+
 ### 界面改造
 
 - **全站 UI 改为玻璃拟态风格**：半透明磨砂面板 + 渐变彩色背景 + 流动光斑 + 大圆角
@@ -32,7 +57,7 @@
 
 - `npm run build`（`vue-tsc -b && vite build`）通过，先前报错的 tsconfig 项目引用问题已随本次改动消失
 - 后端 `uv run pytest` 110 passed
-- 剩余告警：单块 chunk 超过 500 kB，建议后续按路由做代码分割
+- 剩余告警：单块 chunk 超过 500 kB，建议后续按路由做代码分割（后续复核：路由本就是动态导入，真实原因与修复见上方"性能优化"一节，告警已消除）
 
 ### 前端测试
 
@@ -46,6 +71,11 @@
   - `tests/router.spec.ts`：路由表、未知路径落到 404、`document.title` 同步
 - **端到端测试（Playwright，17 例）**：`playwright.config.ts` 自动拉起 `localhost:4173` 的 dev server；`e2e/fixtures.ts` 用一份带状态的接口替身覆盖整个 `/api`（含转码任务从 running 到 completed 的进度推进），因此 **E2E 不依赖后端与 FFmpeg**。覆盖首页缩略图真实解码、搜索过滤、卡片跳详情、历史标题回退、404 返回首页、转码全流程与取消、数据源扫描/删除、通知已读
 - **脚本**：`npm run test` / `test:watch` / `test:coverage` / `test:e2e` / `typecheck:test`（`tsconfig.vitest.json` 单独纳入 `tests/`、`e2e/` 与两个配置的类型检查，不影响生产构建）
+- **E2E 首次在本机跑通（20 → 25 例全绿）**：此前 Playwright 浏览器一直装不上，`npx playwright install chromium` 看似卡死。实测默认 `cdn.playwright.dev` 会 302 到 `storage.googleapis.com`，本机只有 115 KB/s（114.6 MiB 的 headless shell 要下 17 分钟），换 `PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright` 后为 12 MB/s、一次装完。`README.md` 测试一节已记录该命令
+- **e2e 改用真实片段**：接口替身原先给 `/videos/{id}/stream` 返回空 body，浏览器拿不到时长，所有跳转逻辑在 e2e 里根本无法执行。现在内联一段 1.8 KB 的真实 H.264 片段（`e2e/fixtures.ts` 的 `SAMPLE_MP4`，30 秒 / 64x36 / 1 fps），e2e 因此能验证真实的 seek 与真实像素布局，仍然不依赖后端与 FFmpeg
+  - 片段必须是 16:9：一开始用 16x16 的方块，`<video>` 按固有宽高比把播放器撑高，控制条被顶到 720 高的视口之外，表现为"点击进度条毫无反应"（CDP 直接报 `Input.dispatchMouseEvent: Invalid parameters`）
+  - 替身必须支持 Range：`route.fulfill` 不带 `Accept-Ranges`/`Content-Length` 时，Chromium 的 `video.seekable` 是空的 `[[0, 0]]`，即使 `buffered` 已经覆盖 0~30 秒、`readyState` 到 4，赋值 `currentTime` 也会被静默丢弃。新增 `respondMedia()` 按后端同样的语义处理 `bytes=N-` / `bytes=N-M` / 后缀区间并回 206
+- **新增 e2e 用例**：`e2e/player.spec.ts` 补 5 例——真实时长显示、点击跳转（7.5s / 15s / 27s）、按住拖动全程跟手且越过两端收敛到 0 与时长（含松开后填充条不回弹）、A-B 段重放（按真实像素校验高亮段左右边界与宽度、经过 B 点回跳、清除后放行）、切换视频后区间自动清除
 - **文档**：`README.md`、`CLAUDE.md`、`frontend/CLAUDE.md` 的测试规范与命令改为实际可用内容（原先列出的 `npm run lint`、`npm run type-check` 脚本并不存在）
 
 ### 字幕支持

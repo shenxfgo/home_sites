@@ -7,7 +7,7 @@
 | 功能 | 说明 |
 |------|------|
 | 📁 视频源管理 | 支持本地目录、NAS、MinIO 多种视频源 |
-| 🎥 视频播放 | 流式播放、进度记忆、键盘快捷键 |
+| 🎥 视频播放 | 流式播放、进度记忆、键盘快捷键、A-B 段重放 |
 | 💬 字幕支持 | 扫描自动识别外挂字幕，播放器可切换轨道（SRT/ASS/VTT → WebVTT） |
 | 🏷️ 标签管理 | 创建标签、为视频打标签、按标签筛选 |
 | 📊 播放历史 | 记录播放进度、继续观看 |
@@ -161,6 +161,13 @@ home_sites/
 2. 在视频源页面点击"扫描"，字幕会自动登记为该视频的轨道
 3. 播放视频中点击右下角 `CC` 按钮选择字幕，浏览器只渲染 WebVTT，其他格式由后端实时转换
 
+### 6. A-B 段重放
+
+1. 播放到想重复的起点，点击控制条上的 `A`
+2. 继续播放（或拖动进度条）到终点，点击 `B`
+3. 进度条上会高亮这段区间，播到 `B` 自动回到 `A` 继续循环
+4. 点击 `✕` 清除区间；切换视频时也会自动清除
+
 ## 🔧 环境变量
 
 创建 `backend/.env` 文件：
@@ -190,6 +197,12 @@ npm run test:e2e
 
 # 前端构建检查
 npm run build
+```
+
+首次运行 e2e 需要先装浏览器：`npx playwright install chromium`。国内网络下它默认的 `cdn.playwright.dev` 会重定向到 `storage.googleapis.com`，实测只有约 115 KB/s（镜像站 12 MB/s），上百 MB 的下载会看起来卡死。改用镜像站即可：
+
+```bash
+PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright npx playwright install chromium
 ```
 
 ## 📝 开发规范
