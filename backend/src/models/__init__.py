@@ -6,6 +6,7 @@ from .watch_event import WatchEvent
 from .favorite import Favorite
 from .notification import Notification
 from .new_video import NewVideo
+from .watchlist import Watchlist, WatchlistItem
 from .subtitle import Subtitle
 from .setting import Setting
 
@@ -19,6 +20,8 @@ __all__ = [
     "Favorite",
     "Notification",
     "NewVideo",
+    "Watchlist",
+    "WatchlistItem",
     "Subtitle",
     "Setting",
 ]

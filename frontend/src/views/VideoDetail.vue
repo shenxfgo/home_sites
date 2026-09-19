@@ -14,6 +14,7 @@ import {
   CollectionTag,
   Setting,
   Plus,
+  Tickets,
 } from '@element-plus/icons-vue'
 import {
   getVideo,
@@ -27,6 +28,13 @@ import {
   removeFavorite,
 } from '@/api/favorites'
 import { listTags, addTagsToVideo, removeTagFromVideo } from '@/api/tags'
+import {
+  addVideoToWatchlist,
+  createWatchlist,
+  listWatchlists,
+  removeVideoFromWatchlist,
+} from '@/api/watchlists'
+import type { Watchlist } from '@/api/watchlists'
 import type { Video, VideoUpdate } from '@/types/video'
 import type { Tag } from '@/types/video'
 import VideoPlayer from '@/components/VideoPlayer.vue'
@@ -49,6 +57,12 @@ const editForm = ref<{ title: string; description: string; rating: number }>({
 const allTags = ref<Tag[]>([])
 const selectedTagIds = ref<number[]>([])
 const showTagDialog = ref(false)
+
+// Watchlists: which queues this title already sits in
+const allWatchlists = ref<Watchlist[]>([])
+const selectedWatchlistIds = ref<number[]>([])
+const newWatchlistName = ref('')
+const showWatchlistDialog = ref(false)
 
 const videoId = computed(() => Number(route.params.id))
 
@@ -138,6 +152,49 @@ async function handleSaveTags() {
     video.value = await getVideo(videoId.value)
     showTagDialog.value = false
     ElMessage.success('标签已更新')
+  } catch (err: unknown) {
+    ElMessage.error(`Failed: ${err instanceof Error ? err.message : err}`)
+  }
+}
+
+/** Which queues already hold this title. */
+async function openWatchlistDialog() {
+  if (!video.value) return
+  try {
+    allWatchlists.value = await listWatchlists()
+    selectedWatchlistIds.value = allWatchlists.value
+      .filter((list) => list.items.some((item) => item.id === video.value!.id))
+      .map((list) => list.id)
+    newWatchlistName.value = ''
+    showWatchlistDialog.value = true
+  } catch (err: unknown) {
+    ElMessage.error(`片单加载失败：${err instanceof Error ? err.message : err}`)
+  }
+}
+
+async function handleSaveWatchlists() {
+  if (!video.value) return
+
+  const currentIds = allWatchlists.value
+    .filter((list) => list.items.some((item) => item.id === video.value!.id))
+    .map((list) => list.id)
+  const toAdd = selectedWatchlistIds.value.filter((id) => !currentIds.includes(id))
+  const toRemove = currentIds.filter((id) => !selectedWatchlistIds.value.includes(id))
+
+  try {
+    const name = newWatchlistName.value.trim()
+    if (name) {
+      const created = await createWatchlist(name)
+      await addVideoToWatchlist(created.id, video.value.id)
+    }
+    for (const listId of toAdd) {
+      await addVideoToWatchlist(listId, video.value.id)
+    }
+    for (const listId of toRemove) {
+      await removeVideoFromWatchlist(listId, video.value.id)
+    }
+    showWatchlistDialog.value = false
+    ElMessage.success('片单已更新')
   } catch (err: unknown) {
     ElMessage.error(`Failed: ${err instanceof Error ? err.message : err}`)
   }
@@ -304,6 +361,9 @@ onMounted(() => {
                 >
                   {{ isFavorite ? '已收藏' : '收藏' }}
                 </el-button>
+                <el-button :icon="Tickets" @click="openWatchlistDialog">
+                  片单
+                </el-button>
                 <el-button :icon="Setting" @click="router.push({ name: 'transcode', params: { id: video.id } })">
                   转码
                 </el-button>
@@ -460,6 +520,37 @@ onMounted(() => {
       <template #footer>
         <el-button @click="showTagDialog = false">取消</el-button>
         <el-button type="primary" @click="handleSaveTags">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Watchlist Dialog -->
+    <el-dialog
+      v-model="showWatchlistDialog"
+      title="加入片单"
+      width="420px"
+    >
+      <p v-if="allWatchlists.length === 0" class="watchlist-empty">
+        还没有片单。下面起个名字，这部就是第一条。
+      </p>
+      <el-checkbox-group v-else v-model="selectedWatchlistIds">
+        <div v-for="list in allWatchlists" :key="list.id" class="watchlist-checkbox-item">
+          <el-checkbox :value="list.id">
+            {{ list.name }}
+            <span class="watchlist-count">{{ list.items.length }} 部</span>
+          </el-checkbox>
+        </div>
+      </el-checkbox-group>
+
+      <el-input
+        v-model="newWatchlistName"
+        class="watchlist-new"
+        placeholder="新建片单并加入（可选）"
+        maxlength="100"
+      />
+
+      <template #footer>
+        <el-button @click="showWatchlistDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveWatchlists">保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -691,5 +782,29 @@ onMounted(() => {
 
 .tag-checkbox-item:last-child {
   margin-bottom: 0;
+}
+
+.watchlist-checkbox-item {
+  margin-bottom: 10px;
+}
+
+.watchlist-checkbox-item:last-child {
+  margin-bottom: 0;
+}
+
+.watchlist-count {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--text-glass-secondary);
+}
+
+.watchlist-empty {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-glass-secondary);
+}
+
+.watchlist-new {
+  margin-top: 14px;
 }
 </style>

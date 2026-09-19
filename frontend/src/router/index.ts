@@ -33,6 +33,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '收藏' },
   },
   {
+    path: '/watchlists',
+    name: 'watchlists',
+    component: () => import('@/views/Watchlists.vue'),
+    meta: { title: '片单' },
+  },
+  {
     path: '/tags',
     name: 'tags',
     component: () => import('@/views/Tags.vue'),

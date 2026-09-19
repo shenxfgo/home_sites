@@ -7,6 +7,7 @@ import {
   Clock,
   TrendCharts,
   Star,
+  Tickets,
   CollectionTag,
   Setting,
 } from '@element-plus/icons-vue'
@@ -22,6 +23,7 @@ const navItems = [
   { path: '/history', label: '播放历史', icon: Clock },
   { path: '/stats', label: '观影统计', icon: TrendCharts },
   { path: '/favorites', label: '收藏', icon: Star },
+  { path: '/watchlists', label: '片单', icon: Tickets },
   { path: '/tags', label: '标签管理', icon: CollectionTag },
   { path: '/settings', label: '设置', icon: Setting },
 ]

@@ -14,6 +14,7 @@ from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
 from src.models.tag import Tag, video_tags
 from src.models.watch_event import WatchEvent
+from src.models.watchlist import WatchlistItem
 from src.utils.file_fingerprint import edge_fingerprint
 from src.utils.video_search import VideoSearchQuery, parse_video_search
 
@@ -41,7 +42,7 @@ async def delete_videos_cascade(
     orphaned history, favorite and new-video rows behind.
     """
     video_ids = select(Video.id).where(video_filter)
-    for model in (PlayHistory, Favorite, NewVideo, Subtitle, WatchEvent):
+    for model in (PlayHistory, Favorite, NewVideo, Subtitle, WatchEvent, WatchlistItem):
         await session.execute(
             delete(model).where(model.video_id.in_(video_ids))
         )
