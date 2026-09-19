@@ -21,6 +21,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '播放历史' },
   },
   {
+    path: '/stats',
+    name: 'stats',
+    component: () => import('@/views/Stats.vue'),
+    meta: { title: '观影统计' },
+  },
+  {
     path: '/favorites',
     name: 'favorites',
     component: () => import('@/views/Favorites.vue'),

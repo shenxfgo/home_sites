@@ -19,6 +19,32 @@ export interface HistoryListResponse {
   page_size: number
 }
 
+/** One bar of the daily chart, always present even on a day nothing was watched. */
+export interface WatchDay {
+  date: string
+  seconds: number
+  videos: number
+}
+
+/** How much of the window a single tag accounts for. */
+export interface WatchTag {
+  name: string
+  color: string
+  seconds: number
+}
+
+/** Everything the stats page shows, from one aggregate query. */
+export interface WatchStats {
+  days: number
+  window_seconds: number
+  month_seconds: number
+  videos_watched: number
+  active_days: number
+  longest_streak_days: number
+  daily: WatchDay[]
+  tags: WatchTag[]
+}
+
 /** Get paginated playback history. */
 export async function listHistory(
   page = 1,
@@ -33,6 +59,14 @@ export async function listHistory(
 /** Get videos to continue watching. */
 export async function getContinueList(): Promise<Video[]> {
   const response = await client.get<Video[]>('/history/continue')
+  return response.data
+}
+
+/** Get watch totals, the daily chart and the tag split over `days` days. */
+export async function getWatchStats(days = 30): Promise<WatchStats> {
+  const response = await client.get<WatchStats>('/history/stats', {
+    params: { days },
+  })
   return response.data
 }
 

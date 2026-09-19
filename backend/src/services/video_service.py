@@ -13,6 +13,7 @@ from src.models.history import PlayHistory
 from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
 from src.models.tag import Tag, video_tags
+from src.models.watch_event import WatchEvent
 from src.utils.file_fingerprint import edge_fingerprint
 from src.utils.video_search import VideoSearchQuery, parse_video_search
 
@@ -40,7 +41,7 @@ async def delete_videos_cascade(
     orphaned history, favorite and new-video rows behind.
     """
     video_ids = select(Video.id).where(video_filter)
-    for model in (PlayHistory, Favorite, NewVideo, Subtitle):
+    for model in (PlayHistory, Favorite, NewVideo, Subtitle, WatchEvent):
         await session.execute(
             delete(model).where(model.video_id.in_(video_ids))
         )
@@ -478,13 +479,22 @@ class VideoService:
         return history
 
     async def update_progress(self, video_id: int, progress: int) -> None:
-        """Remember where playback of a video stands."""
+        """Remember where playback of a video stands.
+
+        A report that moves the position forward is also the cheapest evidence of
+        how much was really watched, so it appends a watch event for the seconds
+        gained. Reports that move backwards — a seek, a replay — add nothing
+        rather than subtracting, which keeps the totals a sum of watching done.
+        """
         video = await self.get_video_by_id(video_id)
         if not video:
             return
 
         history = await self._get_or_create_history(video_id)
+        gained = max(0, progress - (history.progress or 0))
         history.progress = progress
         history.completed = is_completed(progress, video.duration)
         history.played_at = datetime.now(timezone.utc)
+        if gained:
+            self.session.add(WatchEvent(video_id=video_id, seconds=gained))
         await self.session.commit()

@@ -34,6 +34,35 @@ class HistoryListResponse(BaseModel):
     page_size: int
 
 
+class WatchDayResponse(BaseModel):
+    """One bar of the daily chart."""
+
+    date: str
+    seconds: int
+    videos: int
+
+
+class WatchTagResponse(BaseModel):
+    """How many watched seconds a tag accounts for."""
+
+    name: str
+    color: str
+    seconds: int
+
+
+class WatchStatsResponse(BaseModel):
+    """What the watch-event log adds up to over a window of days."""
+
+    days: int
+    window_seconds: int
+    month_seconds: int
+    videos_watched: int
+    active_days: int
+    longest_streak_days: int
+    daily: list[WatchDayResponse]
+    tags: list[WatchTagResponse]
+
+
 async def get_history_service(
     session: AsyncSession = Depends(get_session),
 ) -> HistoryService:
@@ -73,6 +102,15 @@ async def get_continue_list(
 ) -> list[VideoResponse]:
     """Get videos to continue watching."""
     return await service.get_continue_list()
+
+
+@router.get("/stats", response_model=WatchStatsResponse)
+async def get_watch_stats(
+    days: int = Query(30, ge=7, le=365),
+    service: HistoryService = Depends(get_history_service),
+) -> WatchStatsResponse:
+    """Aggregate the watch-event log into hours, a streak and a tag split."""
+    return await service.get_stats(days=days)
 
 
 @router.delete("/{history_id}", status_code=204)
