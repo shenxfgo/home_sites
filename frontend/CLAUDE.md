@@ -130,7 +130,7 @@ frontend/
 │   │   └── source.ts
 │   ├── styles/             # 全局样式
 │   │   ├── global.css
-│   │   └── theme.css      # 深色模式样式
+│   │   └── theme.css      # 影院风主题基座（浅色 + 深色两套令牌）
 │   ├── main.ts             # 应用入口
 │   └── App.vue             # 根组件
 ├── public/                 # 静态资源
@@ -429,22 +429,29 @@ const fullName = computed(() => `${form.name} - ${form.email}`)
 
 ### 使用 CSS 变量
 
+组件只消费 `styles/theme.css` 里的令牌，不写死颜色与圆角：
+
 ```css
-:root {
-  --primary-color: #409eff;
-  --success-color: #67c23a;
-  --warning-color: #e6a23c;
-  --danger-color: #f56c6c;
+.panel {
+  background: var(--glass-bg);            /* 面板底色 */
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-panel);
+  color: var(--text-glass);
+  box-shadow: var(--glass-shadow);
 }
 
-.button {
-  background-color: var(--primary-color);
+.panel__hint {
+  color: var(--text-glass-secondary);
 }
 ```
 
+强调色分两档，不能互换：`--accent` 是写在表面上的文字/图标色，`--accent-fill` 是垫白字的实底色；
+同一个紫色做不到既让白字达到 4.5:1、又让它在深底上达到 4.5:1。语义色同理，实底档是
+`--success-solid` / `--danger-solid` / `--warning-solid`。
+
 ### 深色模式
 
-项目支持深色模式，通过 `data-theme="dark"` 属性切换：
+影院风双主题（浅色纸白分层 / 深色近黑）共用一套令牌，通过 `data-theme="light"|"dark"` 切换：
 
 ```typescript
 // 使用 useTheme composable
@@ -458,26 +465,38 @@ setTheme('light')   // 浅色模式
 setTheme('auto')    // 跟随系统
 ```
 
-深色模式样式定义在 `styles/theme.css` 中：
+`styles/theme.css` 的令牌分三组：
 
 ```css
-/* 深色模式变量 */
-:root[data-theme="dark"] {
-  --bg-color: #1d1e1f;
-  --bg-color-page: #0a0a0a;
-  --text-color-primary: #e5eaf3;
-  --text-color-regular: #cfd3dc;
-  --border-color-lighter: #303133;
+:root {                          /* 两套主题共用：实底强调色、语义实底、圆角 */
+  --accent-fill: #6a58f5;
+  --success-solid: #1e7a45;
+  --radius-panel: 12px;
 }
 
-/* 深色模式下的组件样式 */
-:root[data-theme="dark"] .el-card {
-  background-color: var(--bg-color);
-  border-color: var(--border-color-lighter);
+:root {                          /* 浅色 */
+  --accent: #5b48e0;
+  --surface-bg: #ffffff;
+  --tile-bg: #eef0f4;
+  --text-glass: #17191f;
+  --text-glass-secondary: #5f6673;
+}
+
+:root[data-theme="dark"] {       /* 深色：同一批令牌换值 */
+  --accent: #a99dff;
+  --surface-bg: #14171e;
+  --tile-bg: #1e222b;
+  --text-glass: #e9ebef;
+  --text-glass-secondary: #98a0ad;
 }
 ```
 
-**注意：** 布局组件（MainLayout）的深色模式需要使用全局样式（非 scoped），否则选择器无法生效。
+**注意：**
+- `--glass-*` 与 `.glass-panel` 是玻璃拟态时代留下的名字，现在只是主题钩子，不要再加 `backdrop-filter`。
+- 深色必须整组重申 Element Plus 变量：`html.dark` 的优先级高于 `:root`，只改个别变量会让主色退回它默认的蓝色。
+- 深色下 Element Plus 的语义基色（`--el-color-success` 等）是给文字用的，偏亮，垫白字只有 2~3:1，实底按钮要换成 `--*-solid` 档。
+- 布局组件（MainLayout）的主题样式需要全局（非 scoped），否则选择器无法生效。
+- 改完两套主题都要在跑起来的应用里实测文字对比度（AA 4.5:1），不要只看类型检查。
 
 ### 响应式设计
 
