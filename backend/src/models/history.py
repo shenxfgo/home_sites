@@ -10,13 +10,17 @@ if TYPE_CHECKING:
 
 
 class PlayHistory(Base):
-    """Record of video playback."""
+    """Where the user left off in a video.
+
+    One row per video: replaying updates the existing row instead of appending,
+    so the history list and the continue-watching rail never show a title twice.
+    """
 
     __tablename__ = "play_history"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     video_id: Mapped[int] = mapped_column(
-        ForeignKey("videos.id", ondelete="CASCADE")
+        ForeignKey("videos.id", ondelete="CASCADE"), unique=True
     )
     played_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

@@ -213,6 +213,10 @@ async def test_create_example(db_session):
 
 ## 数据库规范
 
+### 建表与改表
+
+`init_db()` 只有 `Base.metadata.create_all`，它只补建新表、**从不修改已存在的表**。因此给已有表加约束或索引时，要把补齐用的 SQL 写成模块常量放在 `src/database/session.py`，在 `init_db` 里紧随 `create_all` 执行，并保证幂等（`IF NOT EXISTS`、先清洗再加约束）。参考 `play_history` 的"每部视频一行"：先 `DEDUPE_PLAY_HISTORY` 折叠老库的重复行，再建 `ix_play_history_video_id` 唯一索引——顺序反了会直接建索引失败。
+
 ### 模型定义
 
 ```python

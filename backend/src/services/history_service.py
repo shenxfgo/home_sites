@@ -1,5 +1,5 @@
 """HistoryService for playback history operations."""
-from sqlalchemy import select, desc
+from sqlalchemy import func, select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -16,14 +16,12 @@ class HistoryService:
     async def get_history(
         self, page: int = 1, page_size: int = 20
     ) -> tuple[list[PlayHistory], int]:
-        """Get paginated playback history."""
-        # Count total
-        count_query = select(PlayHistory)
-        result = await self.session.execute(count_query)
-        all_history = list(result.scalars().all())
-        total = len(all_history)
+        """Get paginated playback history, most recent watch first."""
+        total_result = await self.session.execute(
+            select(func.count(PlayHistory.id))
+        )
+        total = total_result.scalar_one()
 
-        # Get paginated
         query = (
             select(PlayHistory)
             .order_by(desc(PlayHistory.played_at))
@@ -37,7 +35,7 @@ class HistoryService:
         return history, total
 
     async def get_continue_list(self) -> list[Video]:
-        """Get videos that can be continued (not completed)."""
+        """Get videos left unfinished, the one most recently watched first."""
         query = (
             select(PlayHistory)
             .where(PlayHistory.completed == False)  # noqa: E712

@@ -181,10 +181,10 @@ onMounted(() => {
         <el-table-column label="状态" width="100" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.completed" type="success" size="small">已完成</el-tag>
-            <el-tag v-else type="warning" size="small">播放中</el-tag>
+            <el-tag v-else type="warning" size="small">未看完</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="播放时间" width="180" align="center">
+        <el-table-column label="最后观看" width="180" align="center">
           <template #default="{ row }">
             <span class="date-text">{{ formatDate(row.played_at) }}</span>
           </template>

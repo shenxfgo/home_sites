@@ -56,22 +56,15 @@ describe('VideoCard', () => {
     expect(tags.at(-1)?.text()).toBe('+2')
   })
 
-  it('badges videos created in the last day as new', () => {
-    const wrapper = mountCard()
+  it('badges an unwatched video as new however old its file is', () => {
+    const monthOld = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+    const wrapper = mountCard(makeVideo({ is_new: true, created_at: monthOld }))
 
     expect(wrapper.find('.new-badge').text()).toBe('新')
   })
 
-  it('badges videos from earlier this week instead of as new', () => {
-    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
-    const wrapper = mountCard(makeVideo({ created_at: threeDaysAgo }))
-
-    expect(wrapper.find('.new-badge').text()).toBe('本周')
-  })
-
-  it('drops the badge once a video is older than a week', () => {
-    const monthOld = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-    const wrapper = mountCard(makeVideo({ created_at: monthOld }))
+  it('drops the badge once the video has been played', () => {
+    const wrapper = mountCard(makeVideo({ is_new: false, created_at: new Date().toISOString() }))
 
     expect(wrapper.find('.new-badge').exists()).toBe(false)
   })

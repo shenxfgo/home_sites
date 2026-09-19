@@ -46,6 +46,7 @@ export function makeVideo(overrides: Partial<Video> = {}): Video {
     thumbnail_path: '/data/thumbs/sample.jpg',
     rating: 3,
     view_count: 7,
+    is_new: false,
     last_played_at: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),

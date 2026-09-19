@@ -32,22 +32,6 @@ function formatFileSize(bytes: number | null): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
-/** Determine new-video badge based on created_at. */
-const newBadge = computed<{ label: string; type: 'danger' | 'warning' | 'info' } | null>(() => {
-  const created = new Date(props.video.created_at)
-  const now = new Date()
-  const diffMs = now.getTime() - created.getTime()
-  const diffHours = diffMs / (1000 * 60 * 60)
-
-  if (diffHours < 24) {
-    return { label: '新', type: 'danger' }
-  }
-  if (diffHours < 24 * 7) {
-    return { label: '本周', type: 'warning' }
-  }
-  return null
-})
-
 /** Computed display title. */
 const displayTitle = computed(() => props.video.title || props.video.filepath.split(/[/\\]/).pop() || '无标题')
 
@@ -80,15 +64,15 @@ function goToDetail() {
         {{ formatDuration(video.duration) }}
       </span>
 
-      <!-- New badge -->
+      <!-- New badge: set by the scan and cleared by the first play -->
       <el-tag
-        v-if="newBadge"
-        :type="newBadge.type"
+        v-if="video.is_new"
+        type="danger"
         size="small"
         class="new-badge"
         effect="dark"
       >
-        {{ newBadge.label }}
+        新
       </el-tag>
     </div>
 

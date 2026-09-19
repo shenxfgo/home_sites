@@ -15,6 +15,8 @@ test('首页渲染视频卡片和真实缩略图', async ({ page }) => {
   await expect(first).toContainText('深夜测试')
   await expect(first.locator('.duration-badge')).toHaveText('1:05')
   await expect(first.locator('.new-badge')).toHaveText('新')
+  // 角标跟着 is_new 走，不是按文件新旧算的，所以另一部没有
+  await expect(page.locator('.video-card').nth(1).locator('.new-badge')).toHaveCount(0)
 
   const thumb = first.locator('img.thumbnail-img')
   await expect(thumb).toHaveAttribute('src', '/api/videos/1/thumbnail')
@@ -46,6 +48,11 @@ test('播放历史显示视频标题，缺失标题时退回视频编号', async
   await expect(rows).toHaveCount(2)
   await expect(rows.nth(0)).toContainText('深夜测试')
   await expect(rows.nth(1)).toContainText('视频 #999')
+
+  // 一行未看完、一行已完成，列名说的是最后一次观看，不是第一次
+  await expect(rows.nth(0)).toContainText('未看完')
+  await expect(rows.nth(1)).toContainText('已完成')
+  await expect(page.locator('.el-table__header')).toContainText('最后观看')
 })
 
 test('未知地址显示 404 页并能回到首页', async ({ page }) => {

@@ -378,3 +378,92 @@ describe('VideoPlayer subtitles', () => {
     expect(wrapper.find('.subtitle-btn').exists()).toBe(false)
   })
 })
+
+describe('VideoPlayer playback tracking', () => {
+  beforeEach(() => {
+    vi.useRealTimers()
+    listSubtitles.mockReset()
+    listSubtitles.mockResolvedValue([])
+    recordPlay.mockReset()
+    recordPlay.mockResolvedValue(undefined)
+    updateProgress.mockReset()
+    updateProgress.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    window.dispatchEvent(new MouseEvent('pointerup'))
+    mounted.splice(0).forEach((wrapper) => wrapper.unmount())
+  })
+
+  /** Mount a player that already knows its duration, and press play on it. */
+  async function watchPlayer(duration = 120) {
+    const { wrapper, video } = await mountSeekablePlayer(duration)
+    await wrapper.find('video').trigger('play')
+    return { wrapper, video }
+  }
+
+  it('records the play once, however often playback pauses', async () => {
+    const { wrapper } = await watchPlayer()
+
+    await wrapper.find('video').trigger('pause')
+    await wrapper.find('video').trigger('play')
+
+    expect(recordPlay).toHaveBeenCalledTimes(1)
+    expect(recordPlay).toHaveBeenCalledWith(1)
+  })
+
+  it('reports the position the moment playback pauses', async () => {
+    const { wrapper, video } = await watchPlayer()
+    updateProgress.mockClear()
+
+    video.currentTime = 33
+    await wrapper.find('video').trigger('pause')
+
+    expect(updateProgress).toHaveBeenCalledWith(1, 33)
+  })
+
+  it('reports the whole duration when the video ends', async () => {
+    const { wrapper } = await watchPlayer(120)
+    updateProgress.mockClear()
+
+    await wrapper.find('video').trigger('ended')
+
+    expect(updateProgress).toHaveBeenCalledWith(1, 120)
+  })
+
+  it('keeps tracking a replay instead of starting a second record', async () => {
+    const { wrapper, video } = await watchPlayer(120)
+    await wrapper.find('video').trigger('ended')
+    updateProgress.mockClear()
+
+    await wrapper.find('video').trigger('play')
+    video.currentTime = 12
+    await wrapper.find('video').trigger('pause')
+
+    expect(recordPlay).toHaveBeenCalledTimes(1)
+    expect(updateProgress).toHaveBeenCalledWith(1, 12)
+  })
+
+  it('reports the position when the seek bar is released', async () => {
+    const { wrapper, video, bar } = await mountSeekablePlayer(100)
+    await wrapper.find('video').trigger('play')
+    updateProgress.mockClear()
+
+    bar.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 400 }))
+
+    expect(video.currentTime).toBe(50)
+    expect(updateProgress).toHaveBeenCalledWith(1, 50)
+  })
+
+  it('stores nothing for a video the viewer never played', async () => {
+    const { wrapper, bar } = await mountSeekablePlayer(100)
+
+    bar.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 400 }))
+    await wrapper.unmount()
+
+    expect(recordPlay).not.toHaveBeenCalled()
+    expect(updateProgress).not.toHaveBeenCalled()
+  })
+})

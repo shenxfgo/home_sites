@@ -39,6 +39,7 @@ class VideoResponse(BaseModel):
     thumbnail_path: str | None
     rating: int
     view_count: int
+    is_new: bool = False
     last_played_at: datetime | None
     created_at: datetime
     updated_at: datetime

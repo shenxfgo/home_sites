@@ -2,11 +2,13 @@
 import pytest
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
 from src.models.video import Video
 from src.models.new_video import NewVideo
 from src.models.history import PlayHistory
 from src.models.tag import Tag
-from src.services.video_service import VideoService
+from src.services.video_service import VideoService, is_completed
 
 
 async def _create_video(session, source_id=1, title="Test Video", filepath="/test/video.mp4", duration=120):
@@ -350,3 +352,98 @@ async def test_update_progress_completed(db_session):
     )
     history = result.scalar_one()
     assert history.completed is True
+
+
+@pytest.mark.asyncio
+async def test_record_play_keeps_one_history_row_per_video(db_session):
+    """Replaying refreshes the existing row rather than stacking a second one."""
+    video = await _create_video(db_session)
+    service = VideoService(db_session)
+
+    await service.record_play(video.id)
+    await service.update_progress(video.id, 45)
+    await service.record_play(video.id)
+
+    result = await db_session.execute(
+        select(PlayHistory).where(PlayHistory.video_id == video.id)
+    )
+    history = result.scalar_one()
+    assert history.progress == 0
+    assert history.completed is False
+
+
+@pytest.mark.asyncio
+async def test_record_play_clears_the_new_badge(db_session):
+    """Watching a video is what retires its 新 label."""
+    video = await _create_video(db_session)
+    db_session.add(NewVideo(video_id=video.id, source_id=video.source_id))
+    await db_session.commit()
+
+    service = VideoService(db_session)
+    videos, _ = await service.get_videos()
+    assert videos[0].is_new is True
+
+    await service.record_play(video.id)
+
+    videos, _ = await service.get_videos()
+    assert videos[0].is_new is False
+    result = await db_session.execute(
+        select(NewVideo).where(NewVideo.video_id == video.id)
+    )
+    assert result.scalar_one().viewed is True
+
+
+@pytest.mark.asyncio
+async def test_videos_without_a_scan_record_are_not_new(db_session):
+    """Only the scan queue decides the badge, so a fresh file is not automatically 新."""
+    await _create_video(db_session)
+
+    service = VideoService(db_session)
+    videos, _ = await service.get_videos()
+    assert videos[0].is_new is False
+
+
+@pytest.mark.asyncio
+async def test_update_progress_reopens_a_finished_video(db_session):
+    """Rewinding out of the tail takes the video back into continue watching."""
+    video = await _create_video(db_session, duration=120)
+    service = VideoService(db_session)
+    await service.record_play(video.id)
+
+    await service.update_progress(video.id, 118)
+    await service.update_progress(video.id, 30)
+
+    result = await db_session.execute(
+        select(PlayHistory).where(PlayHistory.video_id == video.id)
+    )
+    history = result.scalar_one()
+    assert history.completed is False
+
+
+def test_is_completed_tolerates_only_a_short_tail():
+    """The tolerance is a capped share of the title, not a fixed ten seconds."""
+    assert is_completed(114, 120)
+    assert not is_completed(110, 120)
+    assert is_completed(3591, 3600)
+    assert not is_completed(3400, 3600)
+    assert not is_completed(30, None)
+
+
+@pytest.mark.asyncio
+async def test_update_progress_refreshes_played_at(db_session):
+    """最后观看 means the last actual watch, not the moment the session started."""
+    video = await _create_video(db_session)
+    service = VideoService(db_session)
+    await service.record_play(video.id)
+
+    result = await db_session.execute(
+        select(PlayHistory).where(PlayHistory.video_id == video.id)
+    )
+    started_at = result.scalar_one().played_at
+
+    await service.update_progress(video.id, 10)
+
+    result = await db_session.execute(
+        select(PlayHistory).where(PlayHistory.video_id == video.id)
+    )
+    assert result.scalar_one().played_at > started_at

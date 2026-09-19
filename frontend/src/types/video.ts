@@ -32,6 +32,8 @@ export interface Video {
   thumbnail_path: string | null
   rating: number
   view_count: number
+  /** Discovered by a recent scan and not played yet. */
+  is_new: boolean
   last_played_at: string | null
   created_at: string
   updated_at: string

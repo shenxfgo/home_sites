@@ -29,6 +29,7 @@ export interface StubVideo {
   thumbnail_path: string | null
   rating: number
   view_count: number
+  is_new: boolean
   last_played_at: string | null
   created_at: string
   updated_at: string
@@ -51,6 +52,7 @@ export const videos: StubVideo[] = [
     thumbnail_path: 'D:\\thumbs\\1.jpg',
     rating: 4,
     view_count: 3,
+    is_new: true,
     last_played_at: hoursAgo(2),
     created_at: hoursAgo(1),
     updated_at: hoursAgo(1),
@@ -69,6 +71,7 @@ export const videos: StubVideo[] = [
     thumbnail_path: 'D:\\thumbs\\2.jpg',
     rating: 0,
     view_count: 0,
+    is_new: false,
     last_played_at: null,
     created_at: hoursAgo(50),
     updated_at: hoursAgo(50),

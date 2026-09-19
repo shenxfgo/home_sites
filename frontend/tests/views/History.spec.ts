@@ -66,7 +66,7 @@ describe('History view', () => {
     const wrapper = await mountHistory([item({ id: 1, completed: true }), item({ id: 2, completed: false })])
 
     expect(wrapper.text()).toContain('已完成')
-    expect(wrapper.text()).toContain('播放中')
+    expect(wrapper.text()).toContain('未看完')
     wrapper.unmount()
   })
 

@@ -73,6 +73,19 @@ function handleMetadata() {
   loading.value = false
 }
 
+/**
+ * Store the playhead so history and 继续观看 follow it.
+ *
+ * The interval below is the safety net; the moments where the user actually
+ * stops moving (pause, end, released seek bar) are where the position is worth
+ * recording right away.
+ */
+function reportProgress(atSeconds?: number) {
+  if (!props.videoId || !hasRecordedPlay) return
+  const at = atSeconds ?? videoRef.value?.currentTime ?? currentTime.value
+  updateProgress(props.videoId, Math.floor(at)).catch(console.error)
+}
+
 function handlePlay() {
   isPlaying.value = true
   emit('play')
@@ -85,12 +98,15 @@ function handlePlay() {
 
 function handlePause() {
   isPlaying.value = false
+  reportProgress()
   emit('pause')
 }
 
 function handleEnded() {
   isPlaying.value = false
-  hasRecordedPlay = false
+  // The browser leaves the playhead at the very end, so report the duration:
+  // that is what turns the history row into 已完成 and drops it from 继续观看.
+  reportProgress(duration.value)
   emit('ended')
 }
 
@@ -139,10 +155,12 @@ function moveSeek(e: PointerEvent) {
 }
 
 function endSeek() {
+  const wasSeeking = isSeeking.value
   isSeeking.value = false
   window.removeEventListener('pointermove', moveSeek)
   window.removeEventListener('pointerup', endSeek)
   window.removeEventListener('pointercancel', endSeek)
+  if (wasSeeking) reportProgress()
 }
 
 // 拖拽中直接跟随指针，避免等待浏览器完成 seek 时进度条回跳
@@ -312,9 +330,9 @@ function handleMouseMove() {
 }
 
 function startProgressReporting() {
-  progressInterval = setInterval(async () => {
-    if (isPlaying.value && props.videoId && currentTime.value > 0) {
-      await updateProgress(props.videoId, Math.floor(currentTime.value)).catch(console.error)
+  progressInterval = setInterval(() => {
+    if (isPlaying.value) {
+      reportProgress()
     }
   }, 30000) // Report every 30 seconds
 }
@@ -378,9 +396,7 @@ onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
 
   // Report final progress
-  if (props.videoId && currentTime.value > 0) {
-    updateProgress(props.videoId, Math.floor(currentTime.value)).catch(console.error)
-  }
+  reportProgress()
 })
 
 watch(() => props.videoId, () => {
