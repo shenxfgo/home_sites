@@ -6,7 +6,15 @@ describe('router', () => {
     const names = router.getRoutes().map((route) => route.name).filter(Boolean)
 
     expect(names).toEqual(
-      expect.arrayContaining(['home', 'sources', 'history', 'favorites', 'tags', 'settings']),
+      expect.arrayContaining([
+        'home',
+        'sources',
+        'history',
+        'stats',
+        'favorites',
+        'tags',
+        'settings',
+      ]),
     )
   })
 

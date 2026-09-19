@@ -559,3 +559,56 @@ async def test_duplicates_keep_the_copy_that_has_been_watched(db_session, tmp_pa
     assert group["keep_id"] == watched.id
     assert [v.id for v in group["items"]] == [watched.id, fresh.id]
     assert group["items"][0].progress == 60
+
+
+@pytest.mark.asyncio
+async def test_progress_forward_moves_append_watch_events(db_session):
+    """How much was watched comes from the seconds a report advanced by."""
+    from src.models.watch_event import WatchEvent
+
+    video = await _create_video(db_session, duration=120)
+    service = VideoService(db_session)
+
+    await service.update_progress(video.id, 30)
+    await service.update_progress(video.id, 60)
+
+    result = await db_session.execute(
+        select(WatchEvent).where(WatchEvent.video_id == video.id).order_by(WatchEvent.id)
+    )
+    assert [event.seconds for event in result.scalars().all()] == [30, 30]
+
+
+@pytest.mark.asyncio
+async def test_seeking_backwards_adds_nothing_to_the_log(db_session):
+    """A rewind is not negative watching, and a repeat is not more of it."""
+    from sqlalchemy import func
+
+    from src.models.watch_event import WatchEvent
+
+    video = await _create_video(db_session, duration=120)
+    service = VideoService(db_session)
+    await service.update_progress(video.id, 90)
+
+    await service.update_progress(video.id, 20)
+
+    result = await db_session.execute(
+        select(func.count(WatchEvent.id)).where(WatchEvent.video_id == video.id)
+    )
+    assert result.scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_video_takes_its_watch_events_with_it(db_session):
+    """The cascade list must grow with the table, or the log keeps ghost rows."""
+    from sqlalchemy import func
+
+    from src.models.watch_event import WatchEvent
+
+    video = await _create_video(db_session, title="删除我", filepath="/del.mp4")
+    service = VideoService(db_session)
+    await service.update_progress(video.id, 45)
+
+    await service.delete_video(video.id)
+
+    result = await db_session.execute(select(func.count(WatchEvent.id)))
+    assert result.scalar_one() == 0

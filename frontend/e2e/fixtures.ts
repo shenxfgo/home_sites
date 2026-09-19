@@ -448,6 +448,26 @@ export async function mockApi(page: Page): Promise<void> {
         })
       }
       if (path === '/history/continue') return respond(route, [videos[0]])
+      if (path === '/history/stats') {
+        const days = Number(url.searchParams.get('days') ?? 30)
+        const daily = Array.from({ length: days }, (_, index) => ({
+          date: new Date(Date.now() - (days - 1 - index) * 86_400_000)
+            .toISOString()
+            .slice(0, 10),
+          seconds: index === days - 1 ? 5400 : index === days - 2 ? 1800 : 0,
+          videos: index >= days - 2 ? 1 : 0,
+        }))
+        return respond(route, {
+          days,
+          window_seconds: 7200,
+          month_seconds: 5400,
+          videos_watched: 1,
+          active_days: 2,
+          longest_streak_days: 2,
+          daily,
+          tags: [{ name: '动作片', color: '#7c6cff', seconds: 7200 }],
+        })
+      }
       if (path === '/favorites') return respond(route, { items: [videos[1]], total: 1, page: 1, page_size: 20 })
       if (path === '/tags') return respond(route, [{ id: 1, name: '动作片', color: '#7c6cff', video_count: 1 }])
       if (path === '/settings') {

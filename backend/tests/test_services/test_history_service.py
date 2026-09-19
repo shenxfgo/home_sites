@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from src.models.video import Video
 from src.models.history import PlayHistory
+from src.models.watch_event import WatchEvent
 from src.services.history_service import HistoryService
 
 
@@ -86,3 +87,100 @@ async def test_continue_list_carries_the_position_of_its_own_row(db_session):
         (2, 90, 120),
         (1, 45, 120),
     ]
+
+
+async def _event(session, video_id, seconds, *, days_ago=0, hour=12):
+    """Append one watch event a given number of days back from today."""
+    from datetime import datetime, timedelta, timezone
+
+    when = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    when = when.replace(hour=hour, minute=0, second=0, microsecond=0)
+    session.add(WatchEvent(video_id=video_id, seconds=seconds, occurred_at=when))
+    await session.commit()
+    return when
+
+
+@pytest.mark.asyncio
+async def test_stats_total_the_window_and_fill_every_day(db_session):
+    """The chart needs a bar per day, and only days inside the window count."""
+    await _create_video(db_session, 1, "暗涌")
+    await _create_video(db_session, 2, "长夜")
+    await _event(db_session, 1, 600, days_ago=2)
+    await _event(db_session, 1, 300, days_ago=1)
+    await _event(db_session, 2, 100, days_ago=3)
+    await _event(db_session, 2, 9999, days_ago=40)
+
+    stats = await HistoryService(db_session).get_stats(days=7)
+
+    assert len(stats["daily"]) == 7
+    assert stats["window_seconds"] == 1000
+    assert stats["videos_watched"] == 2
+    assert stats["active_days"] == 3
+    assert stats["daily"][-1]["seconds"] == 0
+    assert [entry["seconds"] for entry in stats["daily"]][-4:] == [100, 600, 300, 0]
+
+
+@pytest.mark.asyncio
+async def test_stats_find_the_longest_run_of_watch_days(db_session):
+    """Three days in a row, then a gap, is a streak of three."""
+    await _create_video(db_session, 1, "暗涌")
+    for days_ago in (0, 1, 2, 4):
+        await _event(db_session, 1, 60, days_ago=days_ago)
+
+    stats = await HistoryService(db_session).get_stats(days=30)
+
+    assert (stats["longest_streak_days"], stats["active_days"]) == (3, 4)
+
+
+@pytest.mark.asyncio
+async def test_stats_split_watched_time_by_tag(db_session):
+    """A tag is credited with every second spent on the videos carrying it."""
+    from src.models.tag import Tag, video_tags
+
+    await _create_video(db_session, 1, "暗涌")
+    await _create_video(db_session, 2, "长夜")
+    mystery = Tag(name="悬疑", color="#7c6cff")
+    series = Tag(name="剧集", color="#7c6cff")
+    db_session.add_all([mystery, series])
+    await db_session.commit()
+    await db_session.execute(
+        video_tags.insert(),
+        [
+            {"video_id": 1, "tag_id": mystery.id},
+            {"video_id": 1, "tag_id": series.id},
+            {"video_id": 2, "tag_id": mystery.id},
+        ],
+    )
+    await db_session.commit()
+
+    await _event(db_session, 1, 600, days_ago=1)
+    await _event(db_session, 2, 240, days_ago=2)
+
+    stats = await HistoryService(db_session).get_stats(days=7)
+
+    assert [(tag["name"], tag["seconds"]) for tag in stats["tags"]] == [
+        ("悬疑", 840),
+        ("剧集", 600),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stats_report_the_calendar_month_on_its_own(db_session):
+    """本月 is the month on the wall, not the last thirty days."""
+    from datetime import datetime, timedelta, timezone
+
+    await _create_video(db_session, 1, "暗涌")
+    today = datetime.now(timezone.utc)
+    last_month_end = (today.replace(day=1) - timedelta(days=1)).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    )
+    db_session.add(
+        WatchEvent(video_id=1, seconds=5000, occurred_at=last_month_end)
+    )
+    await db_session.commit()
+    await _event(db_session, 1, 600, days_ago=0)
+
+    stats = await HistoryService(db_session).get_stats(days=30)
+
+    assert stats["month_seconds"] == 600
+    assert stats["window_seconds"] == 5600
