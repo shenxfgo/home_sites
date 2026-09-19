@@ -72,6 +72,7 @@ backend/
 │   │   ├── ffmpeg.py      # FFmpeg 工具
 │   │   ├── file_scanner.py # 目录扫描与探针
 │   │   ├── video_search.py # 搜索串解析（源/标签/评分/时长/观看状态/丢失）
+│   │   ├── file_fingerprint.py # 首尾 1MB 哈希，用来确认两份文件真是同一份
 │   │   └── name_parser.py  # 文件名解析（片名、系列、季集、字幕组）
 │   ├── scheduler/         # 定时任务
 │   │   ├── scan_scheduler.py

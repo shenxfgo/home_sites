@@ -111,6 +111,7 @@ frontend/
 │   │   ├── VideoCard.vue
 │   │   ├── VideoPlayer.vue
 │   │   ├── SourceCard.vue
+│   │   ├── DuplicateChecker.vue # 重复文件检测（按需调 /videos/duplicates）
 │   │   └── ...
 │   ├── composables/        # 组合式函数
 │   │   └── useTheme.ts    # 主题切换
