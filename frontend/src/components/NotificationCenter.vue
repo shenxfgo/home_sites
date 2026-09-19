@@ -9,9 +9,14 @@
 
       <div class="notification-header">
         <span>通知</span>
-        <el-button link @click="handleMarkAllRead" :disabled="unreadCount === 0">
-          全部已读
-        </el-button>
+        <div class="notification-actions">
+          <el-button link @click="handleMarkAllRead" :disabled="unreadCount === 0">
+            全部已读
+          </el-button>
+          <el-button v-if="notifications.length" link class="clear-btn" @click="handleClearAll">
+            {{ confirmingClear ? '确认清空' : '清空' }}
+          </el-button>
+        </div>
       </div>
 
       <el-scrollbar height="400px">
@@ -34,6 +39,13 @@
               <div class="notification-message">{{ notification.message }}</div>
               <div class="notification-time">{{ formatTime(notification.created_at) }}</div>
             </div>
+            <button
+              class="notification-remove"
+              title="删除这条通知"
+              @click.stop="handleDelete(notification.id)"
+            >
+              &#10005;
+            </button>
           </div>
         </div>
       </el-scrollbar>
@@ -42,17 +54,24 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { Bell, CircleCheck, InfoFilled, Warning } from '@element-plus/icons-vue'
 import { notificationsApi } from '@/api/notifications'
 import type { Notification } from '@/api/notifications'
 
 const notifications = ref<Notification[]>([])
 const unreadCount = ref(0)
+const confirmingClear = ref(false)
+
+let clearConfirmTimer: ReturnType<typeof setTimeout> | null = null
 
 onMounted(() => {
   fetchNotifications()
   fetchUnreadCount()
+})
+
+onUnmounted(() => {
+  if (clearConfirmTimer) clearTimeout(clearConfirmTimer)
 })
 
 async function fetchNotifications() {
@@ -75,6 +94,30 @@ async function handleMarkRead(notification: Notification) {
 async function handleMarkAllRead() {
   await notificationsApi.markAllRead()
   notifications.value.forEach(n => n.read = true)
+  unreadCount.value = 0
+}
+
+async function handleDelete(id: number) {
+  await notificationsApi.remove(id)
+  notifications.value = notifications.value.filter((item) => item.id !== id)
+  await fetchUnreadCount()
+}
+
+/** Deleting the whole list asks once, and the ask expires. */
+async function handleClearAll() {
+  if (!confirmingClear.value) {
+    confirmingClear.value = true
+    if (clearConfirmTimer) clearTimeout(clearConfirmTimer)
+    clearConfirmTimer = setTimeout(() => {
+      confirmingClear.value = false
+    }, 4000)
+    return
+  }
+  confirmingClear.value = false
+  if (clearConfirmTimer) clearTimeout(clearConfirmTimer)
+
+  await notificationsApi.clearAll()
+  notifications.value = []
   unreadCount.value = 0
 }
 
@@ -137,7 +180,50 @@ function formatTime(dateStr: string): string {
   padding: 12px;
   cursor: pointer;
   border-radius: var(--radius-tile);
+  position: relative;
   transition: background-color 0.16s ease;
+}
+
+.notification-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.clear-btn {
+  color: var(--text-glass-secondary);
+}
+
+.clear-btn:hover {
+  color: var(--danger-solid, var(--el-color-danger));
+}
+
+.notification-remove {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-glass-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.16s ease, background-color 0.16s ease;
+}
+
+.notification-item:hover .notification-remove,
+.notification-remove:focus-visible {
+  opacity: 1;
+}
+
+.notification-remove:hover {
+  background-color: var(--tile-bg);
+  color: var(--danger-solid, var(--el-color-danger));
 }
 
 .notification-item:hover {

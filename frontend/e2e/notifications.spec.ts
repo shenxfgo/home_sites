@@ -41,3 +41,47 @@ test('一键已读会清空未读角标', async ({ page }) => {
 
   await expect(page.locator('.notification-badge .el-badge__content')).toBeHidden()
 })
+
+test('单条通知可以删掉，未读数跟着减少', async ({ page }) => {
+  await page.goto('/')
+  await openPopover(page)
+
+  await page.locator('.el-popover .notification-item').first().locator('.notification-remove').click()
+
+  await expect(page.locator('.el-popover .notification-item')).toHaveCount(1)
+  await expect(page.locator('.el-popover .notification-item').first()).toContainText('深夜测试.mp4 已入库')
+  await expect(page.locator('.notification-badge .el-badge__content')).toHaveText('1')
+})
+
+test('清空通知要按两次，之后列表回到空状态', async ({ page }) => {
+  await page.goto('/')
+  await openPopover(page)
+
+  const clear = page.locator('.el-popover .clear-btn')
+  await clear.click()
+  await expect(clear).toHaveText('确认清空')
+  await expect(page.locator('.el-popover .notification-item')).toHaveCount(2)
+
+  await clear.click()
+
+  await expect(page.locator('.el-popover .notification-item')).toHaveCount(0)
+  await expect(page.locator('.el-popover')).toContainText('暂无通知')
+  await expect(page.locator('.notification-badge .el-badge__content')).toBeHidden()
+  // 列表空了就没有可清空的东西了
+  await expect(page.locator('.el-popover .clear-btn')).toHaveCount(0)
+})
+
+test('清空提示超时后自动收回，不会误删', async ({ page }) => {
+  await page.goto('/')
+  await openPopover(page)
+
+  const clear = page.locator('.el-popover .clear-btn')
+  await clear.click()
+  await expect(clear).toHaveText('确认清空')
+
+  await page.waitForTimeout(4200)
+  await expect(clear).toHaveText('清空')
+
+  await clear.click()
+  await expect(page.locator('.el-popover .notification-item')).toHaveCount(2)
+})

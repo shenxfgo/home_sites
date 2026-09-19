@@ -35,4 +35,12 @@ export const notificationsApi = {
   async markAllRead(): Promise<void> {
     await apiClient.post('/notifications/read-all')
   },
+
+  async remove(id: number): Promise<void> {
+    await apiClient.delete(`/notifications/${id}`)
+  },
+
+  async clearAll(): Promise<void> {
+    await apiClient.delete('/notifications')
+  },
 }

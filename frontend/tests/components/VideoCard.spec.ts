@@ -69,6 +69,21 @@ describe('VideoCard', () => {
     expect(wrapper.find('.new-badge').exists()).toBe(false)
   })
 
+  it('draws a resume line sized by the stored position', () => {
+    const wrapper = mountCard(makeVideo({ duration: 200, progress: 50 }))
+
+    const bar = wrapper.find('.resume-bar')
+    expect(bar.exists()).toBe(true)
+    expect(bar.attributes('style')).toContain('width: 25%')
+  })
+
+  it('leaves the line off for unwatched and finished videos', () => {
+    expect(mountCard(makeVideo({ duration: 200, progress: null })).find('.resume-bar').exists()).toBe(false)
+    expect(mountCard(makeVideo({ duration: 200, progress: 0 })).find('.resume-bar').exists()).toBe(false)
+    expect(mountCard(makeVideo({ duration: 200, progress: 200 })).find('.resume-bar').exists()).toBe(false)
+    expect(mountCard(makeVideo({ duration: null, progress: 50 })).find('.resume-bar').exists()).toBe(false)
+  })
+
   it('opens the detail route for the card video on click', async () => {
     const wrapper = mountCard(makeVideo({ id: 9 }))
 

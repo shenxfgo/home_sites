@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { mockApi } from './fixtures'
+import { mockApi, videos } from './fixtures'
 
 /** The detail page only mounts the player after the preview is clicked. */
 async function startPlayback(page: Page): Promise<void> {
@@ -169,4 +169,102 @@ test('A-B 段重放在切换视频后自动清除', async ({ page }) => {
   await expect(page.locator('.video-player')).toBeVisible()
   await expect(page.locator('.progress-loop')).toHaveCount(0)
   await expect(page.locator('.loop-clear')).toHaveCount(0)
+})
+
+const videoElement = (page: Page) => page.locator('.video-player video')
+
+/** 用一条更窄的 route 改掉 /videos/1 的元数据：后注册的优先，进度落在 30 秒片段之内。 */
+async function withProgress(page: Page, progress: number): Promise<void> {
+  await page.route(/\/api\/videos\/1$/, (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ ...videos[0], duration: CLIP_SECONDS, progress }),
+    }),
+  )
+  await page.goto('/videos/1')
+  await page.locator('.preview-area').click()
+  await expect(page.locator('.video-player')).toBeVisible()
+}
+
+test('倍速、音量、字幕字号与延迟都会被记住', async ({ page }) => {
+  await page.locator('.rate-btn').click()
+  await expect(page.locator('.rate-menu .subtitle-menu-item')).toHaveText([
+    '0.5x',
+    '0.75x',
+    '1x',
+    '1.25x',
+    '1.5x',
+    '2x',
+  ])
+  await page.locator('.rate-menu .subtitle-menu-item', { hasText: '1.5x' }).click()
+  await expect(videoElement(page)).toHaveJSProperty('playbackRate', 1.5)
+
+  const track = page.locator('.volume-track')
+  const box = await track.boundingBox()
+  if (!box) throw new Error('音量条不可见')
+  await page.mouse.click(box.x + box.width * 0.4, box.y + box.height / 2)
+  const volume = await videoElement(page).evaluate((el) => (el as HTMLVideoElement).volume)
+  expect(volume).toBeGreaterThan(0.3)
+  expect(volume).toBeLessThan(0.5)
+
+  await page.reload()
+  await page.locator('.preview-area').click()
+  await expect(page.locator('.video-player')).toBeVisible()
+
+  // 元素上的值是上次留下的，不是默认的 1x 与满音量
+  await expect(videoElement(page)).toHaveJSProperty('playbackRate', 1.5)
+  await expect
+    .poll(async () => videoElement(page).evaluate((el) => (el as HTMLVideoElement).volume))
+    .toBeCloseTo(volume, 5)
+  // 倍速按钮上也写着它
+  await expect(page.locator('.rate-btn')).toHaveText('1.5x')
+})
+
+test('字号与延迟改的是真实的 WebVTT 轨道，重开页面仍然生效', async ({ page }) => {
+  const cueStart = () =>
+    videoElement(page).evaluate(
+      (el) => ((el as HTMLVideoElement).textTracks[0].cues![0] as VTTCue).startTime,
+    )
+
+  await page.locator('.subtitle-btn').click()
+  await page.locator('.subtitle-menu-item').nth(1).click()
+
+  // 选完字幕菜单会收起，字号与延迟要从菜单里调
+  await page.locator('.subtitle-btn').click()
+  const sizeSteps = page.locator('.cue-setting').nth(0).locator('.cue-step')
+  await sizeSteps.nth(1).click()
+  await expect(videoElement(page)).toHaveJSProperty('style.fontSize', '14px')
+
+  // 调字号不会关菜单，延迟就在同一处接着调
+  const delaySteps = page.locator('.cue-setting').nth(1).locator('.cue-step')
+  await expect.poll(cueStart).toBeCloseTo(1, 5)
+  await delaySteps.nth(1).click()
+  await expect.poll(cueStart).toBeCloseTo(1.5, 5)
+  await expect(page.locator('.cue-setting').nth(1).locator('.cue-value')).toHaveText('0.5s')
+
+  await page.reload()
+  await page.locator('.preview-area').click()
+  await expect(page.locator('.video-player')).toBeVisible()
+
+  // 重开页面字幕是关着的，重新选上之后延迟与字号都按存下的偏好补
+  await page.locator('.subtitle-btn').click()
+  await page.locator('.subtitle-menu-item').nth(1).click()
+  await expect.poll(cueStart).toBeCloseTo(1.5, 5)
+  await expect(videoElement(page)).toHaveJSProperty('style.fontSize', '14px')
+})
+
+test('未看完的视频从存下的位置接着放', async ({ page }) => {
+  await withProgress(page, 12)
+
+  await expectCurrentTime(page, 12)
+  // 进度条也停在同一个位置：12/30 = 40%
+  const bar = await trackBox(page)
+  const fill = await page.locator('.progress-fill').boundingBox()
+  expectNear(fill?.width, bar.width * 0.4, '填充条宽度')
+})
+
+test('位置已经贴着片尾时从头开始播', async ({ page }) => {
+  await withProgress(page, 29)
+  // 只剩 1 秒的进度没有回看的意义，时长加载后仍停在开头
+  await expect(page.locator('.time-display')).toHaveText('0:00 / 0:30')
 })

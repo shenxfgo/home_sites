@@ -1,16 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
+import type { Router } from 'vue-router'
 import { ElMessage, ElSelect } from 'element-plus'
 import Home from '@/views/Home.vue'
 import VideoCard from '@/components/VideoCard.vue'
 import { listVideos } from '@/api/videos'
 import { listSources } from '@/api/sources'
 import { listTags } from '@/api/tags'
+import { getContinueList } from '@/api/history'
 import { makeSource, makeTag, makeVideo } from '../factories'
-
-vi.mock('vue-router', () => ({
-  useRouter: () => ({ push: vi.fn() }),
-}))
 
 vi.mock('@/api/videos', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/videos')>()
@@ -18,11 +17,30 @@ vi.mock('@/api/videos', async (importOriginal) => {
 })
 vi.mock('@/api/sources', () => ({ listSources: vi.fn() }))
 vi.mock('@/api/tags', () => ({ listTags: vi.fn() }))
+vi.mock('@/api/history', () => ({ getContinueList: vi.fn() }))
 
-async function mountHome() {
-  const wrapper = mount(Home)
+const stub = { template: '<div />' }
+
+/** A real router on an in-memory address bar, so query sync is exercised for real. */
+async function makeRouter(initial = '/'): Promise<Router> {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', name: 'home', component: stub },
+      { path: '/videos/:id', name: 'video-detail', component: stub },
+    ],
+  })
+  await router.push(initial)
+  await router.isReady()
+  return router
+}
+
+async function mountHome(initial = '/') {
+  const router = await makeRouter(initial)
+  // Attached to the document so focus() — and the "/" shortcut that relies on it — behave.
+  const wrapper = mount(Home, { global: { plugins: [router] }, attachTo: document.body })
   await flushPromises()
-  return wrapper
+  return { wrapper, router }
 }
 
 function lastQuery() {
@@ -36,11 +54,13 @@ describe('Home view search', () => {
     vi.mocked(listVideos).mockResolvedValue({ items: [makeVideo({ id: 1 })], total: 1, page: 1, page_size: 20 })
     vi.mocked(listSources).mockResolvedValue([makeSource({ id: 3, name: '剧集' })])
     vi.mocked(listTags).mockResolvedValue([makeTag(7, '悬疑')])
+    vi.mocked(getContinueList).mockReset()
+    vi.mocked(getContinueList).mockResolvedValue([])
     vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
   })
 
   it('loads the library together with both filter lists', async () => {
-    const wrapper = await mountHome()
+    const { wrapper } = await mountHome()
 
     expect(lastQuery()).toMatchObject({ page: 1, page_size: 20 })
     expect(wrapper.findAllComponents(VideoCard)).toHaveLength(1)
@@ -51,8 +71,9 @@ describe('Home view search', () => {
   })
 
   it('sends the trimmed keyword after the debounce', async () => {
+    const router = await makeRouter()
     vi.useFakeTimers()
-    const wrapper = mount(Home)
+    const wrapper = mount(Home, { global: { plugins: [router] } })
     await flushPromises()
 
     const input = wrapper.find('input')
@@ -64,8 +85,27 @@ describe('Home view search', () => {
     wrapper.unmount()
   })
 
+  it('writes the keyword into the address bar, and takes it back out', async () => {
+    const router = await makeRouter()
+    vi.useFakeTimers()
+    const wrapper = mount(Home, { global: { plugins: [router] } })
+    await flushPromises()
+
+    await wrapper.find('input').setValue('暗涌')
+    await vi.advanceTimersByTimeAsync(400)
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ q: '暗涌' })
+
+    await wrapper.find('input').setValue('')
+    await vi.advanceTimersByTimeAsync(400)
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({})
+
+    wrapper.unmount()
+  })
+
   it('passes the chosen tag to the api and restarts pagination', async () => {
-    const wrapper = await mountHome()
+    const { wrapper } = await mountHome()
     const callsBefore = vi.mocked(listVideos).mock.calls.length
 
     const tagSelect = wrapper.findAllComponents(ElSelect)[1]
@@ -80,7 +120,7 @@ describe('Home view search', () => {
   })
 
   it('leaves the tag out of the query once the select is cleared', async () => {
-    const wrapper = await mountHome()
+    const { wrapper } = await mountHome()
 
     const tagSelect = wrapper.findAllComponents(ElSelect)[1]
     tagSelect.vm.$emit('update:modelValue', 7)
@@ -98,7 +138,7 @@ describe('Home view search', () => {
 
   it('explains an empty search and clears every filter on demand', async () => {
     vi.mocked(listVideos).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
-    const wrapper = await mountHome()
+    const { wrapper } = await mountHome()
 
     await wrapper.find('input').setValue('查无此片')
     await wrapper.find('input').trigger('keyup', { key: 'Enter' })
@@ -116,10 +156,200 @@ describe('Home view search', () => {
 
   it('keeps the plain onboarding copy for an untouched library', async () => {
     vi.mocked(listVideos).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
-    const wrapper = await mountHome()
+    const { wrapper } = await mountHome()
 
     expect(wrapper.text()).toContain('添加视频源并扫描即可开始使用')
     expect(wrapper.find('.empty-clear').exists()).toBe(false)
     wrapper.unmount()
+  })
+})
+
+describe('Home resume rail', () => {
+  beforeEach(() => {
+    vi.useRealTimers()
+    vi.mocked(listVideos).mockReset()
+    vi.mocked(listVideos).mockResolvedValue({ items: [makeVideo({ id: 1 })], total: 1, page: 1, page_size: 20 })
+    vi.mocked(listSources).mockResolvedValue([makeSource({ id: 3, name: '剧集' })])
+    vi.mocked(listTags).mockResolvedValue([makeTag(7, '悬疑')])
+    vi.mocked(getContinueList).mockReset()
+    vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+  })
+
+  it('shows unfinished titles with the time left and how far they got', async () => {
+    vi.mocked(getContinueList).mockResolvedValue([
+      makeVideo({ id: 5, title: '暗涌 第一季', duration: 100, progress: 40, thumbnail_path: null }),
+    ])
+    const { wrapper, router } = await mountHome()
+
+    const items = wrapper.findAll('.rail-item')
+    expect(items).toHaveLength(1)
+    expect(wrapper.get('.rail-title').text()).toBe('继续观看')
+    expect(wrapper.get('.rail-count').text()).toContain('1 部没看完')
+    expect(wrapper.get('.rail-remaining').text()).toBe('剩 1:00')
+    expect(wrapper.get('.rail-bar-fill').attributes('style')).toContain('width: 40%')
+    expect(wrapper.find('.rail-img').exists()).toBe(false)
+
+    await wrapper.get('.rail-caption').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.name).toBe('video-detail')
+    expect(router.currentRoute.value.params.id).toBe('5')
+    wrapper.unmount()
+  })
+
+  it('reads a whole video without a stored position as unstarted', async () => {
+    vi.mocked(getContinueList).mockResolvedValue([
+      makeVideo({ id: 6, duration: 120, progress: null, thumbnail_path: '/t/6.jpg' }),
+    ])
+    const { wrapper } = await mountHome()
+
+    expect(wrapper.get('.rail-remaining').text()).toBe('剩 2:00')
+    expect(wrapper.get('.rail-bar-fill').attributes('style')).toContain('width: 0%')
+    expect(wrapper.get('.rail-img').attributes('src')).toBeTruthy()
+    wrapper.unmount()
+  })
+
+  it('stays out of the way once the library is filtered', async () => {
+    vi.mocked(getContinueList).mockResolvedValue([makeVideo({ id: 5, duration: 100, progress: 40 })])
+    const { wrapper } = await mountHome('/?q=暗涌')
+
+    expect(wrapper.find('.resume-rail').exists()).toBe(false)
+    expect(wrapper.find('input').element.value).toBe('暗涌')
+    wrapper.unmount()
+  })
+
+  it('skips the rail when nothing is left unfinished', async () => {
+    vi.mocked(getContinueList).mockResolvedValue([])
+    const { wrapper } = await mountHome()
+
+    expect(wrapper.find('.resume-rail').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+describe('Home filter state in the address bar', () => {
+  beforeEach(() => {
+    vi.useRealTimers()
+    vi.mocked(listVideos).mockReset()
+    vi.mocked(listVideos).mockResolvedValue({
+      items: [makeVideo({ id: 1 })],
+      total: 60,
+      page: 1,
+      page_size: 20,
+    })
+    vi.mocked(listSources).mockResolvedValue([makeSource({ id: 3, name: '剧集' })])
+    vi.mocked(listTags).mockResolvedValue([makeTag(7, '悬疑')])
+    vi.mocked(getContinueList).mockResolvedValue([])
+    vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+  })
+
+  it('restores every filter from a shared link', async () => {
+    const { wrapper } = await mountHome('/?q=%20暗涌%20&source=3&tag=7&page=2&size=40')
+
+    expect(lastQuery()).toMatchObject({
+      search: '暗涌',
+      source_id: 3,
+      tag_id: 7,
+      page: 2,
+      page_size: 40,
+    })
+    expect(wrapper.find('input').element.value).toBe('暗涌')
+    wrapper.unmount()
+  })
+
+  it('falls back to the defaults for nonsense in the query', async () => {
+    const { wrapper } = await mountHome('/?page=abc&size=-5')
+
+    expect(lastQuery()).toMatchObject({ page: 1, page_size: 20 })
+    expect(wrapper.find('input').element.value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('keeps the address bar in step with the tag filter', async () => {
+    const { wrapper, router } = await mountHome()
+
+    const tagSelect = wrapper.findAllComponents(ElSelect)[1]
+    tagSelect.vm.$emit('update:modelValue', 7)
+    await flushPromises()
+    tagSelect.vm.$emit('change', 7)
+    await flushPromises()
+
+    expect(router.currentRoute.value.query).toEqual({ tag: '7' })
+    wrapper.unmount()
+  })
+
+  it('reloads from the address bar when 后退 restores another filter', async () => {
+    const { wrapper, router } = await mountHome()
+    const callsBefore = vi.mocked(listVideos).mock.calls.length
+
+    await router.push({ query: { q: '星汉' } })
+    await flushPromises()
+
+    expect(vi.mocked(listVideos).mock.calls.length).toBe(callsBefore + 1)
+    expect(lastQuery()).toMatchObject({ search: '星汉', page: 1 })
+    expect(wrapper.find('input').element.value).toBe('星汉')
+    wrapper.unmount()
+  })
+
+  it('does not reload for the query it wrote itself', async () => {
+    const { wrapper, router } = await mountHome()
+
+    const tagSelect = wrapper.findAllComponents(ElSelect)[1]
+    tagSelect.vm.$emit('update:modelValue', 7)
+    await flushPromises()
+    tagSelect.vm.$emit('change', 7)
+    await flushPromises()
+    const calls = vi.mocked(listVideos).mock.calls.length
+
+    await router.replace({ query: router.currentRoute.value.query })
+    await flushPromises()
+
+    expect(vi.mocked(listVideos).mock.calls.length).toBe(calls)
+    wrapper.unmount()
+  })
+})
+
+describe('Home search shortcut', () => {
+  beforeEach(() => {
+    vi.useRealTimers()
+    vi.mocked(listVideos).mockResolvedValue({ items: [makeVideo({ id: 1 })], total: 1, page: 1, page_size: 20 })
+    vi.mocked(listSources).mockResolvedValue([])
+    vi.mocked(listTags).mockResolvedValue([])
+    vi.mocked(getContinueList).mockResolvedValue([])
+  })
+
+  it('focuses the search box on "/" and leaves other keys alone', async () => {
+    const { wrapper } = await mountHome()
+    const input = wrapper.find('input').element as HTMLInputElement
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'j' }))
+    await flushPromises()
+    expect(document.activeElement).not.toBe(input)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: '/' }))
+    await flushPromises()
+    expect(document.activeElement).toBe(input)
+    wrapper.unmount()
+  })
+
+  it('ignores "/" typed inside the search box itself', async () => {
+    const { wrapper } = await mountHome()
+    const input = wrapper.find('input').element as HTMLInputElement
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true }))
+    await flushPromises()
+
+    expect(document.activeElement).not.toBe(input)
+    wrapper.unmount()
+  })
+
+  it('stops listening once the page unmounts', async () => {
+    const { wrapper } = await mountHome()
+    const input = wrapper.find('input').element as HTMLInputElement
+    wrapper.unmount()
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: '/' }))
+    await flushPromises()
+
+    expect(document.activeElement).not.toBe(input)
   })
 })

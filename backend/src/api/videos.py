@@ -40,6 +40,7 @@ class VideoResponse(BaseModel):
     rating: int
     view_count: int
     is_new: bool = False
+    progress: int | None = None  # seconds watched, for the resume rail
     last_played_at: datetime | None
     created_at: datetime
     updated_at: datetime

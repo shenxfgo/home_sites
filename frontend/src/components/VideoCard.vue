@@ -38,6 +38,14 @@ const displayTitle = computed(() => props.video.title || props.video.filepath.sp
 /** Display tags (limit to 3). */
 const displayTags = computed(() => props.video.tags.slice(0, 3))
 
+/** Share of the title the history row reached, or null when there is nothing to resume. */
+const resumeRatio = computed(() => {
+  const { progress, duration } = props.video
+  if (!progress || !duration || duration <= 0) return null
+  const ratio = progress / duration
+  return ratio >= 0.995 ? null : Math.min(1, ratio)
+})
+
 function goToDetail() {
   router.push({ name: 'video-detail', params: { id: props.video.id } })
 }
@@ -63,6 +71,13 @@ function goToDetail() {
       <span v-if="video.duration != null" class="duration-badge">
         {{ formatDuration(video.duration) }}
       </span>
+
+      <!-- Where the last playback stopped -->
+      <span
+        v-if="resumeRatio"
+        class="resume-bar"
+        :style="{ width: resumeRatio * 100 + '%' }"
+      />
 
       <!-- New badge: set by the scan and cleared by the first play -->
       <el-tag
@@ -189,6 +204,15 @@ function goToDetail() {
   border-radius: 6px !important;
   border: none !important;
   background: var(--accent-fill) !important;
+}
+
+.resume-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--accent-fill);
+  border-radius: 0 2px 2px 0;
 }
 
 .card-info {

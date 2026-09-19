@@ -48,6 +48,28 @@ async def delete_videos_cascade(
     await session.execute(delete(Video).where(video_filter))
 
 
+async def attach_watch_progress(
+    session: AsyncSession, videos: list[Video]
+) -> None:
+    """Set the transient ``progress`` (seconds watched) the resume UI reads.
+
+    One row per video means a single indexed lookup serves the whole page, and
+    the list endpoint stays the only place the rail's data comes from.
+    """
+    for video in videos:
+        video.progress = None
+    if not videos:
+        return
+    result = await session.execute(
+        select(PlayHistory.video_id, PlayHistory.progress).where(
+            PlayHistory.video_id.in_([v.id for v in videos])
+        )
+    )
+    positions = dict(result.all())
+    for video in videos:
+        video.progress = positions.get(video.id)
+
+
 _COMPARATORS = {
     ">=": operator.ge,
     ">": operator.gt,
@@ -186,6 +208,7 @@ class VideoService:
         result = await self.session.execute(query)
         videos = list(result.scalars().all())
         await self._attach_new_flags(videos)
+        await attach_watch_progress(self.session, videos)
 
         return videos, total
 
@@ -210,11 +233,14 @@ class VideoService:
             video.is_new = video.id in new_ids
 
     async def get_video_by_id(self, video_id: int) -> Video | None:
-        """Get a single video by ID."""
+        """Get a single video by ID, with its stored playback position attached."""
         result = await self.session.execute(
             select(Video).where(Video.id == video_id)
         )
-        return result.scalar_one_or_none()
+        video = result.scalar_one_or_none()
+        if video:
+            await attach_watch_progress(self.session, [video])
+        return video
 
     async def update_video(self, video_id: int, **kwargs) -> Video:
         """Update a video's metadata."""

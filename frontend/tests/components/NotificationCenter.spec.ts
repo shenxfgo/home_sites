@@ -10,6 +10,8 @@ vi.mock('@/api/notifications', () => ({
     getUnreadCount: vi.fn(),
     markRead: vi.fn(),
     markAllRead: vi.fn(),
+    remove: vi.fn(),
+    clearAll: vi.fn(),
   },
 }))
 
@@ -107,5 +109,76 @@ describe('NotificationCenter', () => {
     await mountOpened([], 3)
 
     expect(popper()?.textContent).toContain('暂无通知')
+  })
+
+  it('deletes one notification without touching the others', async () => {
+    vi.mocked(notificationsApi.remove).mockResolvedValue(undefined)
+    const wrapper = await mountOpened(
+      [notification({ id: 1, title: '扫描完成' }), notification({ id: 2, title: '转码完成' })],
+      2,
+    )
+    const unreadBefore = vi.mocked(notificationsApi.getUnreadCount).mock.calls.length
+
+    popper()
+      ?.querySelector<HTMLElement>('.notification-item .notification-remove')
+      ?.click()
+    await flushPromises()
+
+    expect(notificationsApi.remove).toHaveBeenCalledWith(1)
+    const items = popper()?.querySelectorAll('.notification-item') ?? []
+    expect(items).toHaveLength(1)
+    expect(items[0]?.textContent).toContain('转码完成')
+    expect(vi.mocked(notificationsApi.getUnreadCount).mock.calls.length).toBe(unreadBefore + 1)
+    wrapper.unmount()
+  })
+
+  it('clears the list only after a second click on 清空', async () => {
+    vi.mocked(notificationsApi.clearAll).mockResolvedValue(undefined)
+    const wrapper = await mountOpened([notification({ id: 1 })], 1)
+
+    const clear = () =>
+      Array.from(popper()?.querySelectorAll('button') ?? []).find((node) =>
+        node.textContent?.includes('清空') || node.textContent?.includes('确认清空'),
+      )
+
+    clear()?.click()
+    await flushPromises()
+    expect(notificationsApi.clearAll).not.toHaveBeenCalled()
+    expect(clear()?.textContent).toContain('确认清空')
+
+    clear()?.click()
+    await flushPromises()
+    expect(notificationsApi.clearAll).toHaveBeenCalledTimes(1)
+    expect(popper()?.textContent).toContain('暂无通知')
+    expect(wrapper.find('.el-badge__content').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('lets the 清空 confirmation lapse', async () => {
+    vi.useFakeTimers()
+    vi.mocked(notificationsApi.clearAll).mockResolvedValue(undefined)
+    await mountOpened([notification({ id: 1 })], 1)
+
+    const clear = () =>
+      Array.from(popper()?.querySelectorAll('button') ?? []).find((node) =>
+        node.textContent?.includes('清空'),
+      )
+
+    clear()?.click()
+    await vi.advanceTimersByTimeAsync(4100)
+
+    expect(clear()?.textContent).toBe('清空')
+    expect(notificationsApi.clearAll).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('keeps 清空 out of the header when there is nothing to clear', async () => {
+    const wrapper = await mountOpened([], 0)
+
+    const labels = Array.from(popper()?.querySelectorAll('button') ?? []).map((node) =>
+      node.textContent?.trim(),
+    )
+    expect(labels).not.toContain('清空')
+    wrapper.unmount()
   })
 })

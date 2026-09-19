@@ -47,6 +47,7 @@ export function makeVideo(overrides: Partial<Video> = {}): Video {
     rating: 3,
     view_count: 7,
     is_new: false,
+    progress: null,
     last_played_at: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),

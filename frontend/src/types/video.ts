@@ -34,6 +34,8 @@ export interface Video {
   view_count: number
   /** Discovered by a recent scan and not played yet. */
   is_new: boolean
+  /** Seconds watched, from the single history row; null when never played. */
+  progress: number | null
   last_played_at: string | null
   created_at: string
   updated_at: string

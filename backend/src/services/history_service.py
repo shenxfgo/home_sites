@@ -35,7 +35,11 @@ class HistoryService:
         return history, total
 
     async def get_continue_list(self) -> list[Video]:
-        """Get videos left unfinished, the one most recently watched first."""
+        """Get videos left unfinished, the one most recently watched first.
+
+        The history row already carries the position, so it is copied onto the
+        video the resume rail renders instead of looking it up a second time.
+        """
         query = (
             select(PlayHistory)
             .where(PlayHistory.completed == False)  # noqa: E712
@@ -45,7 +49,12 @@ class HistoryService:
         )
         result = await self.session.execute(query)
         history_items = list(result.scalars().all())
-        return [h.video for h in history_items if h.video]
+        videos = []
+        for record in history_items:
+            if record.video:
+                record.video.progress = record.progress
+                videos.append(record.video)
+        return videos
 
     async def delete_history(self, history_id: int) -> None:
         """Delete a history record."""

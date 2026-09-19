@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import VideoPlayer from '@/components/VideoPlayer.vue'
+import { playerPrefs } from '@/composables/playerPrefs'
 import { makeSubtitle } from '../factories'
 
 const listSubtitles = vi.hoisted(() => vi.fn())
@@ -18,9 +19,13 @@ vi.mock('@/api/videos', () => ({
 }))
 
 function mountPlayer(videoId = 1) {
-  return mount(VideoPlayer, {
+  const wrapper = mount(VideoPlayer, {
     props: { videoId, videoUrl: '/api/videos/1/stream' },
   })
+  // The keyboard listeners live on `document`, so an unmounted wrapper keeps
+  // answering keys for the rest of the file unless it is torn down.
+  mounted.push(wrapper)
+  return wrapper
 }
 
 /** Wrappers attached to the document, torn down after each seeking test. */
@@ -465,5 +470,382 @@ describe('VideoPlayer playback tracking', () => {
 
     expect(recordPlay).not.toHaveBeenCalled()
     expect(updateProgress).not.toHaveBeenCalled()
+  })
+})
+
+/** One WebVTT track holding the given cues; jsdom would never parse them. */
+interface FakeCue {
+  startTime: number
+  endTime: number
+}
+
+interface FakeTrack {
+  kind: string
+  mode: string
+  cues?: FakeCue[]
+}
+
+function fakeTracks(cues: FakeCue[]): FakeTrack[] {
+  return [{ kind: 'subtitles', mode: 'hidden', cues }]
+}
+
+/**
+ * Mount a player whose file is already measurable.
+ *
+ * The track list has to exist before the subtitle request resolves, because
+ * that is when the player binds its cue timing.
+ */
+async function mountReady(
+  extraProps: Record<string, unknown> = {},
+  options: { duration?: number; tracks?: FakeTrack[] } = {},
+) {
+  const duration = options.duration ?? 100
+  const wrapper = mount(VideoPlayer, {
+    props: { videoId: 1, videoUrl: '/api/videos/1/stream', ...extraProps },
+    attachTo: document.body,
+  })
+  mounted.push(wrapper)
+
+  const video = wrapper.find('video').element as HTMLVideoElement
+  Object.defineProperty(video, 'duration', { value: duration, configurable: true })
+  if (options.tracks) {
+    Object.defineProperty(video, 'textTracks', { value: options.tracks, configurable: true })
+  }
+  await flushPromises()
+  await wrapper.find('video').trigger('loadedmetadata')
+  return { wrapper, video }
+}
+
+/** Reset the shared prefs singleton so one test cannot leak into the next. */
+function resetPrefs() {
+  Object.assign(playerPrefs, {
+    volume: 1,
+    muted: false,
+    rate: 1,
+    subtitleSize: 0,
+    subtitleDelay: 0,
+  })
+}
+
+describe('VideoPlayer remembered choices', () => {
+  beforeEach(() => {
+    vi.useRealTimers()
+    listSubtitles.mockReset()
+    listSubtitles.mockResolvedValue([])
+    recordPlay.mockReset()
+    recordPlay.mockResolvedValue(undefined)
+    updateProgress.mockReset()
+    updateProgress.mockResolvedValue(undefined)
+    resetPrefs()
+  })
+
+  afterEach(() => {
+    window.dispatchEvent(new MouseEvent('pointerup'))
+    mounted.splice(0).forEach((wrapper) => wrapper.unmount())
+  })
+
+  async function openCueMenu(wrapper: ReturnType<typeof mount>) {
+    await wrapper.find('.subtitle-btn').trigger('click')
+    return wrapper
+  }
+
+  function stepButton(wrapper: ReturnType<typeof mount>, group: number, which: 'down' | 'up') {
+    const steppers = wrapper.findAll('.cue-stepper')
+    const steps = steppers[group]?.findAll('.cue-step') ?? []
+    return which === 'down' ? steps[0] : steps[1]
+  }
+
+  /** The 延迟 readout, which is the second stepper group in the menu. */
+  function delayValue(wrapper: ReturnType<typeof mount>) {
+    return wrapper.findAll('.cue-value')[1]?.text()
+  }
+
+  it('puts the remembered volume and speed on the element', async () => {
+    Object.assign(playerPrefs, { volume: 0.4, rate: 1.5 })
+
+    const { video } = await mountReady()
+
+    expect(video.volume).toBe(0.4)
+    expect(video.playbackRate).toBe(1.5)
+  })
+
+  it('offers the stored speed on the rate button', async () => {
+    Object.assign(playerPrefs, { rate: 1.25 })
+
+    const { wrapper } = await mountReady()
+
+    expect(wrapper.find('.rate-btn').text()).toBe('1.25x')
+    expect(wrapper.find('.rate-btn').classes()).toContain('is-active')
+  })
+
+  it('switches speed from the menu and remembers the choice', async () => {
+    const { wrapper, video } = await mountReady()
+
+    await wrapper.find('.rate-btn').trigger('click')
+    const items = wrapper.findAll('.rate-menu .subtitle-menu-item')
+    expect(items.map((item) => item.text())).toEqual(['0.5x', '0.75x', '1x', '1.25x', '1.5x', '2x'])
+
+    await items[5].trigger('click')
+
+    expect(video.playbackRate).toBe(2)
+    expect(playerPrefs.rate).toBe(2)
+    expect(wrapper.find('.rate-btn').text()).toBe('2x')
+    expect(wrapper.find('.rate-menu').exists()).toBe(false)
+  })
+
+  it('keeps the speed after a new file loads', async () => {
+    Object.assign(playerPrefs, { rate: 1.5 })
+
+    const { wrapper, video } = await mountReady()
+    await wrapper.find('video').trigger('loadstart')
+    await wrapper.find('video').trigger('loadedmetadata')
+
+    expect(video.playbackRate).toBe(1.5)
+  })
+
+  it('remembers muting as surely as it remembers volume', async () => {
+    const { wrapper, video } = await mountReady()
+
+    await wrapper.find('.volume-control .control-btn').trigger('click')
+    expect(video.muted).toBe(true)
+    expect(playerPrefs.muted).toBe(true)
+
+    await wrapper.find('.volume-control .control-btn').trigger('click')
+    expect(video.muted).toBe(false)
+    expect(playerPrefs.muted).toBe(false)
+  })
+
+  it('starts at the stored position once the file is measurable', async () => {
+    const { wrapper, video } = await mountReady({ startAt: 40 })
+
+    expect(video.currentTime).toBe(40)
+    expect(wrapper.find('.progress-fill').attributes('style')).toContain('width: 40%')
+    expect(wrapper.emitted('resumed')).toEqual([[40]])
+  })
+
+  it('leaves the playhead alone for a head or a tail resume', async () => {
+    const head = await mountReady({ startAt: 2 })
+    expect(head.video.currentTime).toBe(0)
+    expect(head.wrapper.emitted('resumed')).toBeUndefined()
+    head.wrapper.unmount()
+    mounted.pop()
+
+    const tail = await mountReady({ startAt: 98 })
+    expect(tail.video.currentTime).toBe(0)
+    expect(tail.wrapper.emitted('resumed')).toBeUndefined()
+  })
+
+  it('skips the resume when there is nothing stored', async () => {
+    const { wrapper, video } = await mountReady({ startAt: null })
+
+    expect(video.currentTime).toBe(0)
+    expect(wrapper.emitted('resumed')).toBeUndefined()
+  })
+
+  it('resumes once per load, and again when the file reloads', async () => {
+    const { wrapper, video } = await mountReady({ startAt: 40 })
+
+    video.currentTime = 61
+    await wrapper.find('video').trigger('loadedmetadata')
+    expect(video.currentTime).toBe(61)
+    expect(wrapper.emitted('resumed')).toHaveLength(1)
+
+    await wrapper.find('video').trigger('loadstart')
+    await wrapper.find('video').trigger('loadedmetadata')
+    expect(video.currentTime).toBe(40)
+    expect(wrapper.emitted('resumed')).toHaveLength(2)
+  })
+
+  it('scales the cues through the video element', async () => {
+    listSubtitles.mockResolvedValue([makeSubtitle({ id: 3, label: '中文' })])
+
+    const { wrapper, video } = await mountReady()
+    await openCueMenu(wrapper)
+
+    expect(wrapper.find('.cue-value').text()).toBe('自动')
+    expect(video.style.fontSize).toBe('')
+
+    await stepButton(wrapper, 0, 'up').trigger('click')
+    expect(playerPrefs.subtitleSize).toBe(14)
+    expect(video.style.fontSize).toBe('14px')
+
+    await stepButton(wrapper, 0, 'up').trigger('click')
+    expect(wrapper.find('.cue-value').text()).toBe('16')
+
+    await stepButton(wrapper, 0, 'up').trigger('click')
+    await stepButton(wrapper, 0, 'up').trigger('click')
+    expect(playerPrefs.subtitleSize).toBe(20)
+    await stepButton(wrapper, 0, 'down').trigger('click')
+    expect(playerPrefs.subtitleSize).toBe(18)
+
+    await wrapper.get('.cue-reset').trigger('click')
+    expect(playerPrefs.subtitleSize).toBe(0)
+    expect(video.style.fontSize).toBe('')
+  })
+
+  it('never lets the cue size leave the readable band', async () => {
+    listSubtitles.mockResolvedValue([makeSubtitle({ id: 3 })])
+    const { wrapper, video } = await mountReady()
+    await openCueMenu(wrapper)
+
+    for (let i = 0; i < 20; i++) await stepButton(wrapper, 0, 'up').trigger('click')
+    expect(playerPrefs.subtitleSize).toBe(40)
+
+    for (let i = 0; i < 40; i++) await stepButton(wrapper, 0, 'down').trigger('click')
+    expect(playerPrefs.subtitleSize).toBe(14)
+    expect(video.style.fontSize).toBe('14px')
+  })
+
+  it('shifts every cue by the stored delay and back again', async () => {
+    listSubtitles.mockResolvedValue([makeSubtitle({ id: 3 })])
+    const cues = [
+      { startTime: 10, endTime: 12 },
+      { startTime: 20, endTime: 21 },
+    ]
+    const { wrapper } = await mountReady({}, { tracks: fakeTracks(cues) })
+    await openCueMenu(wrapper)
+
+    await stepButton(wrapper, 1, 'up').trigger('click')
+    expect(playerPrefs.subtitleDelay).toBe(0.5)
+    expect(cues[0]).toMatchObject({ startTime: 10.5, endTime: 12.5 })
+    expect(cues[1]).toMatchObject({ startTime: 20.5, endTime: 21.5 })
+
+    await stepButton(wrapper, 1, 'up').trigger('click')
+    expect(cues[0]).toMatchObject({ startTime: 11, endTime: 13 })
+
+    await stepButton(wrapper, 1, 'down').trigger('click')
+    await stepButton(wrapper, 1, 'down').trigger('click')
+    expect(cues[0]).toMatchObject({ startTime: 10, endTime: 12 })
+    expect(cues[1]).toMatchObject({ startTime: 20, endTime: 21 })
+    expect(playerPrefs.subtitleDelay).toBe(0)
+  })
+
+  it('binds the delay to cues the browser parses later', async () => {
+    listSubtitles.mockResolvedValue([makeSubtitle({ id: 3 })])
+    const cues = [{ startTime: 4, endTime: 6 }]
+    // 轨道刚挂上时浏览器还没解析出 cues，<track> 元素 load 之后才有
+    const track = Object.assign(new EventTarget(), {
+      kind: 'subtitles',
+      mode: 'hidden',
+      cues: undefined as typeof cues | undefined,
+    })
+
+    playerPrefs.subtitleDelay = 1
+    const { wrapper } = await mountReady({}, { tracks: [track] })
+    expect(cues[0]).toMatchObject({ startTime: 4, endTime: 6 })
+
+    track.cues = cues
+    await wrapper.findAll('track')[0].trigger('load')
+    await flushPromises()
+
+    expect(cues[0]).toMatchObject({ startTime: 5, endTime: 7 })
+    await openCueMenu(wrapper)
+    expect(delayValue(wrapper)).toBe('1.0s')
+  })
+
+  it('retries when the browser hands over an empty cue list first', async () => {
+    listSubtitles.mockResolvedValue([makeSubtitle({ id: 3 })])
+    const cues = [{ startTime: 4, endTime: 6 }]
+    // Chromium 在解析完成前给的是空列表而不是 undefined，此时不能算已经记下时间轴
+    const track = Object.assign(new EventTarget(), {
+      kind: 'subtitles',
+      mode: 'hidden',
+      cues: [] as typeof cues,
+    })
+
+    playerPrefs.subtitleDelay = 1
+    const { wrapper } = await mountReady({}, { tracks: [track] })
+
+    track.cues = cues
+    await wrapper.findAll('track')[0].trigger('load')
+    await flushPromises()
+
+    expect(cues[0]).toMatchObject({ startTime: 5, endTime: 7 })
+    wrapper.unmount()
+  })
+
+  it('keeps a cue from running backwards at the very start', async () => {
+    listSubtitles.mockResolvedValue([makeSubtitle({ id: 3 })])
+    const cues = [{ startTime: 0.2, endTime: 2 }]
+    const { wrapper } = await mountReady({}, { tracks: fakeTracks(cues) })
+    await openCueMenu(wrapper)
+
+    await stepButton(wrapper, 1, 'down').trigger('click')
+    expect(cues[0]).toMatchObject({ startTime: 0, endTime: 1.5 })
+  })
+})
+
+describe('VideoPlayer keyboard shortcuts', () => {
+  beforeEach(() => {
+    vi.useRealTimers()
+    listSubtitles.mockReset()
+    listSubtitles.mockResolvedValue([])
+    recordPlay.mockReset()
+    recordPlay.mockResolvedValue(undefined)
+    updateProgress.mockReset()
+    updateProgress.mockResolvedValue(undefined)
+    resetPrefs()
+  })
+
+  afterEach(() => {
+    mounted.splice(0).forEach((wrapper) => wrapper.unmount())
+  })
+
+  /** Fire a document-level key as if it had been typed into `field`. */
+  async function press(key: string, field: Element | Document) {
+    field.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+
+  it('rewinds with the arrow keys', async () => {
+    const { wrapper, video } = await mountReady()
+    video.currentTime = 30
+
+    await press('ArrowLeft', document.body)
+
+    expect(video.currentTime).toBe(25)
+    wrapper.unmount()
+  })
+
+  it('plays and pauses on the space key', async () => {
+    const { wrapper, video } = await mountReady()
+    const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
+
+    await press(' ', document.body)
+
+    expect(play).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('stands down while the viewer is typing in a field', async () => {
+    const { wrapper, video } = await mountReady()
+    video.currentTime = 30
+    const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
+    const field = document.createElement('input')
+    document.body.appendChild(field)
+
+    await press('ArrowLeft', field)
+    await press(' ', field)
+
+    expect(video.currentTime).toBe(30)
+    expect(play).not.toHaveBeenCalled()
+    field.remove()
+    wrapper.unmount()
+  })
+
+  it('stands down while the viewer is typing in a textarea', async () => {
+    const { wrapper, video } = await mountReady()
+    video.currentTime = 30
+    const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
+    const box = document.createElement('textarea')
+    document.body.appendChild(box)
+
+    await press('ArrowLeft', box)
+    await press(' ', box)
+
+    expect(video.currentTime).toBe(30)
+    expect(play).not.toHaveBeenCalled()
+    box.remove()
+    wrapper.unmount()
   })
 })

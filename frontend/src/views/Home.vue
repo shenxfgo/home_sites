@@ -1,18 +1,26 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { QuestionFilled, Search, VideoCamera } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import VideoCard from '@/components/VideoCard.vue'
-import { listVideos } from '@/api/videos'
+import { listVideos, thumbnailUrl } from '@/api/videos'
+import { getContinueList } from '@/api/history'
 import { listSources } from '@/api/sources'
 import { listTags } from '@/api/tags'
+import { isTypingTarget } from '@/composables/typingGuard'
 import type { Tag, Video, VideoQueryParams } from '@/types/video'
 import type { Source } from '@/types/source'
+
+const DEFAULT_PAGE_SIZE = 20
+/** Query keys the URL mirrors, sorted so two serializations compare cleanly. */
+const QUERY_KEYS = ['page', 'q', 'size', 'source', 'tag'] as const
 
 // State
 const videos = ref<Video[]>([])
 const sources = ref<Source[]>([])
 const tags = ref<Tag[]>([])
+const continueVideos = ref<Video[]>([])
 const loading = ref(false)
 const total = ref(0)
 
@@ -21,12 +29,104 @@ const search = ref('')
 const selectedSourceId = ref<number | undefined>(undefined)
 const selectedTagId = ref<number | undefined>(undefined)
 const currentPage = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(DEFAULT_PAGE_SIZE)
+const searchInput = ref<{ focus: () => void } | null>(null)
+
+const route = useRoute()
+const router = useRouter()
 
 const activeSearch = computed(() => search.value.trim())
 const hasFilters = computed(
   () => Boolean(activeSearch.value) || selectedSourceId.value != null || selectedTagId.value != null,
 )
+const showResumeRail = computed(
+  () => !loading.value && !hasFilters.value && continueVideos.value.length > 0,
+)
+
+/** How much of a title is still ahead of the stored position. */
+function remainingOf(video: Video): number | null {
+  if (video.duration == null) return null
+  return Math.max(0, video.duration - (video.progress ?? 0))
+}
+
+function ratioOf(video: Video): number {
+  if (!video.duration || video.progress == null) return 0
+  return Math.min(1, video.progress / video.duration)
+}
+
+function titleOf(video: Video): string {
+  return video.title || video.filepath.split(/[/\\]/).pop() || '无标题'
+}
+
+/** Format seconds as H:MM:SS or M:SS. */
+function formatDuration(seconds: number | null): string {
+  if (seconds == null) return '--'
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = Math.floor(seconds % 60)
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`
+}
+
+function openVideo(video: Video) {
+  router.push({ name: 'video-detail', params: { id: video.id } })
+}
+
+/** Reduce a location query to the keys this page owns, dropping empty values. */
+function normalizeQuery(query: Record<string, unknown>): string {
+  const picked: Record<string, string> = {}
+  for (const key of QUERY_KEYS) {
+    const raw = query[key]
+    const value = Array.isArray(raw) ? raw[0] : raw
+    if (typeof value === 'string' && value !== '') picked[key] = value
+  }
+  return JSON.stringify(picked)
+}
+
+/** Current filters in the shape the URL stores them in. */
+function currentQuery(): Record<string, string> {
+  const query: Record<string, string> = {}
+  if (activeSearch.value) query.q = activeSearch.value
+  if (selectedSourceId.value != null) query.source = String(selectedSourceId.value)
+  if (selectedTagId.value != null) query.tag = String(selectedTagId.value)
+  if (currentPage.value > 1) query.page = String(currentPage.value)
+  if (pageSize.value !== DEFAULT_PAGE_SIZE) query.size = String(pageSize.value)
+  return query
+}
+
+function firstValue(raw: unknown): string | undefined {
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return typeof value === 'string' && value !== '' ? value : undefined
+}
+
+function toNumber(raw: unknown): number | undefined {
+  const value = firstValue(raw)
+  if (value == null) return undefined
+  const parsed = Number(value)
+  return Number.isInteger(parsed) ? parsed : undefined
+}
+
+/** Read the filters out of the address bar, so a link or 后退 restores the view. */
+function applyQuery() {
+  const query = route.query as Record<string, unknown>
+  const keyword = (firstValue(query.q) ?? '').trim()
+  // Only a real change goes through the ref: the caller reloads, so the search
+  // watcher must not queue a second request behind it.
+  if (keyword !== search.value) {
+    syncingFromUrl = true
+    search.value = keyword
+  }
+  selectedSourceId.value = toNumber(query.source)
+  selectedTagId.value = toNumber(query.tag)
+  currentPage.value = Math.max(1, toNumber(query.page) ?? 1)
+  const size = toNumber(query.size)
+  pageSize.value = size && size >= 1 && size <= 100 ? size : DEFAULT_PAGE_SIZE
+}
+
+function pushQuery() {
+  const next = currentQuery()
+  if (normalizeQuery(route.query) === normalizeQuery(next)) return
+  router.replace({ query: next })
+}
 
 async function loadVideos() {
   loading.value = true
@@ -70,8 +170,18 @@ async function loadTags() {
   }
 }
 
+async function loadContinueList() {
+  try {
+    continueVideos.value = await getContinueList()
+  } catch {
+    // Silently ignore — the rail is an extra, not a gate
+  }
+}
+
 function handleSearch() {
   currentPage.value = 1
+  // The keyword is a filter like any other, so it belongs in the address bar.
+  pushQuery()
   loadVideos()
 }
 
@@ -106,17 +216,50 @@ function handleSizeChange(size: number) {
 
 // Debounced search
 let searchTimer: ReturnType<typeof setTimeout> | null = null
+let syncingFromUrl = false
 function onSearchInput() {
+  if (syncingFromUrl) {
+    syncingFromUrl = false
+    return
+  }
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = setTimeout(handleSearch, 400)
 }
 
 watch(search, onSearchInput)
+watch([selectedSourceId, selectedTagId, currentPage, pageSize], pushQuery)
+
+// Typing "/" jumps to the search box, the way a library site should.
+function handleGlobalKeydown(e: KeyboardEvent) {
+  if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return
+  if (isTypingTarget(e.target)) return
+  e.preventDefault()
+  searchInput.value?.focus()
+}
+
+watch(
+  () => route.query,
+  (query) => {
+    // Ignore the replaces this page triggered itself, and any navigation away.
+    if (route.name !== 'home') return
+    if (normalizeQuery(query) === normalizeQuery(currentQuery())) return
+    applyQuery()
+    loadVideos()
+  },
+)
 
 onMounted(() => {
+  applyQuery()
   loadSources()
   loadTags()
+  loadContinueList()
   loadVideos()
+  document.addEventListener('keydown', handleGlobalKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleGlobalKeydown)
+  if (searchTimer) clearTimeout(searchTimer)
 })
 </script>
 
@@ -133,8 +276,9 @@ onMounted(() => {
     <!-- Toolbar -->
     <div class="toolbar">
       <el-input
+        ref="searchInput"
         v-model="search"
-        placeholder="搜索片名、简介或标签…"
+        placeholder="搜索片名、简介或标签…（按 / 直达）"
         :prefix-icon="Search"
         clearable
         class="search-input"
@@ -190,6 +334,39 @@ onMounted(() => {
         </div>
       </el-popover>
     </div>
+
+    <!-- Resume rail: titles with an unfinished history row, most recent first -->
+    <section v-if="showResumeRail" class="resume-rail">
+      <div class="rail-head">
+        <h2 class="rail-title">继续观看</h2>
+        <span class="rail-count">{{ continueVideos.length }} 部没看完</span>
+      </div>
+      <div class="rail-row">
+        <div
+          v-for="video in continueVideos"
+          :key="video.id"
+          class="rail-item"
+          @click="openVideo(video)"
+        >
+          <div class="rail-thumb">
+            <img
+              v-if="video.thumbnail_path"
+              :src="thumbnailUrl(video.id)"
+              :alt="titleOf(video)"
+              class="rail-img"
+            />
+            <div v-else class="rail-placeholder">
+              <el-icon :size="22"><VideoCamera /></el-icon>
+            </div>
+            <span class="rail-remaining">剩 {{ formatDuration(remainingOf(video)) }}</span>
+            <span class="rail-bar">
+              <span class="rail-bar-fill" :style="{ width: ratioOf(video) * 100 + '%' }" />
+            </span>
+          </div>
+          <p class="rail-caption" :title="titleOf(video)">{{ titleOf(video) }}</p>
+        </div>
+      </div>
+    </section>
 
     <!-- Empty state -->
     <el-empty
@@ -311,6 +488,105 @@ onMounted(() => {
   margin: 0;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+.resume-rail {
+  margin-bottom: 20px;
+}
+
+.rail-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.rail-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-glass);
+}
+
+.rail-count {
+  font-size: 12px;
+  color: var(--text-glass-secondary);
+}
+
+.rail-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+
+.rail-item {
+  flex: 0 0 196px;
+  cursor: pointer;
+}
+
+.rail-thumb {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--radius-tile);
+  background: var(--tile-bg);
+}
+
+.rail-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.rail-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-glass-secondary);
+}
+
+.rail-remaining {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background-color: var(--overlay-badge);
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rail-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.rail-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent-fill);
+}
+
+.rail-caption {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--text-glass);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-item:hover .rail-caption {
+  color: var(--accent);
 }
 
 .empty-hint {

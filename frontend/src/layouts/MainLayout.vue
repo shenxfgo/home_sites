@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   HomeFilled,
@@ -10,6 +10,7 @@ import {
   Setting,
 } from '@element-plus/icons-vue'
 import NotificationCenter from '@/components/NotificationCenter.vue'
+import { isTypingTarget } from '@/composables/typingGuard'
 
 const router = useRouter()
 const route = useRoute()
@@ -23,6 +24,29 @@ const navItems = [
   { path: '/settings', label: '设置', icon: Setting },
 ]
 
+const shortcutsVisible = ref(false)
+
+const shortcutGroups = [
+  {
+    title: '全站',
+    items: [
+      { keys: ['/'], desc: '跳到首页搜索框' },
+      { keys: ['?'], desc: '打开这份快捷键清单' },
+      { keys: ['Esc'], desc: '关闭对话框与菜单' },
+    ],
+  },
+  {
+    title: '播放器',
+    items: [
+      { keys: ['空格', 'K'], desc: '播放 / 暂停' },
+      { keys: ['←', '→'], desc: '后退 / 前进 5 秒' },
+      { keys: ['↑', '↓'], desc: '音量，之后会记住' },
+      { keys: ['M'], desc: '静音' },
+      { keys: ['F'], desc: '全屏' },
+    ],
+  },
+]
+
 const activeMenu = computed(() => {
   const match = navItems.find((item) => {
     if (item.path === '/') return route.path === '/'
@@ -34,6 +58,17 @@ const activeMenu = computed(() => {
 function navigate(path: string) {
   router.push(path)
 }
+
+// "?" lists the shortcuts; typing it into a field must not steal the key.
+function handleGlobalKeydown(e: KeyboardEvent) {
+  if (e.key !== '?' || e.metaKey || e.ctrlKey || e.altKey) return
+  if (isTypingTarget(e.target)) return
+  e.preventDefault()
+  shortcutsVisible.value = !shortcutsVisible.value
+}
+
+onMounted(() => document.addEventListener('keydown', handleGlobalKeydown))
+onUnmounted(() => document.removeEventListener('keydown', handleGlobalKeydown))
 </script>
 
 <template>
@@ -56,9 +91,25 @@ function navigate(path: string) {
       </nav>
 
       <div class="nav-right">
+        <el-button text class="shortcut-help-btn" title="快捷键（按 ? 也可打开）" @click="shortcutsVisible = true">
+          快捷键
+        </el-button>
         <NotificationCenter />
       </div>
     </header>
+
+    <!-- 快捷键清单 -->
+    <el-dialog v-model="shortcutsVisible" title="快捷键" width="420px">
+      <section v-for="group in shortcutGroups" :key="group.title" class="shortcut-group">
+        <h3 class="shortcut-group-title">{{ group.title }}</h3>
+        <div v-for="item in group.items" :key="item.desc" class="shortcut-row">
+          <span class="shortcut-keys">
+            <kbd v-for="key in item.keys" :key="key">{{ key }}</kbd>
+          </span>
+          <span class="shortcut-desc">{{ item.desc }}</span>
+        </div>
+      </section>
+    </el-dialog>
 
     <!-- 内容区 -->
     <main class="layout-main">
@@ -142,6 +193,52 @@ function navigate(path: string) {
 .nav-right {
   display: flex;
   align-items: center;
+  gap: 8px;
+}
+
+.shortcut-help-btn {
+  color: var(--text-glass-secondary);
+}
+
+.shortcut-help-btn:hover {
+  color: var(--accent);
+}
+
+.shortcut-group + .shortcut-group {
+  margin-top: 16px;
+}
+
+.shortcut-group-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text-glass-secondary);
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--text-glass);
+}
+
+.shortcut-keys {
+  display: flex;
+  gap: 4px;
+  min-width: 78px;
+}
+
+.shortcut-keys kbd {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--glass-border);
+  background: var(--tile-bg);
+  color: var(--text-glass);
 }
 
 .layout-main {

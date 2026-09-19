@@ -96,3 +96,23 @@ async def mark_all_read(
 ) -> None:
     """Mark all notifications as read."""
     await service.mark_all_read()
+
+
+@router.delete("/{notification_id}", status_code=204)
+async def delete_notification(
+    notification_id: int,
+    service: NotificationService = Depends(get_notification_service),
+) -> None:
+    """Delete a single notification."""
+    try:
+        await service.delete_notification(notification_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("", status_code=204)
+async def clear_notifications(
+    service: NotificationService = Depends(get_notification_service),
+) -> None:
+    """Delete every notification."""
+    await service.clear_notifications()

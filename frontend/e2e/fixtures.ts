@@ -31,6 +31,8 @@ export interface StubVideo {
   view_count: number
   is_new: boolean
   last_played_at: string | null
+  /** Stored playback position in seconds, attached by the watch-progress query. */
+  progress: number | null
   created_at: string
   updated_at: string
   tags: { id: number; name: string; color: string }[]
@@ -54,6 +56,7 @@ export const videos: StubVideo[] = [
     view_count: 3,
     is_new: true,
     last_played_at: hoursAgo(2),
+    progress: 42,
     created_at: hoursAgo(1),
     updated_at: hoursAgo(1),
     tags: [{ id: 1, name: '动作片', color: '#7c6cff' }],
@@ -73,6 +76,7 @@ export const videos: StubVideo[] = [
     view_count: 0,
     is_new: false,
     last_played_at: null,
+    progress: null,
     created_at: hoursAgo(50),
     updated_at: hoursAgo(50),
     tags: [],
@@ -130,6 +134,26 @@ export const subtitles = [
 
 /** WebVTT body the subtitle stream route answers with. */
 export const SAMPLE_VTT = 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n中文测试\n'
+
+/** Seed rows the notification routes serve; `read` is filled in per request. */
+const NOTIFICATION_SEEDS = [
+  {
+    id: 1,
+    type: 'scan_complete',
+    title: '扫描完成',
+    message: '发现 2 个新视频',
+    data: null,
+    created_at: hoursAgo(1),
+  },
+  {
+    id: 2,
+    type: 'new_video',
+    title: '新视频',
+    message: '深夜测试.mp4 已入库',
+    data: null,
+    created_at: hoursAgo(2),
+  },
+]
 
 /** Which stub videos the fake playback history marks as started. */
 const WATCH_STATE: Record<number, 'never' | 'unfinished' | 'finished'> = { 1: 'unfinished' }
@@ -233,6 +257,7 @@ export async function mockApi(page: Page): Promise<void> {
   let transcodeProgress = 0
   let transcodeFormat: string | null = null
   const readNotifications = new Set<number>()
+  const removedNotifications = new Set<number>()
 
   const statusBody = (videoId: number) => ({
     video_id: videoId,
@@ -366,30 +391,16 @@ export async function mockApi(page: Page): Promise<void> {
         })
       }
       if (path === '/notifications') {
-        const items = [
-          {
-            id: 1,
-            type: 'scan_complete',
-            title: '扫描完成',
-            message: '发现 2 个新视频',
-            data: null,
-            read: readNotifications.has(1),
-            created_at: hoursAgo(1),
-          },
-          {
-            id: 2,
-            type: 'new_video',
-            title: '新视频',
-            message: '深夜测试.mp4 已入库',
-            data: null,
-            read: readNotifications.has(2),
-            created_at: hoursAgo(2),
-          },
-        ]
+        const items = NOTIFICATION_SEEDS.filter((item) => !removedNotifications.has(item.id)).map(
+          (item) => ({ ...item, read: readNotifications.has(item.id) }),
+        )
         return respond(route, { items, total: items.length, page: 1, page_size: 50 })
       }
       if (path === '/notifications/unread') {
-        return respond(route, { count: 2 - [...readNotifications].filter((id) => id <= 2).length })
+        const alive = NOTIFICATION_SEEDS.filter((item) => !removedNotifications.has(item.id))
+        return respond(route, {
+          count: alive.filter((item) => !readNotifications.has(item.id)).length,
+        })
       }
       if (path === '/transcode/formats') return respond(route, formats)
       const status = /^\/transcode\/(\d+)\/status$/.exec(path)
@@ -445,6 +456,19 @@ export async function mockApi(page: Page): Promise<void> {
       if (/^\/sources\/\d+$/.test(path)) return route.fulfill({ status: 204, body: '' })
       if (/^\/history\/\d+$/.test(path)) return respond(route, { ok: true })
       if (/^\/favorites\/\d+$/.test(path)) return respond(route, { ok: true })
+      const notification = /^\/notifications\/(\d+)$/.exec(path)
+      if (notification) {
+        const id = Number(notification[1])
+        if (!NOTIFICATION_SEEDS.some((item) => item.id === id) || removedNotifications.has(id)) {
+          return respond(route, { detail: '通知不存在' }, 404)
+        }
+        removedNotifications.add(id)
+        return route.fulfill({ status: 204, body: '' })
+      }
+      if (path === '/notifications') {
+        for (const item of NOTIFICATION_SEEDS) removedNotifications.add(item.id)
+        return route.fulfill({ status: 204, body: '' })
+      }
     }
 
     return respond(route, { detail: `未预置的接口: ${method} ${path}` }, 500)

@@ -221,6 +221,11 @@ function handlePlayerError(error: Event) {
   ElMessage.error('视频播放失败')
 }
 
+/** Say where the jump came from, so resuming is not mistaken for a glitch. */
+function handlePlayerResumed(atSeconds: number) {
+  ElMessage.success(`已从上次的 ${formatDuration(atSeconds)} 继续播放`)
+}
+
 onMounted(() => {
   loadVideo()
   loadAllTags()
@@ -243,8 +248,10 @@ onMounted(() => {
           <VideoPlayer
             :video-id="video.id"
             :video-url="getVideoUrl()"
+            :start-at="video.progress"
             @ended="handlePlayerEnded"
             @error="handlePlayerError"
+            @resumed="handlePlayerResumed"
           />
         </div>
         <div v-else class="preview-area" @click="handlePlay">

@@ -300,3 +300,49 @@ async def test_report_progress(client, db_session):
     )
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_list_videos_reports_the_stored_position(client, db_session):
+    """The list carries playback progress so 继续观看 needs no extra request."""
+    source = await _create_source(db_session)
+    watched = await _create_video(db_session, source_id=source.id, title="Seen", filepath="/s.mp4")
+    fresh = await _create_video(db_session, source_id=source.id, title="Fresh", filepath="/f.mp4")
+
+    await client.post(f"/api/videos/{watched.id}/play")
+    await client.post(f"/api/videos/{watched.id}/progress", json={"progress": 75})
+
+    response = await client.get("/api/videos")
+    assert response.status_code == 200
+    positions = {item["id"]: item["progress"] for item in response.json()["items"]}
+    assert positions == {watched.id: 75, fresh.id: None}
+
+
+@pytest.mark.asyncio
+async def test_get_video_reports_the_stored_position(client, db_session):
+    """The detail page resumes from the same field."""
+    source = await _create_source(db_session)
+    video = await _create_video(db_session, source_id=source.id)
+
+    await client.post(f"/api/videos/{video.id}/play")
+    await client.post(f"/api/videos/{video.id}/progress", json={"progress": 42})
+
+    response = await client.get(f"/api/videos/{video.id}")
+    assert response.status_code == 200
+    assert response.json()["progress"] == 42
+
+
+@pytest.mark.asyncio
+async def test_continue_list_reports_the_stored_position(client, db_session):
+    """The rail's rows carry their own position, so the bar can be drawn."""
+    source = await _create_source(db_session)
+    video = await _create_video(db_session, source_id=source.id)
+
+    await client.post(f"/api/videos/{video.id}/play")
+    await client.post(f"/api/videos/{video.id}/progress", json={"progress": 30})
+
+    response = await client.get("/api/history/continue")
+    assert response.status_code == 200
+    items = response.json()
+    assert [item["id"] for item in items] == [video.id]
+    assert items[0]["progress"] == 30

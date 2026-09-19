@@ -69,3 +69,20 @@ async def test_continue_list_offers_each_unfinished_video_once(db_session):
 
     rows = await db_session.execute(select(PlayHistory))
     assert len(rows.scalars().all()) == 3
+
+
+@pytest.mark.asyncio
+async def test_continue_list_carries_the_position_of_its_own_row(db_session):
+    """Each rail video reports where its single history row stopped."""
+    await _create_video(db_session, 1, "暗涌")
+    await _create_video(db_session, 2, "长夜")
+    await _watch(db_session, 1, 45, False, (2026, 1, 5))
+    await _watch(db_session, 2, 90, False, (2026, 1, 6))
+
+    service = HistoryService(db_session)
+    videos = await service.get_continue_list()
+
+    assert [(video.id, video.progress, video.duration) for video in videos] == [
+        (2, 90, 120),
+        (1, 45, 120),
+    ]
