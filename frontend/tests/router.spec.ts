@@ -12,6 +12,7 @@ describe('router', () => {
         'history',
         'stats',
         'favorites',
+        'watchlists',
         'tags',
         'settings',
       ]),

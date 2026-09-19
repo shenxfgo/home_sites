@@ -192,6 +192,32 @@ export const subtitles = [
 /** WebVTT body the subtitle stream route answers with. */
 export const SAMPLE_VTT = 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n中文测试\n'
 
+/** A hand-picked queue of video ids, in the order they were added. */
+interface StubWatchlist {
+  id: number
+  name: string
+  description: string | null
+  created_at: string
+  video_ids: number[]
+}
+
+const watchlistSeed: StubWatchlist[] = [
+  {
+    id: 1,
+    name: '今晚看这些',
+    description: null,
+    created_at: hoursAgo(5),
+    video_ids: [1, 2],
+  },
+  {
+    id: 2,
+    name: '还没排片',
+    description: '先占个位置',
+    created_at: hoursAgo(4),
+    video_ids: [],
+  },
+]
+
 /** Seed rows the notification routes serve; `read` is filled in per request. */
 const NOTIFICATION_SEEDS = [
   {
@@ -322,8 +348,26 @@ export async function mockApi(page: Page): Promise<void> {
   const removedNotifications = new Set<number>()
   /** Rows the app deleted through DELETE /videos/{id} during a test. */
   const removedVideos = new Set<number>()
+  /** Queues the page mutates through /watchlists, seeded per test. */
+  const queues: StubWatchlist[] = watchlistSeed.map((list) => ({
+    ...list,
+    video_ids: [...list.video_ids],
+  }))
+  let nextQueueId = 100
   const aliveVideos = () => videos.filter((video) => !removedVideos.has(video.id))
   const aliveCopies = () => duplicateCopies.filter((video) => !removedVideos.has(video.id))
+
+  const queueBody = (list: StubWatchlist) => ({
+    id: list.id,
+    name: list.name,
+    description: list.description,
+    created_at: list.created_at,
+    items: list.video_ids
+      .map((id) => aliveVideos().find((video) => video.id === id))
+      .filter((video): video is StubVideo => Boolean(video)),
+  })
+
+  const findQueue = (id: number) => queues.find((list) => list.id === id)
 
   const statusBody = (videoId: number) => ({
     video_id: videoId,
@@ -470,6 +514,16 @@ export async function mockApi(page: Page): Promise<void> {
       }
       if (path === '/favorites') return respond(route, { items: [videos[1]], total: 1, page: 1, page_size: 20 })
       if (path === '/tags') return respond(route, [{ id: 1, name: '动作片', color: '#7c6cff', video_count: 1 }])
+      if (path === '/watchlists') {
+        const videoId = url.searchParams.get('video_id')
+        const held = videoId ? queues.filter((list) => list.video_ids.includes(Number(videoId))) : queues
+        return respond(route, held.map(queueBody))
+      }
+      const queueRow = /^\/watchlists\/(\d+)$/.exec(path)
+      if (queueRow) {
+        const found = findQueue(Number(queueRow[1]))
+        return found ? respond(route, queueBody(found)) : respond(route, { detail: '片单不存在' }, 404)
+      }
       if (path === '/settings') {
         return respond(route, {
           auto_scan_enabled: true,
@@ -507,6 +561,26 @@ export async function mockApi(page: Page): Promise<void> {
     if (method === 'POST') {
       if (/^\/videos\/\d+\/(play|progress)$/.test(path)) return respond(route, { ok: true })
       if (/^\/favorites\/\d+$/.test(path)) return respond(route, { ok: true })
+      if (path === '/watchlists') {
+        const body = JSON.parse(request.postData() ?? '{}')
+        const created: StubWatchlist = {
+          id: nextQueueId++,
+          name: body.name ?? '未命名片单',
+          description: body.description ?? null,
+          created_at: new Date().toISOString(),
+          video_ids: [],
+        }
+        queues.push(created)
+        return respond(route, queueBody(created), 201)
+      }
+      const queueAdd = /^\/watchlists\/(\d+)\/videos$/.exec(path)
+      if (queueAdd) {
+        const found = findQueue(Number(queueAdd[1]))
+        if (!found) return respond(route, { detail: '片单不存在' }, 404)
+        const videoId = Number(JSON.parse(request.postData() ?? '{}').video_id)
+        if (!found.video_ids.includes(videoId)) found.video_ids.push(videoId)
+        return respond(route, queueBody(found))
+      }
       if (path === '/scan/all') {
         return respond(route, { sources_scanned: 2, total_files: 12, total_new_videos: 3 })
       }
@@ -537,12 +611,35 @@ export async function mockApi(page: Page): Promise<void> {
     }
 
     if (method === 'PUT') {
+      const queueEdit = /^\/watchlists\/(\d+)$/.exec(path)
+      if (queueEdit) {
+        const found = findQueue(Number(queueEdit[1]))
+        if (!found) return respond(route, { detail: '片单不存在' }, 404)
+        const body = JSON.parse(request.postData() ?? '{}')
+        if (body.name !== undefined) found.name = body.name
+        if (body.description !== undefined) found.description = body.description
+        return respond(route, queueBody(found))
+      }
       if (path === '/settings' || /^\/videos\/\d+$/.test(path)) {
         return respond(route, JSON.parse(request.postData() ?? '{}'))
       }
     }
 
     if (method === 'DELETE') {
+      const queueTakeOut = /^\/watchlists\/(\d+)\/videos\/(\d+)$/.exec(path)
+      if (queueTakeOut) {
+        const found = findQueue(Number(queueTakeOut[1]))
+        if (!found) return respond(route, { detail: '片单不存在' }, 404)
+        found.video_ids = found.video_ids.filter((id) => id !== Number(queueTakeOut[2]))
+        return respond(route, queueBody(found))
+      }
+      const queueErase = /^\/watchlists\/(\d+)$/.exec(path)
+      if (queueErase) {
+        const index = queues.findIndex((list) => list.id === Number(queueErase[1]))
+        if (index === -1) return respond(route, { detail: '片单不存在' }, 404)
+        queues.splice(index, 1)
+        return route.fulfill({ status: 204, body: '' })
+      }
       const videoRow = /^\/videos\/(\d+)$/.exec(path)
       if (videoRow) {
         const id = Number(videoRow[1])
