@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { recordPlay, updateProgress } from '@/api/videos'
 import { listSubtitles, subtitleTrackUrl } from '@/api/subtitles'
 import type { Subtitle } from '@/types/subtitle'
@@ -23,11 +23,16 @@ const emit = defineEmits<{
 
 const videoRef = ref<HTMLVideoElement>()
 const playerRef = ref<HTMLDivElement>()
+const progressBarRef = ref<HTMLDivElement>()
 const isPlaying = ref(false)
 const showControls = ref(true)
 const currentTime = ref(0)
 const duration = ref(0)
 const progress = ref(0)
+const isSeeking = ref(false)
+const seekPercent = ref(0)
+const loopStart = ref<number | null>(null)
+const loopEnd = ref<number | null>(null)
 const volume = ref(1)
 const isMuted = ref(false)
 const isFullscreen = ref(false)
@@ -59,6 +64,7 @@ function handleTimeUpdate() {
   if (!videoRef.value) return
   currentTime.value = videoRef.value.currentTime
   progress.value = duration.value > 0 ? (currentTime.value / duration.value) * 100 : 0
+  applyLoopBoundary()
 }
 
 function handleMetadata() {
@@ -105,15 +111,92 @@ function handleError(e: Event) {
   emit('error', e)
 }
 
-function seek(e: MouseEvent) {
-  if (!videoRef.value || !playerRef.value) return
-  const rect = playerRef.value.getBoundingClientRect()
-  const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-  videoRef.value.currentTime = percent * duration.value
+function seekToPosition(clientX: number) {
+  const video = videoRef.value
+  const bar = progressBarRef.value
+  if (!video || !bar || !isFinite(duration.value) || duration.value <= 0) return
+
+  const rect = bar.getBoundingClientRect()
+  if (rect.width <= 0) return
+
+  const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+  seekPercent.value = percent * 100
+  video.currentTime = percent * duration.value
 }
 
-function handleSeekbarHover(_e: MouseEvent) {
-  // Could show seek preview tooltip here
+function startSeek(e: PointerEvent) {
+  isSeeking.value = true
+  seekToPosition(e.clientX)
+  // 监听 window 而不是进度条，指针拖出进度条或从别处松开都能继续跟手
+  window.addEventListener('pointermove', moveSeek)
+  window.addEventListener('pointerup', endSeek)
+  window.addEventListener('pointercancel', endSeek)
+}
+
+function moveSeek(e: PointerEvent) {
+  if (!isSeeking.value) return
+  seekToPosition(e.clientX)
+}
+
+function endSeek() {
+  isSeeking.value = false
+  window.removeEventListener('pointermove', moveSeek)
+  window.removeEventListener('pointerup', endSeek)
+  window.removeEventListener('pointercancel', endSeek)
+}
+
+// 拖拽中直接跟随指针，避免等待浏览器完成 seek 时进度条回跳
+const fillPercent = computed(() => (isSeeking.value ? seekPercent.value : progress.value))
+
+// ---------- A-B 段重放 ----------
+
+const isLoopMarked = computed(() => loopStart.value !== null || loopEnd.value !== null)
+
+const isLoopActive = computed(
+  () =>
+    loopStart.value !== null &&
+    loopEnd.value !== null &&
+    loopEnd.value > loopStart.value,
+)
+
+// 终点必须落在起点之后，否则按钮保持禁用，避免出现无意义的区间
+const canMarkEnd = computed(
+  () => loopStart.value !== null && currentTime.value > loopStart.value,
+)
+
+/** A-B 区间在进度条上的高亮段 */
+const loopBand = computed(() => {
+  const start = loopStart.value
+  const end = loopEnd.value
+  if (start === null || end === null || end <= start || !duration.value) return null
+  return {
+    left: (start / duration.value) * 100,
+    width: ((end - start) / duration.value) * 100,
+  }
+})
+
+function markLoopStart() {
+  const at = videoRef.value?.currentTime ?? 0
+  loopStart.value = at
+  if (loopEnd.value !== null && loopEnd.value <= at) loopEnd.value = null
+}
+
+function markLoopEnd() {
+  if (!canMarkEnd.value) return
+  loopEnd.value = videoRef.value?.currentTime ?? 0
+}
+
+function clearLoop() {
+  loopStart.value = null
+  loopEnd.value = null
+}
+
+function applyLoopBoundary() {
+  const video = videoRef.value
+  const start = loopStart.value
+  const end = loopEnd.value
+  if (!video || start === null || end === null || end <= start) return
+  if (video.currentTime >= end) video.currentTime = start
 }
 
 function setVolume(e: MouseEvent) {
@@ -284,6 +367,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  endSeek()
   if (progressInterval) {
     clearInterval(progressInterval)
   }
@@ -301,6 +385,9 @@ onUnmounted(() => {
 
 watch(() => props.videoId, () => {
   hasRecordedPlay = false
+  isSeeking.value = false
+  seekPercent.value = 0
+  clearLoop()
   currentTime.value = 0
   duration.value = 0
   progress.value = 0
@@ -373,9 +460,19 @@ watch(() => props.videoId, () => {
         </button>
 
         <!-- Progress bar -->
-        <div class="progress-bar" title="跳转" @click.stop="seek" @mousemove="handleSeekbarHover">
+        <div
+          ref="progressBarRef"
+          class="progress-bar"
+          title="跳转"
+          @pointerdown.stop="startSeek"
+        >
           <div class="progress-track">
-            <div class="progress-fill" :style="{ width: progress + '%' }" />
+            <div class="progress-fill" :style="{ width: fillPercent + '%' }" />
+            <div
+              v-if="loopBand"
+              class="progress-loop"
+              :style="{ left: loopBand.left + '%', width: loopBand.width + '%' }"
+            />
           </div>
         </div>
 
@@ -384,6 +481,35 @@ watch(() => props.videoId, () => {
           <span class="skip-icon">&#8635;</span>
           <span class="skip-text">10</span>
         </button>
+
+        <!-- A-B 段重放 -->
+        <div class="loop-control" :class="{ 'is-looping': isLoopActive }">
+          <button
+            class="control-btn loop-btn"
+            :class="{ 'is-active': loopStart !== null }"
+            :title="loopStart === null ? '设置 A 点（当前播放位置）' : `A 点：${formatTime(loopStart)}`"
+            @click.stop="markLoopStart"
+          >
+            A
+          </button>
+          <button
+            class="control-btn loop-btn"
+            :class="{ 'is-active': loopEnd !== null }"
+            :disabled="!canMarkEnd"
+            :title="loopEnd === null ? '设置 B 点（需晚于 A 点）' : `B 点：${formatTime(loopEnd)}`"
+            @click.stop="markLoopEnd"
+          >
+            B
+          </button>
+          <button
+            v-if="isLoopMarked"
+            class="control-btn loop-clear"
+            title="清除 A-B 区间"
+            @click.stop="clearLoop"
+          >
+            &#10005;
+          </button>
+        </div>
 
         <!-- Time display -->
         <span class="time-display">{{ formatTime(currentTime) }} / {{ formatTime(duration) }}</span>
@@ -548,6 +674,8 @@ video::cue {
   bottom: 0;
   left: 0;
   right: 0;
+  /* 暂停时大播放按钮覆盖整个画面，控制条必须浮在其上，否则进度条点不到 */
+  z-index: 2;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.85));
   padding: 12px 16px;
   display: flex;
@@ -596,6 +724,7 @@ video::cue {
   cursor: pointer;
   padding: 8px 0;
   margin: 0 4px;
+  touch-action: none;
 }
 
 .progress-track {
@@ -632,6 +761,59 @@ video::cue {
 
 .progress-bar:hover .progress-fill::after {
   opacity: 1;
+}
+
+/* A-B 区间在进度条上是一扇半透明小窗 */
+.progress-loop {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.25);
+  border-left: 2px solid #b8adff;
+  border-right: 2px solid #b8adff;
+  box-shadow: 0 0 8px rgba(124, 108, 255, 0.55);
+}
+
+/* A-B 段重放：默认与控制条上其他按钮一样保持透明 */
+.loop-control {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 999px;
+  transition:
+    box-shadow 0.2s,
+    background 0.2s;
+}
+
+.loop-control.is-looping {
+  background: rgba(124, 108, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(157, 143, 255, 0.4);
+}
+
+.loop-btn {
+  min-width: 28px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.loop-btn.is-active {
+  color: #b8adff;
+}
+
+.loop-btn:disabled {
+  color: rgba(255, 255, 255, 0.28);
+  cursor: default;
+}
+
+.loop-btn:disabled:hover {
+  background: none;
+}
+
+.loop-clear {
+  min-width: 26px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
 }
 
 /* Time display */
