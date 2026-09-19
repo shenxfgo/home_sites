@@ -6,6 +6,16 @@ export const TINY_PNG = Buffer.from(
   'base64',
 )
 
+/**
+ * 一段真实的 H.264 片段（64x36 黑帧、1 fps、30 秒、1.8 kB），让浏览器报出真实的
+ * 时长与可拖动区间，播放器用例才能验证跳转与像素级布局。宽高比必须是 16:9，
+ * 否则 <video> 会按固有尺寸把控制条顶出视口。
+ */
+export const SAMPLE_MP4 = Buffer.from(
+  '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',
+  'base64',
+)
+
 export interface StubVideo {
   id: number
   source_id: number
@@ -141,6 +151,38 @@ export async function mockApi(page: Page): Promise<void> {
   const respond = (route: Route, body: unknown, status = 200) =>
     route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
 
+  /**
+   * 响应不带字节区间信息时，Chromium 的 `video.seekable` 会是空的 [[0, 0]]，
+   * 即使缓冲完整、readyState 到 4，赋值 currentTime 也会被静默丢弃。所以替身必须
+   * 像真实流接口一样处理 Range，否则播放器用例全部失效。
+   */
+  const respondMedia = (route: Route, body: Buffer, contentType: string) => {
+    const total = body.length
+    const headers = { 'Accept-Ranges': 'bytes', 'Content-Length': String(total) }
+    const range = /^bytes=(\d*)-(\d*)$/.exec(route.request().headers()['range'] ?? '')
+    if (range && (range[1] || range[2])) {
+      const start = range[1] ? Number(range[1]) : Math.max(0, total - Number(range[2]))
+      const end = Math.min(total - 1, range[1] && range[2] ? Number(range[2]) : total - 1)
+      if (start > end) {
+        return route.fulfill({
+          status: 416,
+          headers: { ...headers, 'Content-Range': `bytes */${total}` },
+          body: Buffer.alloc(0),
+        })
+      }
+      return route.fulfill({
+        status: 206,
+        headers: {
+          ...headers,
+          'Content-Length': String(end - start + 1),
+          'Content-Range': `bytes ${start}-${end}/${total}`,
+        },
+        body: body.subarray(start, end + 1),
+      })
+    }
+    return route.fulfill({ status: 200, headers: { ...headers, 'Content-Type': contentType }, body })
+  }
+
   await page.route((url) => url.pathname.startsWith('/api/'), (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -171,7 +213,7 @@ export async function mockApi(page: Page): Promise<void> {
         )
       }
       if (/^\/videos\/\d+\/stream$/.test(path)) {
-        return route.fulfill({ status: 200, contentType: 'video/mp4', body: '' })
+        return respondMedia(route, SAMPLE_MP4, 'video/mp4')
       }
       const favoriteStatus = /^\/favorites\/(\d+)\/status$/.exec(path)
       if (favoriteStatus) return respond(route, { is_favorite: false })
