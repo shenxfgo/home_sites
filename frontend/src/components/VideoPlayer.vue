@@ -1,10 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { recordPlay, updateProgress } from '@/api/videos'
-import { listSubtitles, subtitleTrackUrl } from '@/api/subtitles'
+import {
+  embeddedSubtitleTrackUrl,
+  listMediaStreams,
+  listSubtitles,
+  subtitleTrackUrl,
+} from '@/api/subtitles'
 import { playerPrefs } from '@/composables/playerPrefs'
 import { isTypingTarget } from '@/composables/typingGuard'
-import type { Subtitle } from '@/types/subtitle'
+import type {
+  AudioTrack,
+  EmbeddedSubtitleTrack,
+  Subtitle,
+} from '@/types/subtitle'
 
 interface Props {
   videoId: number
@@ -46,7 +55,11 @@ const loading = ref(true)
 const hasError = ref(false)
 const errorMessage = ref('')
 const subtitles = ref<Subtitle[]>([])
-const activeSubtitleId = ref<number | null>(null)
+const embeddedTracks = ref<EmbeddedSubtitleTrack[]>([])
+const audioTracks = ref<AudioTrack[]>([])
+/** Bitmap tracks (PGS/DVD/DVB) are inside the file but cannot be rendered. */
+const unsupportedTrackCount = ref(0)
+const activeTrackKey = ref<string | null>(null)
 const showSubtitleMenu = ref(false)
 const playbackRate = ref(playerPrefs.rate)
 const showRateMenu = ref(false)
@@ -58,7 +71,37 @@ let progressInterval: ReturnType<typeof setInterval> | null = null
 let hasRecordedPlay = false
 let resumedThisLoad = false
 /** Cue times before any offset was applied, so moving the delay never drifts. */
-const cueBases = new Map<number, Array<[number, number]>>()
+const cueBases = new Map<string, Array<[number, number]>>()
+
+/** One selectable subtitle, whether it is a sidecar file or muxed into the video. */
+interface PlayableTrack {
+  key: string
+  src: string
+  label: string
+  language: string | null
+  group: 'sidecar' | 'embedded'
+}
+
+/**
+ * ``<track>`` elements in this exact order, because the browser indexes
+ * ``video.textTracks`` by DOM position rather than by anything we set.
+ */
+const playableTracks = computed<PlayableTrack[]>(() => [
+  ...subtitles.value.map((subtitle) => ({
+    key: `sidecar-${subtitle.id}`,
+    src: subtitleTrackUrl(props.videoId, subtitle.id),
+    label: subtitleLabel(subtitle),
+    language: subtitle.language,
+    group: 'sidecar' as const,
+  })),
+  ...embeddedTracks.value.map((track) => ({
+    key: `embedded-${track.stream_index}`,
+    src: embeddedSubtitleTrackUrl(props.videoId, track.stream_index),
+    label: track.label,
+    language: track.language,
+    group: 'embedded' as const,
+  })),
+])
 
 /** Push the remembered choices onto the element. */
 function applyPrefs() {
@@ -84,12 +127,12 @@ function applySubtitleSize() {
  * Cue times are mutable, which is the only way to offset a subtitle without
  * re-rendering it ourselves. The originals are kept so the offset is absolute.
  */
-function captureCueBases(subtitleId: number, track: TextTrack) {
+function captureCueBases(key: string, track: TextTrack) {
   // A track that is still loading reports an empty cue list, so an empty list
   // must not count as "already captured" — the load handler tries again.
-  if (!track.cues?.length || cueBases.has(subtitleId)) return
+  if (!track.cues?.length || cueBases.has(key)) return
   cueBases.set(
-    subtitleId,
+    key,
     Array.from({ length: track.cues.length }, (_, i) => {
       const cue = track.cues![i]
       return [cue.startTime, cue.endTime]
@@ -100,9 +143,9 @@ function captureCueBases(subtitleId: number, track: TextTrack) {
 function refreshCueTiming() {
   const tracks = videoRef.value?.textTracks
   if (!tracks) return
-  subtitles.value.forEach((subtitle, index) => {
+  playableTracks.value.forEach((item, index) => {
     const track = tracks[index]
-    const bases = cueBases.get(subtitle.id)
+    const bases = cueBases.get(item.key)
     if (!track?.cues || !bases) return
     for (let i = 0; i < track.cues.length; i++) {
       const base = bases[i]
@@ -118,11 +161,11 @@ function bindTrackTiming() {
   if (!video) return
   const tracks = video.textTracks
   const elements = Array.from(video.querySelectorAll('track')) as HTMLTrackElement[]
-  subtitles.value.forEach((subtitle, index) => {
+  playableTracks.value.forEach((item, index) => {
     const track = tracks[index]
     if (!track) return
     if (track.cues?.length) {
-      captureCueBases(subtitle.id, track)
+      captureCueBases(item.key, track)
       refreshCueTiming()
       return
     }
@@ -131,7 +174,7 @@ function bindTrackTiming() {
     elements[index]?.addEventListener(
       'load',
       () => {
-        captureCueBases(subtitle.id, track)
+        captureCueBases(item.key, track)
         refreshCueTiming()
       },
       { once: true },
@@ -380,38 +423,59 @@ function toggleMute() {
   }
 }
 
-async function loadSubtitles() {
-  activeSubtitleId.value = null
+async function loadTracks() {
+  activeTrackKey.value = null
   showSubtitleMenu.value = false
   cueBases.clear()
   subtitles.value = []
+  embeddedTracks.value = []
+  audioTracks.value = []
+  unsupportedTrackCount.value = 0
   if (!props.videoId) return
 
   try {
     subtitles.value = await listSubtitles(props.videoId)
-    await nextTick()
-    bindTrackTiming()
   } catch (err) {
     console.error('Failed to load subtitles:', err)
   }
+
+  // A container probe is a separate request on purpose: a file ffprobe cannot
+  // read must not take the sidecar list down with it.
+  try {
+    const streams = await listMediaStreams(props.videoId)
+    embeddedTracks.value = streams.subtitles.filter((track) => track.supported)
+    unsupportedTrackCount.value = streams.subtitles.length - embeddedTracks.value.length
+    audioTracks.value = streams.audio
+  } catch (err) {
+    console.error('Failed to probe embedded streams:', err)
+  }
+
+  await nextTick()
+  bindTrackTiming()
 }
 
 function applyTrackMode() {
   const tracks = videoRef.value?.textTracks
   if (!tracks) return
-  subtitles.value.forEach((subtitle, index) => {
+  playableTracks.value.forEach((item, index) => {
     const track = tracks[index]
     if (track) {
-      track.mode = subtitle.id === activeSubtitleId.value ? 'showing' : 'hidden'
+      track.mode = item.key === activeTrackKey.value ? 'showing' : 'hidden'
     }
   })
 }
 
-async function selectSubtitle(subtitleId: number | null) {
-  activeSubtitleId.value = subtitleId
+async function selectTrack(key: string | null) {
+  activeTrackKey.value = key
   showSubtitleMenu.value = false
   await nextTick()
   applyTrackMode()
+}
+
+function audioTrackSummary(): string {
+  return audioTracks.value
+    .map((track) => `${track.label}${track.default ? '（默认）' : ''}`)
+    .join(' · ')
 }
 
 function toggleSubtitleMenu() {
@@ -526,7 +590,7 @@ function handleKeydown(e: KeyboardEvent) {
 
 onMounted(() => {
   applyPrefs()
-  loadSubtitles()
+  loadTracks()
   startProgressReporting()
   document.addEventListener('fullscreenchange', handleFullscreenChange)
   document.addEventListener('keydown', handleKeydown)
@@ -560,7 +624,7 @@ watch(() => props.videoId, () => {
   progress.value = 0
   loading.value = true
   hasError.value = false
-  loadSubtitles()
+  loadTracks()
 })
 </script>
 
@@ -588,12 +652,12 @@ watch(() => props.videoId, () => {
       @click="togglePlay"
     >
       <track
-        v-for="subtitle in subtitles"
-        :key="subtitle.id"
+        v-for="item in playableTracks"
+        :key="item.key"
         kind="subtitles"
-        :src="subtitleTrackUrl(videoId, subtitle.id)"
-        :srclang="subtitle.language || 'und'"
-        :label="subtitleLabel(subtitle)"
+        :src="item.src"
+        :srclang="item.language || 'und'"
+        :label="item.label"
       />
     </video>
 
@@ -722,10 +786,10 @@ watch(() => props.videoId, () => {
         </div>
 
         <!-- Subtitles -->
-        <div v-if="subtitles.length" class="subtitle-control">
+        <div v-if="playableTracks.length" class="subtitle-control">
           <button
             class="control-btn subtitle-btn"
-            :class="{ 'is-active': activeSubtitleId !== null }"
+            :class="{ 'is-active': activeTrackKey !== null }"
             title="字幕"
             @click.stop="toggleSubtitleMenu"
           >
@@ -734,20 +798,36 @@ watch(() => props.videoId, () => {
           <div v-if="showSubtitleMenu" class="subtitle-menu">
             <button
               class="subtitle-menu-item"
-              :class="{ 'is-active': activeSubtitleId === null }"
-              @click.stop="selectSubtitle(null)"
+              :class="{ 'is-active': activeTrackKey === null }"
+              @click.stop="selectTrack(null)"
             >
               关闭
             </button>
             <button
               v-for="subtitle in subtitles"
-              :key="subtitle.id"
+              :key="`sidecar-${subtitle.id}`"
               class="subtitle-menu-item"
-              :class="{ 'is-active': activeSubtitleId === subtitle.id }"
-              @click.stop="selectSubtitle(subtitle.id)"
+              :class="{ 'is-active': activeTrackKey === `sidecar-${subtitle.id}` }"
+              @click.stop="selectTrack(`sidecar-${subtitle.id}`)"
             >
               {{ subtitleLabel(subtitle) }}
             </button>
+            <p v-if="embeddedTracks.length" class="subtitle-menu-group">文件内嵌</p>
+            <button
+              v-for="track in embeddedTracks"
+              :key="`embedded-${track.stream_index}`"
+              class="subtitle-menu-item"
+              :class="{ 'is-active': activeTrackKey === `embedded-${track.stream_index}` }"
+              @click.stop="selectTrack(`embedded-${track.stream_index}`)"
+            >
+              {{ track.label }}
+            </button>
+            <p v-if="unsupportedTrackCount" class="subtitle-menu-note">
+              {{ unsupportedTrackCount }} 条图像字幕浏览器放不出来
+            </p>
+            <p v-if="audioTracks.length > 1" class="subtitle-menu-note">
+              音轨 {{ audioTrackSummary() }}，浏览器不能切内嵌音轨
+            </p>
 
             <div class="cue-settings">
               <div class="cue-setting">
@@ -1125,6 +1205,21 @@ video::cue {
 
 .subtitle-menu-item.is-active {
   color: #7c6cff;
+}
+
+/* 内嵌轨与外挂文件分两组，避免用户以为是两份不同的字幕 */
+.subtitle-menu-group {
+  margin: 6px 14px 2px;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.subtitle-menu-note {
+  margin: 4px 14px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.45);
 }
 
 /* 倍速：与控制条其他按钮一致，未打开菜单时保持透明 */

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from src.database.base import Base
 from src.models.source import VideoSource
 from src.models.video import Video
+from src.utils.media_streams import StreamNotFound
 from src.utils.subtitles import SubtitleConversionError
 import src.models  # noqa: F401
 
@@ -204,3 +205,144 @@ async def test_delete_unknown_subtitle_returns_404(client, db_session, tmp_path)
     response = await client.delete(f"/api/videos/{video.id}/subtitles/4242")
 
     assert response.status_code == 404
+
+
+PROBED = {
+    "probed": True,
+    "container": "matroska,webm",
+    "subtitles": [
+        {
+            "stream_index": 1,
+            "position": 0,
+            "codec": "subrip",
+            "language": "chi",
+            "label": "简中",
+            "supported": True,
+        },
+        {
+            "stream_index": 2,
+            "position": 1,
+            "codec": "hdmv_pgs_subtitle",
+            "language": None,
+            "label": "轨道 2",
+            "supported": False,
+        },
+    ],
+    "audio": [
+        {
+            "stream_index": 3,
+            "position": 0,
+            "codec": "aac",
+            "language": "chi",
+            "label": "中文",
+            "default": True,
+        }
+    ],
+}
+
+
+async def test_streams_lists_embedded_tracks(client, db_session, tmp_path):
+    video, _ = await _video_with_subtitle(db_session, tmp_path)
+
+    with patch("src.api.subtitles.probe_streams", return_value=PROBED):
+        response = await client.get(f"/api/videos/{video.id}/subtitles/streams")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["container"] == "matroska,webm"
+    # 'streams' is a fixed path, so it must not be parsed as a subtitle id.
+    assert body["subtitles"][0]["label"] == "简中"
+    assert body["subtitles"][1]["supported"] is False
+    assert body["audio"][0]["default"] is True
+
+
+async def test_streams_probes_the_video_path(client, db_session, tmp_path):
+    video, _ = await _video_with_subtitle(db_session, tmp_path)
+
+    with patch(
+        "src.api.subtitles.probe_streams", return_value=PROBED
+    ) as probe:
+        await client.get(f"/api/videos/{video.id}/subtitles/streams")
+
+    probe.assert_called_once_with(video.filepath)
+
+
+async def test_streams_returns_404_for_unknown_video(client):
+    with patch("src.api.subtitles.probe_streams", return_value=PROBED):
+        response = await client.get("/api/videos/4242/subtitles/streams")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "视频不存在"
+
+
+async def test_embedded_stream_returns_webvtt(client, db_session, tmp_path):
+    video, _ = await _video_with_subtitle(db_session, tmp_path)
+    payload = "WEBVTT\n\n00:01.000 --> 00:02.000\n中文内嵌\n"
+
+    with patch(
+        "src.api.subtitles.extract_subtitle_webvtt", return_value=payload
+    ) as extract:
+        response = await client.get(
+            f"/api/videos/{video.id}/subtitles/embedded/1/stream"
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/vtt")
+    assert response.text == payload
+    extract.assert_called_once_with(video.filepath, 1)
+
+
+async def test_embedded_stream_returns_404_for_unknown_video(client):
+    response = await client.get("/api/videos/4242/subtitles/embedded/1/stream")
+
+    assert response.status_code == 404
+
+
+async def test_embedded_stream_returns_404_when_file_disappeared(
+    client, db_session, tmp_path
+):
+    video, _ = await _video_with_subtitle(db_session, tmp_path)
+
+    with patch(
+        "src.api.subtitles.extract_subtitle_webvtt", side_effect=FileNotFoundError
+    ):
+        response = await client.get(
+            f"/api/videos/{video.id}/subtitles/embedded/1/stream"
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "视频文件不存在"
+
+
+async def test_embedded_stream_returns_404_for_a_track_that_is_not_there(
+    client, db_session, tmp_path
+):
+    video, _ = await _video_with_subtitle(db_session, tmp_path)
+
+    with patch(
+        "src.api.subtitles.extract_subtitle_webvtt",
+        side_effect=StreamNotFound("文件里没有编号为 9 的字幕轨"),
+    ):
+        response = await client.get(
+            f"/api/videos/{video.id}/subtitles/embedded/9/stream"
+        )
+
+    assert response.status_code == 404
+    assert "编号为 9" in response.json()["detail"]
+
+
+async def test_embedded_stream_reports_unconvertible_track_as_415(
+    client, db_session, tmp_path
+):
+    video, _ = await _video_with_subtitle(db_session, tmp_path)
+
+    with patch(
+        "src.api.subtitles.extract_subtitle_webvtt",
+        side_effect=SubtitleConversionError("内嵌字幕提取失败：Unsupported codec"),
+    ):
+        response = await client.get(
+            f"/api/videos/{video.id}/subtitles/embedded/2/stream"
+        )
+
+    assert response.status_code == 415
+    assert "Unsupported codec" in response.json()["detail"]

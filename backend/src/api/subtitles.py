@@ -1,4 +1,5 @@
 """Subtitle management API endpoints."""
+import asyncio
 import os
 from datetime import datetime
 
@@ -8,6 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
 from src.services.subtitle_service import SubtitleService
+from src.utils.media_streams import (
+    StreamNotFound,
+    extract_subtitle_webvtt,
+    probe_streams,
+)
 from src.utils.subtitles import (
     SUBTITLE_EXTENSIONS,
     SubtitleConversionError,
@@ -46,6 +52,37 @@ class SubtitleCreate(BaseModel):
     label: str | None = Field(None, max_length=50)
 
 
+class EmbeddedSubtitleResponse(BaseModel):
+    """One subtitle track carried inside the video file itself."""
+
+    stream_index: int
+    position: int
+    codec: str
+    language: str | None
+    label: str
+    supported: bool
+
+
+class AudioTrackResponse(BaseModel):
+    """One audio track inside the video file, for information only."""
+
+    stream_index: int
+    position: int
+    codec: str
+    language: str | None
+    label: str
+    default: bool
+
+
+class MediaStreamsResponse(BaseModel):
+    """What ffprobe found inside the container."""
+
+    probed: bool
+    container: str | None
+    subtitles: list[EmbeddedSubtitleResponse]
+    audio: list[AudioTrackResponse]
+
+
 async def get_subtitle_service(
     session: AsyncSession = Depends(get_session),
 ) -> SubtitleService:
@@ -60,6 +97,49 @@ async def list_subtitles(
 ) -> list[SubtitleResponse]:
     """List the subtitle tracks of a video."""
     return await service.list_for_video(video_id)
+
+
+@router.get("/{video_id}/subtitles/streams", response_model=MediaStreamsResponse)
+async def list_media_streams(
+    video_id: int,
+    service: SubtitleService = Depends(get_subtitle_service),
+) -> MediaStreamsResponse:
+    """List the subtitle and audio tracks muxed inside the video file.
+
+    Read-only: the file is opened by ffprobe and nothing is stored, so an
+    embedded track never goes stale the way a cached row would.
+    """
+    video = await service.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="视频不存在")
+
+    found = await asyncio.to_thread(probe_streams, video.filepath)
+    return MediaStreamsResponse(**found)
+
+
+@router.get("/{video_id}/subtitles/embedded/{stream_index}/stream")
+async def stream_embedded_subtitle(
+    video_id: int,
+    stream_index: int,
+    service: SubtitleService = Depends(get_subtitle_service),
+) -> Response:
+    """Extract one embedded subtitle as WebVTT, on demand and without temp files."""
+    video = await service.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="视频不存在")
+
+    try:
+        payload = await asyncio.to_thread(
+            extract_subtitle_webvtt, video.filepath, stream_index
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="视频文件不存在")
+    except StreamNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except SubtitleConversionError as e:
+        raise HTTPException(status_code=415, detail=str(e))
+
+    return Response(content=payload, media_type="text/vtt; charset=utf-8")
 
 
 @router.post("/{video_id}/subtitles", response_model=SubtitleResponse, status_code=201)

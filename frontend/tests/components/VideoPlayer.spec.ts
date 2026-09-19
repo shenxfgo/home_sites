@@ -5,12 +5,14 @@ import { playerPrefs } from '@/composables/playerPrefs'
 import { makeSubtitle } from '../factories'
 
 const listSubtitles = vi.hoisted(() => vi.fn())
+const listMediaStreams = vi.hoisted(() => vi.fn())
 const recordPlay = vi.hoisted(() => vi.fn())
 const updateProgress = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/subtitles', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/subtitles')>()),
   listSubtitles,
+  listMediaStreams,
 }))
 
 vi.mock('@/api/videos', () => ({
@@ -71,6 +73,8 @@ describe('VideoPlayer seeking', () => {
   beforeEach(() => {
     listSubtitles.mockReset()
     listSubtitles.mockResolvedValue([])
+    listMediaStreams.mockReset()
+    listMediaStreams.mockResolvedValue({ probed: false, container: null, subtitles: [], audio: [] })
     recordPlay.mockReset()
     recordPlay.mockResolvedValue(undefined)
     updateProgress.mockReset()
@@ -169,6 +173,8 @@ describe('VideoPlayer A-B loop', () => {
     vi.useRealTimers()
     listSubtitles.mockReset()
     listSubtitles.mockResolvedValue([])
+    listMediaStreams.mockReset()
+    listMediaStreams.mockResolvedValue({ probed: false, container: null, subtitles: [], audio: [] })
     recordPlay.mockReset()
     recordPlay.mockResolvedValue(undefined)
     updateProgress.mockReset()
@@ -277,11 +283,13 @@ describe('VideoPlayer subtitles', () => {
   beforeEach(() => {
     vi.useRealTimers()
     listSubtitles.mockReset()
+    listSubtitles.mockResolvedValue([])
+    listMediaStreams.mockReset()
+    listMediaStreams.mockResolvedValue({ probed: false, container: null, subtitles: [], audio: [] })
     recordPlay.mockReset()
     recordPlay.mockResolvedValue(undefined)
     updateProgress.mockReset()
     updateProgress.mockResolvedValue(undefined)
-    listSubtitles.mockResolvedValue([])
   })
 
   it('loads the tracks of the played video once', async () => {
@@ -389,6 +397,8 @@ describe('VideoPlayer playback tracking', () => {
     vi.useRealTimers()
     listSubtitles.mockReset()
     listSubtitles.mockResolvedValue([])
+    listMediaStreams.mockReset()
+    listMediaStreams.mockResolvedValue({ probed: false, container: null, subtitles: [], audio: [] })
     recordPlay.mockReset()
     recordPlay.mockResolvedValue(undefined)
     updateProgress.mockReset()
@@ -532,6 +542,8 @@ describe('VideoPlayer remembered choices', () => {
     vi.useRealTimers()
     listSubtitles.mockReset()
     listSubtitles.mockResolvedValue([])
+    listMediaStreams.mockReset()
+    listMediaStreams.mockResolvedValue({ probed: false, container: null, subtitles: [], audio: [] })
     recordPlay.mockReset()
     recordPlay.mockResolvedValue(undefined)
     updateProgress.mockReset()
@@ -780,6 +792,8 @@ describe('VideoPlayer keyboard shortcuts', () => {
     vi.useRealTimers()
     listSubtitles.mockReset()
     listSubtitles.mockResolvedValue([])
+    listMediaStreams.mockReset()
+    listMediaStreams.mockResolvedValue({ probed: false, container: null, subtitles: [], audio: [] })
     recordPlay.mockReset()
     recordPlay.mockResolvedValue(undefined)
     updateProgress.mockReset()

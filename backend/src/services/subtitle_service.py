@@ -72,6 +72,10 @@ class SubtitleService:
         await self.session.delete(subtitle)
         await self.session.commit()
 
+    async def get_video(self, video_id: int) -> Video | None:
+        """Get the video row, so its file can be probed for embedded tracks."""
+        return await self.session.get(Video, video_id)
+
     async def known_paths(self, source_id: int) -> set[str]:
         """Return every subtitle path already registered for a source's videos.
 
