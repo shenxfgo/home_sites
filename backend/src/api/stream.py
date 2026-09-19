@@ -100,15 +100,25 @@ def _handle_range_request(
     filepath: str, range_header: str, file_size: int, content_type: str
 ) -> StreamingResponse:
     """Handle HTTP Range request for video seeking."""
+    last_byte = file_size - 1
     try:
-        # Parse Range header (e.g., "bytes=0-1023")
-        ranges = range_header.replace("bytes=", "").split("-")
-        start = int(ranges[0]) if ranges[0] else 0
-        end = int(ranges[1]) if ranges[1] else file_size - 1
+        # Parse Range spec: "bytes=0-1023", "bytes=1024-", "bytes=-1024"
+        spec = range_header.split("=", 1)[1].split(",", 1)[0].strip()
+        raw_start, _, raw_end = spec.partition("-")
+        if raw_start:
+            start = int(raw_start)
+            end = int(raw_end) if raw_end else last_byte
+        else:
+            # 后缀区间：最后 N 个字节（非 faststart 的 mp4 用整文件在尾部的 moov）
+            suffix = int(raw_end)
+            start = max(0, file_size - suffix)
+            end = last_byte
     except (ValueError, IndexError):
         raise HTTPException(status_code=416, detail="Invalid Range header")
 
-    if start >= file_size or end >= file_size:
+    # 越界按 RFC 7233 收敛到文件末尾，而不是回 416，否则播放器会从头重载
+    end = min(end, last_byte)
+    if start > end or start < 0:
         raise HTTPException(status_code=416, detail="Range not satisfiable")
 
     content_length = end - start + 1
