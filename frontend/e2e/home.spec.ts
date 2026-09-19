@@ -201,6 +201,49 @@ test('卡片右上角标出文件名里解析出的季集', async ({ page }) => 
   await expect(page.locator('.video-card').nth(1).locator('.episode-badge')).toHaveCount(0)
 })
 
+test('扫描时找不到的文件标为丢失，记录仍然留在库里', async ({ page }) => {
+  await page.goto('/')
+
+  const lost = page.locator('.video-card').nth(1)
+  await expect(lost.locator('.missing-badge')).toHaveText('丢失')
+  await expect(lost.locator('.thumbnail-area')).toHaveClass(/is-missing/)
+  // 灰度 + 半透明，实测能看出这张封面被压暗了
+  const css = await lost.locator('.thumbnail-img').evaluate((el) => {
+    const style = getComputedStyle(el)
+    return { filter: style.filter, opacity: Number(style.opacity) }
+  })
+  expect(css.filter).toContain('grayscale')
+  expect(css.opacity).toBeLessThan(0.6)
+
+  const bar = page.locator('.missing-bar')
+  await expect(bar.locator('.missing-text strong')).toHaveText('1 个文件已不在磁盘上')
+  await expect(bar).toContainText('记录仍然保留')
+
+  await bar.getByRole('button', { name: '查看' }).click()
+  await expect(page.locator('.video-card')).toHaveCount(1)
+  await expect(page.locator('.video-card').first()).toContainText('周末纪录片')
+  await expect.poll(() => queryOf(page)).toMatchObject({ q: '丢失' })
+})
+
+test('清理丢失记录会问一次，确认后逐条删除', async ({ page }) => {
+  await page.goto('/')
+
+  const bar = page.locator('.missing-bar')
+  await bar.getByRole('button', { name: '清理丢失记录' }).click()
+  const dialog = page.locator('.el-message-box')
+  await expect(dialog).toContainText('将删除 1 条扫描时找不到文件的记录')
+  await dialog.getByRole('button', { name: '再想想' }).click()
+  await expect(page.locator('.video-card')).toHaveCount(2)
+
+  await bar.getByRole('button', { name: '清理丢失记录' }).click()
+  await page.locator('.el-message-box').getByRole('button', { name: '删除记录' }).click()
+
+  await expect(page.locator('.el-message')).toContainText('已删除 1 条丢失记录')
+  await expect(page.locator('.video-card')).toHaveCount(1)
+  await expect(page.locator('.video-card').first()).toContainText('深夜测试')
+  await expect(page.locator('.missing-bar')).toHaveCount(0)
+})
+
 test('搜索与筛选写进地址，换个入口打开同一个地址能还原', async ({ page }) => {
   await page.goto('/')
 

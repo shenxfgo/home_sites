@@ -60,6 +60,24 @@ def test_watch_states():
     assert parse_video_search("已看完").watch_state == "finished"
 
 
+def test_missing_files_are_a_state_of_their_own():
+    assert parse_video_search("丢失").missing is True
+    assert parse_video_search("已丢失").missing is True
+    assert parse_video_search("missing").missing is True
+    # the word alone must not also be searched as a keyword
+    assert parse_video_search("丢失").terms == ()
+    # but only when it is the whole token
+    assert parse_video_search("丢失的胶片").missing is None
+    assert parse_video_search("丢失的胶片").terms == ("丢失的胶片",)
+
+
+def test_missing_combines_with_the_rest():
+    query = parse_video_search("暗涌 丢失 评分>=3")
+    assert query.terms == ("暗涌",)
+    assert query.missing is True
+    assert query.rating == (">=", 3)
+
+
 def test_values_that_look_like_operators_stay_keywords():
     query = parse_video_search("16:9 http://x")
     assert query.terms == ("16:9", "http://x")

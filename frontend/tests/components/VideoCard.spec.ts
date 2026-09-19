@@ -100,6 +100,27 @@ describe('VideoCard', () => {
     expect(mountCard(makeVideo()).find('.episode-badge').exists()).toBe(false)
   })
 
+  it('marks a card whose file the scan could not find', () => {
+    const wrapper = mountCard(makeVideo({ is_missing: true, thumbnail_path: '/t/1.jpg' }))
+
+    expect(wrapper.find('.thumbnail-area').classes()).toContain('is-missing')
+    expect(wrapper.find('.missing-badge').text()).toBe('丢失')
+  })
+
+  it('prefers the lost badge over the new one', () => {
+    const wrapper = mountCard(makeVideo({ is_new: true, is_missing: true }))
+
+    expect(wrapper.find('.new-badge').exists()).toBe(false)
+    expect(wrapper.find('.missing-badge').text()).toBe('丢失')
+  })
+
+  it('leaves an ordinary card without a lost badge', () => {
+    const wrapper = mountCard(makeVideo({ is_new: true }))
+
+    expect(wrapper.find('.missing-badge').exists()).toBe(false)
+    expect(wrapper.find('.thumbnail-area').classes()).not.toContain('is-missing')
+  })
+
   it('opens the detail route for the card video on click', async () => {
     const wrapper = mountCard(makeVideo({ id: 9 }))
 

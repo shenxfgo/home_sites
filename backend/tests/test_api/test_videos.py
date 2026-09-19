@@ -385,6 +385,23 @@ async def test_list_videos_carries_series_coordinates(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_search_reports_only_rows_whose_file_is_gone(client, db_session):
+    """The 丢失 keyword is how the UI reaches the lost records."""
+    source = await _create_source(db_session)
+    kept = await _create_video(db_session, source_id=source.id, title="还在", filepath="/k.mp4")
+    lost = await _create_video(db_session, source_id=source.id, title="没了", filepath="/l.mp4")
+    lost.is_missing = True
+    await db_session.commit()
+
+    listed = (await client.get("/api/videos")).json()["items"]
+    assert {item["title"]: item["is_missing"] for item in listed} == {"还在": False, "没了": True}
+
+    found = (await client.get("/api/videos", params={"search": "丢失"})).json()
+    assert found["total"] == 1
+    assert found["items"][0]["id"] == lost.id
+
+
+@pytest.mark.asyncio
 async def test_series_progress_counts_watched_episodes_and_picks_the_next(
     client, db_session
 ):

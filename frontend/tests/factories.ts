@@ -47,6 +47,7 @@ export function makeVideo(overrides: Partial<Video> = {}): Video {
     series: null,
     season: null,
     episode: null,
+    is_missing: false,
     rating: 3,
     view_count: 7,
     is_new: false,

@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import type { Router } from 'vue-router'
-import { ElMessage, ElSelect } from 'element-plus'
+import { ElMessage, ElMessageBox, ElSelect } from 'element-plus'
 import Home from '@/views/Home.vue'
 import VideoCard from '@/components/VideoCard.vue'
-import { listSeriesProgress, listVideos } from '@/api/videos'
+import { deleteVideo, listSeriesProgress, listVideos } from '@/api/videos'
 import { listSources } from '@/api/sources'
 import { listTags } from '@/api/tags'
 import { getContinueList } from '@/api/history'
@@ -15,6 +15,7 @@ vi.mock('@/api/videos', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/videos')>()
   return {
     ...actual,
+    deleteVideo: vi.fn(),
     listVideos: vi.fn(),
     listSeriesProgress: vi.fn(async () => []),
   }
@@ -307,6 +308,94 @@ describe('Home series rail', () => {
     const { wrapper } = await mountHome()
 
     expect(wrapper.find('.series-rail').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+describe('Home lost records banner', () => {
+  const LOST = '丢失'
+
+  function lostVideo(id: number) {
+    return makeVideo({ id, title: `没了的第${id}部`, is_missing: true })
+  }
+
+  /** Answer the lost-records probe and the ordinary grid request separately. */
+  function libraryWithLost(count: number) {
+    vi.mocked(listVideos).mockImplementation(async (params) => {
+      if (params?.search === LOST) {
+        return { items: count ? [lostVideo(21)] : [], total: count, page: 1, page_size: 100 }
+      }
+      return { items: [makeVideo({ id: 1 })], total: 1, page: 1, page_size: 20 }
+    })
+  }
+
+  beforeEach(() => {
+    vi.useRealTimers()
+    vi.mocked(listVideos).mockReset()
+    vi.mocked(listSources).mockResolvedValue([])
+    vi.mocked(listTags).mockResolvedValue([])
+    vi.mocked(getContinueList).mockResolvedValue([])
+    vi.mocked(listSeriesProgress).mockResolvedValue([])
+    vi.mocked(deleteVideo).mockReset()
+    vi.mocked(deleteVideo).mockResolvedValue(undefined)
+    vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+    vi.spyOn(ElMessage, 'success').mockImplementation(() => undefined as never)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never)
+  })
+
+  it('counts the lost rows and offers the way to them', async () => {
+    libraryWithLost(3)
+    const { wrapper } = await mountHome()
+
+    expect(vi.mocked(listVideos)).toHaveBeenCalledWith({ search: LOST, page: 1, page_size: 1 })
+    const bar = wrapper.get('.missing-bar')
+    expect(bar.get('.missing-text strong').text()).toBe('3 个文件已不在磁盘上')
+    expect(bar.text()).toContain('等挂载回来重新扫描会自动恢复')
+    wrapper.unmount()
+  })
+
+  it('stays out of the way while nothing is lost', async () => {
+    libraryWithLost(0)
+    const { wrapper } = await mountHome()
+
+    expect(wrapper.find('.missing-bar').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('points the search box at the operator instead of adding a filter', async () => {
+    libraryWithLost(3)
+    const { wrapper } = await mountHome()
+
+    await wrapper.get('.missing-actions button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('input').element.value).toBe(LOST)
+    expect(lastQuery()).toMatchObject({ search: LOST, page: 1 })
+    wrapper.unmount()
+  })
+
+  it('deletes every lost record through the ordinary endpoint', async () => {
+    libraryWithLost(1)
+    const { wrapper } = await mountHome()
+
+    await wrapper.findAll('.missing-actions button')[1].trigger('click')
+    await flushPromises()
+
+    expect(deleteVideo).toHaveBeenCalledTimes(1)
+    expect(deleteVideo).toHaveBeenCalledWith(21)
+    expect(ElMessage.success).toHaveBeenCalledWith('已删除 1 条丢失记录')
+    wrapper.unmount()
+  })
+
+  it('keeps every record when the confirmation is declined', async () => {
+    libraryWithLost(1)
+    vi.spyOn(ElMessageBox, 'confirm').mockRejectedValue(new Error('cancel'))
+    const { wrapper } = await mountHome()
+
+    await wrapper.findAll('.missing-actions button')[1].trigger('click')
+    await flushPromises()
+
+    expect(deleteVideo).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

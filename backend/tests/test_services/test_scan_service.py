@@ -2,6 +2,8 @@
 import os
 import tempfile
 import pytest
+from contextlib import contextmanager
+from typing import Iterator
 from unittest.mock import patch, MagicMock
 
 from sqlalchemy import select
@@ -432,3 +434,81 @@ async def test_rescan_does_not_duplicate_auto_tags(db_session):
 
         tags = await db_session.execute(select(Tag))
         assert [tag.name for tag in tags.scalars().all()] == ["Severance"]
+
+
+@contextmanager
+def _no_media_probe() -> Iterator[None]:
+    """Skip ffprobe/ffmpeg, which the scan only needs for metadata."""
+    with patch("src.services.scan_service.extract_video_info") as mock_info, \
+         patch("src.services.scan_service.generate_thumbnail") as mock_thumb:
+        mock_info.return_value = {"duration": 20, "format": "mp4"}
+        mock_thumb.return_value = ""
+        yield
+
+
+@pytest.mark.asyncio
+async def test_scan_marks_vanished_files_as_missing(db_session):
+    """A file that is gone is flagged, and its row survives."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        gone = _write_video(tmpdir, "已经删掉.mp4")
+        _write_video(tmpdir, "还在.mp4")
+        source = await _create_source(db_session, path=tmpdir)
+        service = ScanService(db_session)
+
+        with _no_media_probe():
+            await service.scan_source(source.id)
+            os.remove(gone)
+            result = await service.scan_source(source.id)
+
+        videos = (await db_session.execute(select(Video))).scalars().all()
+        assert result["new_videos"] == 0
+        assert {video.title: video.is_missing for video in videos} == {
+            "已经删掉": True,
+            "还在": False,
+        }
+
+
+@pytest.mark.asyncio
+async def test_missing_flag_clears_when_the_file_comes_back(db_session):
+    """A share that remounts restores its rows without a re-insert."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = _write_video(tmpdir, "外接硬盘.mp4")
+        source = await _create_source(db_session, path=tmpdir)
+        service = ScanService(db_session)
+
+        with _no_media_probe():
+            await service.scan_source(source.id)
+            os.remove(path)
+            await service.scan_source(source.id)
+            video = (await db_session.execute(select(Video))).scalars().one()
+            assert video.is_missing is True
+
+            _write_video(tmpdir, "外接硬盘.mp4")
+            restored = await service.scan_source(source.id)
+
+        assert restored["new_videos"] == 0
+        assert (await db_session.execute(select(Video))).scalars().one().is_missing is False
+
+
+@pytest.mark.asyncio
+async def test_unmounted_source_marks_nothing(db_session):
+    """A source directory that is not there at all must not black out the library."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = await _create_source(db_session, path=tmpdir)
+        video = Video(
+            source_id=source.id,
+            filepath=os.path.join(tmpdir, "在硬盘上.mp4"),
+            title="在硬盘上",
+        )
+        db_session.add(video)
+        await db_session.commit()
+
+    # The share is unmounted: scan_directory finds nothing, as an empty folder
+    # would, and that is exactly when a rescan must keep the rows alive.
+    service = ScanService(db_session)
+    with _no_media_probe():
+        result = await service.scan_source(source.id)
+
+    await db_session.refresh(video)
+    assert result["files_found"] == 0
+    assert video.is_missing is False

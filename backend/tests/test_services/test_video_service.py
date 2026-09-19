@@ -142,6 +142,23 @@ async def test_get_videos_search(db_session):
 
 
 @pytest.mark.asyncio
+async def test_search_for_lost_files_returns_only_missing_rows(db_session):
+    """The 丢失 keyword is the whole library's window onto lost records."""
+    kept = await _create_video(db_session, title="还在", filepath="/keep.mp4")
+    lost = await _create_video(db_session, title="没了", filepath="/gone.mp4")
+    lost.is_missing = True
+    await db_session.commit()
+
+    service = VideoService(db_session)
+    videos, total = await service.get_videos(search="丢失")
+
+    assert total == 1
+    assert [video.id for video in videos] == [lost.id]
+    assert videos[0].is_missing is True
+    assert kept.is_missing is False
+
+
+@pytest.mark.asyncio
 async def test_get_videos_pagination(db_session):
     """Test pagination of videos."""
     for i in range(25):

@@ -31,6 +31,8 @@ export interface StubVideo {
   series: string | null
   season: number | null
   episode: number | null
+  /** The last scan could not find the file on disk. */
+  is_missing: boolean
   rating: number
   view_count: number
   is_new: boolean
@@ -59,6 +61,7 @@ export const videos: StubVideo[] = [
     series: '深夜客车',
     season: 1,
     episode: 2,
+    is_missing: false,
     rating: 4,
     view_count: 3,
     is_new: true,
@@ -82,6 +85,9 @@ export const videos: StubVideo[] = [
     series: null,
     season: null,
     episode: null,
+    // The NAS share was not mounted at the last scan, so the row is still in
+    // the library but its file could not be found.
+    is_missing: true,
     rating: 0,
     view_count: 0,
     is_new: false,
@@ -256,6 +262,11 @@ function matchesSearch(video: StubVideo, raw: string): boolean {
         if ((WATCH_STATE[video.id] ?? 'never') !== WATCH_STATE_LABELS[text]) return false
         continue
       }
+
+      if (text === '丢失' || text === 'missing') {
+        if (!video.is_missing) return false
+        continue
+      }
     }
 
     if (!haystack.some((field) => field.includes(lower))) return false
@@ -273,6 +284,9 @@ export async function mockApi(page: Page): Promise<void> {
   let transcodeFormat: string | null = null
   const readNotifications = new Set<number>()
   const removedNotifications = new Set<number>()
+  /** Rows the app deleted through DELETE /videos/{id} during a test. */
+  const removedVideos = new Set<number>()
+  const aliveVideos = () => videos.filter((video) => !removedVideos.has(video.id))
 
   const statusBody = (videoId: number) => ({
     video_id: videoId,
@@ -330,7 +344,7 @@ export async function mockApi(page: Page): Promise<void> {
         const search = (url.searchParams.get('search') ?? '').trim()
         const sourceId = url.searchParams.get('source_id')
         const tagId = url.searchParams.get('tag_id')
-        const items = videos.filter(
+        const items = aliveVideos().filter(
           (video) =>
             (!search || matchesSearch(video, search)) &&
             (!sourceId || video.source_id === Number(sourceId)) &&
@@ -358,7 +372,7 @@ export async function mockApi(page: Page): Promise<void> {
       if (favoriteStatus) return respond(route, { is_favorite: false })
       const video = /^\/videos\/(\d+)$/.exec(path)
       if (video) {
-        const found = videos.find((item) => item.id === Number(video[1]))
+        const found = aliveVideos().find((item) => item.id === Number(video[1]))
         return found ? respond(route, found) : respond(route, { detail: '视频不存在' }, 404)
       }
       if (/^\/videos\/\d+\/thumbnail$/.test(path)) {
@@ -469,6 +483,15 @@ export async function mockApi(page: Page): Promise<void> {
     }
 
     if (method === 'DELETE') {
+      const videoRow = /^\/videos\/(\d+)$/.exec(path)
+      if (videoRow) {
+        const id = Number(videoRow[1])
+        if (!aliveVideos().some((video) => video.id === id)) {
+          return respond(route, { detail: '视频不存在' }, 404)
+        }
+        removedVideos.add(id)
+        return route.fulfill({ status: 204, body: '' })
+      }
       if (/^\/sources\/\d+$/.test(path)) return route.fulfill({ status: 204, body: '' })
       if (/^\/history\/\d+$/.test(path)) return respond(route, { ok: true })
       if (/^\/favorites\/\d+$/.test(path)) return respond(route, { ok: true })
