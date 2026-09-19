@@ -169,6 +169,38 @@ test('卡片封面底部画出停下来的位置，未看过则没有', async ({
   await expect(page.locator('.video-card').nth(1).locator('.resume-bar')).toHaveCount(0)
 })
 
+test('系列横排说出下一集是哪一集，点开即播', async ({ page }) => {
+  await page.goto('/')
+
+  const rail = page.locator('.series-rail')
+  await expect(rail.locator('.rail-title')).toHaveText('系列进度')
+  await expect(rail.locator('.rail-count')).toHaveText('1 个系列')
+
+  const item = rail.locator('.rail-item').first()
+  await expect(item.locator('.rail-caption')).toHaveText('深夜客车')
+  await expect(item.locator('.rail-remaining')).toHaveText('1/3')
+  await expect(item.locator('.rail-state')).toHaveText('看到 S01E02')
+
+  // 3 集看完 1 集 = 33%，按真实像素铺进度线
+  await expect(item.locator('.rail-bar-fill')).toHaveAttribute('style', /width: 33\.3\d*%/)
+  const bar = await item.locator('.rail-bar').boundingBox()
+  const fill = await item.locator('.rail-bar-fill').boundingBox()
+  expect(fill?.width).toBeGreaterThan((bar?.width ?? 0) * 0.3)
+  expect(fill?.width).toBeLessThan((bar?.width ?? 0) * 0.4)
+
+  await item.click()
+  await expect(page).toHaveURL(/\/videos\/1$/)
+})
+
+test('卡片右上角标出文件名里解析出的季集', async ({ page }) => {
+  await page.goto('/')
+
+  const first = page.locator('.video-card').first()
+  await expect(first.locator('.episode-badge')).toHaveText('S01E02')
+  // 另一部不是剧集，不该凭空出现角标
+  await expect(page.locator('.video-card').nth(1).locator('.episode-badge')).toHaveCount(0)
+})
+
 test('搜索与筛选写进地址，换个入口打开同一个地址能还原', async ({ page }) => {
   await page.goto('/')
 

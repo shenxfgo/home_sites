@@ -1,11 +1,22 @@
 import client from './client'
-import type { Video, VideoListResponse, VideoQueryParams, VideoUpdate } from '@/types/video'
+import type {
+  SeriesProgress,
+  Video,
+  VideoListResponse,
+  VideoQueryParams,
+  VideoUpdate,
+} from '@/types/video'
 
 /** Get paginated video list with optional filtering. */
 export function listVideos(params: VideoQueryParams = {}): Promise<VideoListResponse> {
   return client
     .get<VideoListResponse>('/videos', { params })
     .then((r) => r.data)
+}
+
+/** Get how far each recognised series has been watched. */
+export function listSeriesProgress(): Promise<SeriesProgress[]> {
+  return client.get<SeriesProgress[]>('/videos/series').then((r) => r.data)
 }
 
 /** Get a single video by ID. */

@@ -5,15 +5,19 @@ import type { Router } from 'vue-router'
 import { ElMessage, ElSelect } from 'element-plus'
 import Home from '@/views/Home.vue'
 import VideoCard from '@/components/VideoCard.vue'
-import { listVideos } from '@/api/videos'
+import { listSeriesProgress, listVideos } from '@/api/videos'
 import { listSources } from '@/api/sources'
 import { listTags } from '@/api/tags'
 import { getContinueList } from '@/api/history'
-import { makeSource, makeTag, makeVideo } from '../factories'
+import { makeSeriesProgress, makeSource, makeTag, makeVideo } from '../factories'
 
 vi.mock('@/api/videos', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/videos')>()
-  return { ...actual, listVideos: vi.fn() }
+  return {
+    ...actual,
+    listVideos: vi.fn(),
+    listSeriesProgress: vi.fn(async () => []),
+  }
 })
 vi.mock('@/api/sources', () => ({ listSources: vi.fn() }))
 vi.mock('@/api/tags', () => ({ listTags: vi.fn() }))
@@ -222,6 +226,87 @@ describe('Home resume rail', () => {
     const { wrapper } = await mountHome()
 
     expect(wrapper.find('.resume-rail').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+describe('Home series rail', () => {
+  beforeEach(() => {
+    vi.useRealTimers()
+    vi.mocked(listVideos).mockReset()
+    vi.mocked(listVideos).mockResolvedValue({ items: [makeVideo({ id: 1 })], total: 1, page: 1, page_size: 20 })
+    vi.mocked(listSources).mockResolvedValue([makeSource({ id: 3, name: '剧集' })])
+    vi.mocked(listTags).mockResolvedValue([makeTag(7, '悬疑')])
+    vi.mocked(getContinueList).mockResolvedValue([])
+    vi.mocked(listSeriesProgress).mockReset()
+    vi.mocked(listSeriesProgress).mockResolvedValue([])
+    vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+  })
+
+  it('shows how far each series got and opens the next episode', async () => {
+    vi.mocked(listSeriesProgress).mockResolvedValue([
+      makeSeriesProgress({
+        series: '暗涌',
+        total: 4,
+        finished: 3,
+        next: makeVideo({ id: 11, series: '暗涌', season: 1, episode: 4 }),
+      }),
+    ])
+    const { wrapper, router } = await mountHome()
+
+    const rail = wrapper.get('.series-rail')
+    expect(rail.get('.rail-title').text()).toBe('系列进度')
+    expect(rail.get('.rail-count').text()).toContain('1 个系列')
+    expect(rail.get('.rail-remaining').text()).toBe('3/4')
+    expect(rail.get('.rail-bar-fill').attributes('style')).toContain('width: 75%')
+    expect(rail.get('.rail-caption').text()).toBe('暗涌')
+    expect(rail.get('.rail-state').text()).toBe('看到 S01E04')
+
+    await rail.get('.rail-item').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.params.id).toBe('11')
+    wrapper.unmount()
+  })
+
+  it('reads a season-less episode as 第N集', async () => {
+    vi.mocked(listSeriesProgress).mockResolvedValue([
+      makeSeriesProgress({ next: makeVideo({ id: 12, season: null, episode: 7 }) }),
+    ])
+    const { wrapper } = await mountHome()
+
+    expect(wrapper.get('.rail-state').text()).toBe('看到 第7集')
+    wrapper.unmount()
+  })
+
+  it('labels a finished series and leaves it unclickable', async () => {
+    vi.mocked(listSeriesProgress).mockResolvedValue([
+      makeSeriesProgress({ series: '公路旅行', total: 2, finished: 2, next: null }),
+    ])
+    const { wrapper, router } = await mountHome()
+
+    const item = wrapper.get('.series-rail .rail-item')
+    expect(item.classes()).toContain('rail-item-done')
+    expect(wrapper.get('.rail-state').text()).toBe('已看完')
+    expect(wrapper.get('.rail-bar-fill').attributes('style')).toContain('width: 100%')
+
+    await item.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.name).toBe('home')
+    wrapper.unmount()
+  })
+
+  it('keeps the series rail out of a filtered library', async () => {
+    vi.mocked(listSeriesProgress).mockResolvedValue([makeSeriesProgress()])
+    const { wrapper } = await mountHome('/?q=暗涌')
+
+    expect(wrapper.find('.series-rail').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('skips the rail for a library with no parsed series', async () => {
+    const { wrapper } = await mountHome()
+
+    expect(wrapper.find('.series-rail').exists()).toBe(false)
     wrapper.unmount()
   })
 })

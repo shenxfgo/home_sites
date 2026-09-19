@@ -164,6 +164,54 @@ class VideoService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def get_series_progress(self) -> list[dict]:
+        """How far each parsed series has been watched.
+
+        One grouped query counts the episodes, and only the episodes still
+        outstanding are loaded as rows, so a big finished series costs nothing
+        beyond its counters.
+        """
+        counts = await self.session.execute(
+            select(
+                Video.series,
+                func.count(Video.id),
+                func.sum(case((_FINISHED, 1), else_=0)),
+                func.sum(case((_PLAYED, 1), else_=0)),
+            )
+            .where(Video.series.is_not(None))
+            .group_by(Video.series)
+        )
+        series = {
+            name: {
+                "series": name,
+                "total": total,
+                "finished": finished or 0,
+                "watched": watched or 0,
+                "next": None,
+            }
+            for name, total, finished, watched in counts.all()
+        }
+        if not series:
+            return []
+
+        outstanding = await self.session.execute(
+            select(Video)
+            .where(Video.series.is_not(None), ~_FINISHED)
+            .order_by(
+                func.coalesce(Video.season, 1).asc(),
+                func.coalesce(Video.episode, 0).asc(),
+                Video.id.asc(),
+            )
+        )
+        for video in outstanding.scalars().all():
+            entry = series.get(video.series)
+            if entry is None or entry["next"] is not None:
+                continue
+            await attach_watch_progress(self.session, [video])
+            entry["next"] = video
+
+        return sorted(series.values(), key=lambda entry: entry["series"])
+
     async def get_videos(
         self,
         source_id: int | None = None,

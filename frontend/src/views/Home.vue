@@ -4,12 +4,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { QuestionFilled, Search, VideoCamera } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import VideoCard from '@/components/VideoCard.vue'
-import { listVideos, thumbnailUrl } from '@/api/videos'
+import { listSeriesProgress, listVideos, thumbnailUrl } from '@/api/videos'
 import { getContinueList } from '@/api/history'
 import { listSources } from '@/api/sources'
 import { listTags } from '@/api/tags'
 import { isTypingTarget } from '@/composables/typingGuard'
-import type { Tag, Video, VideoQueryParams } from '@/types/video'
+import type { SeriesProgress, Tag, Video, VideoQueryParams } from '@/types/video'
 import type { Source } from '@/types/source'
 
 const DEFAULT_PAGE_SIZE = 20
@@ -21,6 +21,7 @@ const videos = ref<Video[]>([])
 const sources = ref<Source[]>([])
 const tags = ref<Tag[]>([])
 const continueVideos = ref<Video[]>([])
+const seriesProgress = ref<SeriesProgress[]>([])
 const loading = ref(false)
 const total = ref(0)
 
@@ -41,6 +42,9 @@ const hasFilters = computed(
 )
 const showResumeRail = computed(
   () => !loading.value && !hasFilters.value && continueVideos.value.length > 0,
+)
+const showSeriesRail = computed(
+  () => !loading.value && !hasFilters.value && seriesProgress.value.length > 0,
 )
 
 /** How much of a title is still ahead of the stored position. */
@@ -69,6 +73,20 @@ function formatDuration(seconds: number | null): string {
 
 function openVideo(video: Video) {
   router.push({ name: 'video-detail', params: { id: video.id } })
+}
+
+/** Coordinates the scan parsed out of the filename, e.g. S01E02 or 第12集. */
+function episodeLabelOf(video: Video): string | null {
+  if (video.episode == null) return null
+  if (video.season == null) return `第${video.episode}集`
+  return `S${String(video.season).padStart(2, '0')}E${String(video.episode).padStart(2, '0')}`
+}
+
+/** '看到第几集' for a series: the next unfinished episode's coordinates. */
+function seriesStateOf(entry: SeriesProgress): string {
+  const label = entry.next ? episodeLabelOf(entry.next) : null
+  if (entry.next == null) return '已看完'
+  return label ? `看到 ${label}` : `继续 ${titleOf(entry.next)}`
 }
 
 /** Reduce a location query to the keys this page owns, dropping empty values. */
@@ -178,6 +196,14 @@ async function loadContinueList() {
   }
 }
 
+async function loadSeries() {
+  try {
+    seriesProgress.value = await listSeriesProgress()
+  } catch {
+    // Silently ignore — same as the rail above
+  }
+}
+
 function handleSearch() {
   currentPage.value = 1
   // The keyword is a filter like any other, so it belongs in the address bar.
@@ -253,6 +279,7 @@ onMounted(() => {
   loadSources()
   loadTags()
   loadContinueList()
+  loadSeries()
   loadVideos()
   document.addEventListener('keydown', handleGlobalKeydown)
 })
@@ -364,6 +391,44 @@ onUnmounted(() => {
             </span>
           </div>
           <p class="rail-caption" :title="titleOf(video)">{{ titleOf(video) }}</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Series rail: how far each filename-parsed series has gotten -->
+    <section v-if="showSeriesRail" class="series-rail">
+      <div class="rail-head">
+        <h2 class="rail-title">系列进度</h2>
+        <span class="rail-count">{{ seriesProgress.length }} 个系列</span>
+      </div>
+      <div class="rail-row">
+        <div
+          v-for="entry in seriesProgress"
+          :key="entry.series"
+          class="rail-item"
+          :class="{ 'rail-item-done': !entry.next }"
+          @click="entry.next && openVideo(entry.next)"
+        >
+          <div class="rail-thumb">
+            <img
+              v-if="entry.next?.thumbnail_path"
+              :src="thumbnailUrl(entry.next.id)"
+              :alt="entry.series"
+              class="rail-img"
+            />
+            <div v-else class="rail-placeholder">
+              <el-icon :size="22"><VideoCamera /></el-icon>
+            </div>
+            <span class="rail-remaining">{{ entry.finished }}/{{ entry.total }}</span>
+            <span class="rail-bar">
+              <span
+                class="rail-bar-fill"
+                :style="{ width: (entry.finished / entry.total) * 100 + '%' }"
+              />
+            </span>
+          </div>
+          <p class="rail-caption" :title="entry.series">{{ entry.series }}</p>
+          <p class="rail-state">{{ seriesStateOf(entry) }}</p>
         </div>
       </div>
     </section>
@@ -494,6 +559,10 @@ onUnmounted(() => {
   margin-bottom: 20px;
 }
 
+.series-rail {
+  margin-bottom: 20px;
+}
+
 .rail-head {
   display: flex;
   align-items: baseline;
@@ -587,6 +656,23 @@ onUnmounted(() => {
 
 .rail-item:hover .rail-caption {
   color: var(--accent);
+}
+
+.rail-state {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-glass-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-item-done {
+  cursor: default;
+}
+
+.rail-item-done:hover .rail-caption {
+  color: var(--text-glass);
 }
 
 .empty-hint {

@@ -27,6 +27,10 @@ export interface StubVideo {
   format: string | null
   resolution: string | null
   thumbnail_path: string | null
+  /** Series coordinates the scan parsed out of the file name. */
+  series: string | null
+  season: number | null
+  episode: number | null
   rating: number
   view_count: number
   is_new: boolean
@@ -52,6 +56,9 @@ export const videos: StubVideo[] = [
     format: 'mp4',
     resolution: '640x480',
     thumbnail_path: 'D:\\thumbs\\1.jpg',
+    series: '深夜客车',
+    season: 1,
+    episode: 2,
     rating: 4,
     view_count: 3,
     is_new: true,
@@ -72,6 +79,9 @@ export const videos: StubVideo[] = [
     format: 'mkv',
     resolution: '1280x720',
     thumbnail_path: 'D:\\thumbs\\2.jpg',
+    series: null,
+    season: null,
+    episode: null,
     rating: 0,
     view_count: 0,
     is_new: false,
@@ -81,6 +91,11 @@ export const videos: StubVideo[] = [
     updated_at: hoursAgo(50),
     tags: [],
   },
+]
+
+/** Rows for GET /videos/series: the next unfinished episode is the one to open. */
+export const seriesProgress = [
+  { series: '深夜客车', total: 3, finished: 1, watched: 2, next: videos[0] },
 ]
 
 export const sources = [
@@ -324,6 +339,7 @@ export async function mockApi(page: Page): Promise<void> {
         return respond(route, { items, total: items.length, page: 1, page_size: 20 })
       }
       if (path === '/videos/new') return respond(route, [])
+      if (path === '/videos/series') return respond(route, seriesProgress)
       const subtitleStream = /^\/videos\/(\d+)\/subtitles\/(\d+)\/stream$/.exec(path)
       if (subtitleStream) {
         return route.fulfill({ status: 200, contentType: 'text/vtt', body: SAMPLE_VTT })

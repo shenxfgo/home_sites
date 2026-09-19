@@ -21,6 +21,9 @@ class Video(Base):
     format: Mapped[str | None] = mapped_column(String(20), nullable=True)
     resolution: Mapped[str | None] = mapped_column(String(20), nullable=True)
     thumbnail_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    series: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    season: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    episode: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rating: Mapped[int] = mapped_column(Integer, default=0)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
     last_played_at: Mapped[datetime | None] = mapped_column(

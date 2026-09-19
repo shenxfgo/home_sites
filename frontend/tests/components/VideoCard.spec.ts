@@ -84,6 +84,22 @@ describe('VideoCard', () => {
     expect(mountCard(makeVideo({ duration: null, progress: 50 })).find('.resume-bar').exists()).toBe(false)
   })
 
+  it('badges the parsed episode position, with and without a season', () => {
+    const twoDigit = mountCard(makeVideo({ season: 1, episode: 2 }))
+    expect(twoDigit.find('.episode-badge').text()).toBe('S01E02')
+
+    const tenth = mountCard(makeVideo({ season: 10, episode: 3 }))
+    expect(tenth.find('.episode-badge').text()).toBe('S10E03')
+
+    const noSeason = mountCard(makeVideo({ season: null, episode: 12 }))
+    expect(noSeason.find('.episode-badge').text()).toBe('第12集')
+  })
+
+  it('leaves the episode badge off for a file with no coordinates', () => {
+    expect(mountCard(makeVideo({ season: 1, episode: null })).find('.episode-badge').exists()).toBe(false)
+    expect(mountCard(makeVideo()).find('.episode-badge').exists()).toBe(false)
+  })
+
   it('opens the detail route for the card video on click', async () => {
     const wrapper = mountCard(makeVideo({ id: 9 }))
 

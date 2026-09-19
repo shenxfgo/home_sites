@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
+from src.models.tag import Tag
 from src.models.video import Video
 from src.models.new_video import NewVideo
 from src.services import scan_service as scan_module
@@ -351,3 +352,83 @@ def _write_text(path: str) -> str:
     with open(path, "w", encoding="utf-8") as f:
         f.write("1\n00:00:01,000 --> 00:00:02,000\nhi\n")
     return path
+
+
+@pytest.mark.asyncio
+async def test_scan_records_series_coordinates_and_one_shared_tag(db_session):
+    """Episodes of a series keep their coordinates and reuse one tag row."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _write_video(tmpdir, "[NC-Raws] 海边的日子 第01集.mp4")
+        _write_video(tmpdir, "[NC-Raws] 海边的日子 第02集.mp4")
+        _write_video(tmpdir, "夜空列车.mp4")
+
+        source = await _create_source(db_session, path=tmpdir)
+        service = ScanService(db_session)
+
+        with patch("src.services.scan_service.extract_video_info") as mock_info, \
+             patch("src.services.scan_service.generate_thumbnail") as mock_thumb:
+            mock_info.return_value = {"duration": 20, "resolution": "640x360", "format": "mp4"}
+            mock_thumb.return_value = ""
+            await service.scan_source(source.id)
+
+        result = await db_session.execute(select(Video))
+        by_title = {video.title: video for video in result.scalars().all()}
+
+        assert set(by_title) == {"海边的日子 第1集", "海边的日子 第2集", "夜空列车"}
+        first = by_title["海边的日子 第1集"]
+        assert (first.series, first.season, first.episode) == ("海边的日子", None, 1)
+        assert [tag.name for tag in first.tags] == ["海边的日子", "NC-Raws"]
+        assert by_title["夜空列车"].tags == []
+
+        tags = await db_session.execute(select(Tag).where(Tag.name == "海边的日子"))
+        assert len(tags.scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_rescan_backfills_coordinates_into_old_rows(db_session):
+    """A row written before the parser gets its series on the next scan."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = _write_video(tmpdir, "[NC-Raws] 海边的日子 第03集.mp4")
+        source = await _create_source(db_session, path=tmpdir)
+        curated = Tag(name="我手动加的")
+        old = Video(
+            source_id=source.id,
+            filepath=path,
+            title="我改过的名字",
+            duration=20,
+            format="mp4",
+            tags=[curated],
+        )
+        db_session.add(old)
+        await db_session.commit()
+
+        service = ScanService(db_session)
+        with patch("src.services.scan_service.extract_video_info") as mock_info, \
+             patch("src.services.scan_service.generate_thumbnail") as mock_thumb:
+            mock_info.return_value = {"duration": 20, "format": "mp4"}
+            mock_thumb.return_value = ""
+            result = await service.scan_source(source.id)
+
+        assert result["new_videos"] == 0
+        assert (old.series, old.season, old.episode) == ("海边的日子", None, 3)
+        assert old.title == "我改过的名字"
+        assert [tag.name for tag in old.tags] == ["我手动加的", "海边的日子", "NC-Raws"]
+
+
+@pytest.mark.asyncio
+async def test_rescan_does_not_duplicate_auto_tags(db_session):
+    """A second scan of the same directory leaves the tag table untouched."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _write_video(tmpdir, "Severance.S01E01.mkv")
+        source = await _create_source(db_session, path=tmpdir)
+        service = ScanService(db_session)
+
+        with patch("src.services.scan_service.extract_video_info") as mock_info, \
+             patch("src.services.scan_service.generate_thumbnail") as mock_thumb:
+            mock_info.return_value = {"duration": 20, "format": "mkv"}
+            mock_thumb.return_value = ""
+            await service.scan_source(source.id)
+            await service.scan_source(source.id)
+
+        tags = await db_session.execute(select(Tag))
+        assert [tag.name for tag in tags.scalars().all()] == ["Severance"]

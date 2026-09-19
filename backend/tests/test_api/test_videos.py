@@ -67,10 +67,27 @@ async def _create_source(session, name="Test Source", path="/test"):
     return source
 
 
-async def _create_video(session, source_id=1, title="Test Video", filepath="/test/video.mp4"):
+async def _create_video(
+    session,
+    source_id=1,
+    title="Test Video",
+    filepath="/test/video.mp4",
+    duration=None,
+    series=None,
+    season=None,
+    episode=None,
+):
     """Helper to create a video for tests."""
     from src.models.video import Video
-    video = Video(source_id=source_id, filepath=filepath, title=title)
+    video = Video(
+        source_id=source_id,
+        filepath=filepath,
+        title=title,
+        duration=duration,
+        series=series,
+        season=season,
+        episode=episode,
+    )
     session.add(video)
     await session.commit()
     await session.refresh(video)
@@ -346,3 +363,63 @@ async def test_continue_list_reports_the_stored_position(client, db_session):
     items = response.json()
     assert [item["id"] for item in items] == [video.id]
     assert items[0]["progress"] == 30
+
+
+@pytest.mark.asyncio
+async def test_list_videos_carries_series_coordinates(client, db_session):
+    """The parsed series, season and episode ride along with each row."""
+    source = await _create_source(db_session)
+    await _create_video(
+        db_session,
+        source_id=source.id,
+        title="海边的日子 第2集",
+        filepath="/e2.mp4",
+        series="海边的日子",
+        season=1,
+        episode=2,
+    )
+
+    response = await client.get("/api/videos")
+    item = response.json()["items"][0]
+    assert (item["series"], item["season"], item["episode"]) == ("海边的日子", 1, 2)
+
+
+@pytest.mark.asyncio
+async def test_series_progress_counts_watched_episodes_and_picks_the_next(
+    client, db_session
+):
+    """A series reports how far it got and which episode to open next."""
+    source = await _create_source(db_session)
+    first = await _create_video(
+        db_session, source_id=source.id, title="EP1", filepath="/1.mp4",
+        duration=100, series="深夜食堂", season=1, episode=1,
+    )
+    second = await _create_video(
+        db_session, source_id=source.id, title="EP2", filepath="/2.mp4",
+        duration=100, series="深夜食堂", season=1, episode=2,
+    )
+    await _create_video(
+        db_session, source_id=source.id, title="EP3", filepath="/3.mp4",
+        duration=100, series="深夜食堂", season=1, episode=3,
+    )
+    await _create_video(db_session, source_id=source.id, title="电影", filepath="/m.mp4")
+
+    await client.post(f"/api/videos/{first.id}/progress", json={"progress": 100})
+    await client.post(f"/api/videos/{second.id}/progress", json={"progress": 40})
+
+    response = await client.get("/api/videos/series")
+    assert response.status_code == 200
+    entries = response.json()
+    assert [entry["series"] for entry in entries] == ["深夜食堂"]
+    entry = entries[0]
+    assert (entry["total"], entry["finished"], entry["watched"]) == (3, 1, 2)
+    assert entry["next"]["id"] == second.id
+    assert entry["next"]["progress"] == 40
+
+
+@pytest.mark.asyncio
+async def test_series_progress_is_empty_without_a_series(client):
+    """A library of plain movies reports no series at all."""
+    response = await client.get("/api/videos/series")
+    assert response.status_code == 200
+    assert response.json() == []

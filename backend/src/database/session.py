@@ -25,6 +25,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_play_history_video_id
 """
 
 
+# Columns added after the first release. ``create_all`` never alters a table it
+# already created, so a database written before them gets each one in turn.
+ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("videos", "series", "ALTER TABLE videos ADD COLUMN series VARCHAR(512)"),
+    ("videos", "season", "ALTER TABLE videos ADD COLUMN season INTEGER"),
+    ("videos", "episode", "ALTER TABLE videos ADD COLUMN episode INTEGER"),
+)
+
+VIDEOS_SERIES_INDEX = """
+CREATE INDEX IF NOT EXISTS ix_videos_series ON videos (series)
+"""
+
+
 # Create async engine
 engine = create_async_engine(
     settings.database_url,
@@ -44,13 +57,28 @@ async def init_db() -> None:
     """Create all tables and bring an existing database up to the current schema.
 
     ``create_all`` only adds missing tables, never alters existing ones, so the
-    history fixes are applied here: the rows a pre-upgrade database may already
-    hold are collapsed to one per video before its unique index is added.
+    history fixes and the columns added since the first release are applied
+    here: the rows a pre-upgrade database may already hold are collapsed to one
+    per video before its unique index is added.
     """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text(DEDUPE_PLAY_HISTORY))
         await conn.execute(text(PLAY_HISTORY_VIDEO_UNIQUE_INDEX))
+        await _add_missing_columns(conn)
+        await conn.execute(text(VIDEOS_SERIES_INDEX))
+
+
+async def _add_missing_columns(conn) -> None:
+    """Apply every :data:`ADDED_COLUMNS` statement the database lacks."""
+    seen: dict[str, set[str]] = {}
+    for table, column, statement in ADDED_COLUMNS:
+        if table not in seen:
+            rows = await conn.execute(text(f"PRAGMA table_info({table})"))
+            seen[table] = {row[1] for row in rows}
+        if column not in seen[table]:
+            await conn.execute(text(statement))
+            seen[table].add(column)
 
 
 async def get_session() -> AsyncSession:

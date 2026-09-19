@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AxiosResponse, InternalAxiosRequestConfig } from 'axios'
 import client from '@/api/client'
-import { getVideo, listVideos, thumbnailUrl, updateProgress } from '@/api/videos'
+import { getVideo, listSeriesProgress, listVideos, thumbnailUrl, updateProgress } from '@/api/videos'
 
 interface Seen {
   url: string
@@ -47,6 +47,15 @@ describe('videos api', () => {
     await getVideo(3)
 
     expect(seen[0]?.url).toBe('/api/videos/3')
+  })
+
+  it('loads the series progress aggregate', async () => {
+    const seen = captureRequests([{ series: '暗涌', total: 3, finished: 1, watched: 2, next: null }])
+
+    const series = await listSeriesProgress()
+
+    expect(seen[0]?.url).toBe('/api/videos/series')
+    expect(series[0]?.series).toBe('暗涌')
   })
 
   it('posts playback progress as a number payload', async () => {

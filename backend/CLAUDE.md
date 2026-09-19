@@ -70,7 +70,9 @@ backend/
 │   │   └── ...
 │   ├── utils/             # 工具函数
 │   │   ├── ffmpeg.py      # FFmpeg 工具
-│   │   └── file_scanner.py
+│   │   ├── file_scanner.py # 目录扫描与探针
+│   │   ├── video_search.py # 搜索串解析（源/标签/评分/时长/观看状态）
+│   │   └── name_parser.py  # 文件名解析（片名、系列、季集、字幕组）
 │   ├── scheduler/         # 定时任务
 │   │   ├── scan_scheduler.py
 │   │   └── tasks.py
@@ -216,6 +218,8 @@ async def test_create_example(db_session):
 ### 建表与改表
 
 `init_db()` 只有 `Base.metadata.create_all`，它只补建新表、**从不修改已存在的表**。因此给已有表加约束或索引时，要把补齐用的 SQL 写成模块常量放在 `src/database/session.py`，在 `init_db` 里紧随 `create_all` 执行，并保证幂等（`IF NOT EXISTS`、先清洗再加约束）。参考 `play_history` 的"每部视频一行"：先 `DEDUPE_PLAY_HISTORY` 折叠老库的重复行，再建 `ix_play_history_video_id` 唯一索引——顺序反了会直接建索引失败。
+
+加**列**走的是同一条路的另一支：`ADDED_COLUMNS` 三元组（表名、列名、`ALTER TABLE ... ADD COLUMN`）配 `PRAGMA table_info` 探测，缺哪列补哪列，再单独建需要的索引（`VIDEOS_SERIES_INDEX`）。这类修复只在启动时跑，测试用的 `db_session` 直接 `create_all` 建全新库，所以新列必须同时在模型里声明。
 
 ### 模型定义
 

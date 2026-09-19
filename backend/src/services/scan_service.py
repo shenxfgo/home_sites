@@ -10,11 +10,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.source import VideoSource
+from src.models.tag import Tag
 from src.models.video import Video
 from src.models.new_video import NewVideo
 from src.services.notification_service import NotificationService
 from src.services.subtitle_service import SubtitleService
 from src.utils.file_scanner import scan_directory, extract_video_info, generate_thumbnail
+from src.utils.name_parser import auto_tags, parse_video_filename
 from src.utils.subtitles import find_subtitle_files
 from src.config import settings
 
@@ -89,6 +91,53 @@ def _register_subtitles(
     )
 
 
+async def _tag_index(session: AsyncSession) -> dict[str, Tag]:
+    """Existing tags by name, so a scan creates each new one exactly once."""
+    result = await session.execute(select(Tag))
+    return {tag.name: tag for tag in result.scalars().all()}
+
+
+async def _resolve_tags(
+    session: AsyncSession,
+    index: dict[str, Tag],
+    names: tuple[str, ...],
+) -> list[Tag]:
+    """Map tag names onto rows, creating the ones the library has not seen."""
+    tags = []
+    for name in names:
+        tag = index.get(name)
+        if tag is None:
+            tag = Tag(name=name)
+            session.add(tag)
+            await session.flush()
+            index[name] = tag
+        tags.append(tag)
+    return tags
+
+
+async def _backfill_coordinates(
+    session: AsyncSession,
+    video: Video,
+    index: dict[str, Tag],
+    filename: str,
+) -> None:
+    """Fill series coordinates into a row written before the parser existed.
+
+    Only an empty ``series`` is written and auto tags are appended, so a title
+    or tag set someone curated by hand is left alone.
+    """
+    if video.series is not None:
+        return
+    parsed = parse_video_filename(filename)
+    if parsed.series is None:
+        return
+    video.series = parsed.series
+    video.season = parsed.season
+    video.episode = parsed.episode
+    auto = await _resolve_tags(session, index, auto_tags(parsed))
+    video.tags = [*video.tags, *[tag for tag in auto if tag not in video.tags]]
+
+
 class ScanService:
     """Service for scanning video sources to discover new videos."""
 
@@ -126,12 +175,13 @@ class ScanService:
 
             # Get existing videos of this source, keyed by path
             existing_result = await self.session.execute(
-                select(Video.filepath, Video.id).where(Video.source_id == source_id)
+                select(Video).where(Video.source_id == source_id)
             )
-            existing_ids = {row[0]: row[1] for row in existing_result.all()}
+            existing = {video.filepath: video for video in existing_result.scalars().all()}
 
             subtitle_service = SubtitleService(self.session)
             known_subtitles = await subtitle_service.known_paths(source_id)
+            tags_by_name = await _tag_index(self.session)
 
             for vf in video_files:
                 if _scan_state["stop_requested"]:
@@ -139,9 +189,13 @@ class ScanService:
                     break
 
                 filepath = vf["filepath"]
-                if filepath in existing_ids:
+                known = existing.get(filepath)
+                if known is not None:
+                    await _backfill_coordinates(
+                        self.session, known, tags_by_name, vf["filename"]
+                    )
                     subtitles_found += _register_subtitles(
-                        subtitle_service, existing_ids[filepath], filepath, known_subtitles
+                        subtitle_service, known.id, filepath, known_subtitles
                     )
                     continue
 
@@ -169,15 +223,22 @@ class ScanService:
                                 thumbnail_path = ""
 
                         # Create video record
+                        parsed = parse_video_filename(vf["filename"])
                         video = Video(
                             source_id=source_id,
                             filepath=filepath,
-                            title=os.path.splitext(os.path.basename(filepath))[0],
+                            title=parsed.title,
                             duration=info.get("duration"),
                             file_size=vf.get("file_size"),
                             format=info.get("format"),
                             resolution=info.get("resolution"),
                             thumbnail_path=thumbnail_path or None,
+                            series=parsed.series,
+                            season=parsed.season,
+                            episode=parsed.episode,
+                        )
+                        video.tags = await _resolve_tags(
+                            self.session, tags_by_name, auto_tags(parsed)
                         )
                         self.session.add(video)
                         await self.session.flush()  # Get video.id

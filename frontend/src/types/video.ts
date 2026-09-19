@@ -30,6 +30,10 @@ export interface Video {
   format: string | null
   resolution: string | null
   thumbnail_path: string | null
+  /** Series name parsed from the filename, when the file is one. */
+  series: string | null
+  season: number | null
+  episode: number | null
   rating: number
   view_count: number
   /** Discovered by a recent scan and not played yet. */
@@ -48,6 +52,16 @@ export interface VideoListResponse {
   total: number
   page: number
   page_size: number
+}
+
+/** How far one series has been watched, from GET /videos/series. */
+export interface SeriesProgress {
+  series: string
+  total: number
+  finished: number
+  watched: number
+  /** The episode to open next, or null when the whole series is done. */
+  next: Video | null
 }
 
 /** Query parameters for listing videos. */

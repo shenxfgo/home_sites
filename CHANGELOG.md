@@ -2,6 +2,18 @@
 
 ## 2026-09-19
 
+### 新增功能：文件名解析出系列与季集，首页报"看到第几集"
+
+- **解析器 `backend/src/utils/name_parser.py`**：从文件名里读出片名、系列、季、集、字幕组。认 `S01E02`、`1x03`、`Episode 5`、`EP 5`、`Part 2`、`第12集/话/期` 六种写法；先剥掉 `[NC-Raws]`、`(04)`、`{sub}` 这类括号内容，再清掉 `1080p`、`x265`、`WEB-DL`、`HDR10+`、`H.264`、`REMUX` 等发布噪声，小数（`3.14 圆`）与 `16:9` 不会被拆坏。认不出任何标记的文件保持原样，只是没有系列
+- **自动打标签**：扫描出的剧集自动挂上"系列名 + 字幕组"两个标签，同一个系列的每一集共用同一行标签（实测 3 集只建了 1 个 `Severance` 标签，`video_count=3`）。标签走既有 `tags` 表，因此 `标签:海边的日子` 这种搜索写法直接就能用，没有新增筛选面
+- **三列新数据 + 存量库自动补列**：`videos` 新增 `series/season/episode`（可空）与 `ix_videos_series` 索引。`create_all` 不改已存在的表，所以 `init_db` 加了 `ADDED_COLUMNS`：用 `PRAGMA table_info` 探测缺哪列就 `ALTER TABLE ADD COLUMN` 补哪列，老库启动即跟上，不需要手工迁移
+- **回填不覆盖人工整理**：已入库的文件再扫描一次，只在 `series` 为空时补坐标、自动标签**追加**而非替换，改过的片名与手动标签原样保留（实测：抹掉 4 行的坐标与标签后重扫，坐标与标签都回来了，`new_videos` 仍为 0，片名没动）
+- **首页"系列进度"横排**：新端点 `GET /api/videos/series` 一次分组查询算出每个系列的总集数、看完数、看过数，只把未看完的集读成行，按 `season, episode` 取下一集。横排显示 `1/3` 与"看到 S01E02"，点一下直接进下一集；全看完显示"已看完"且不再可点。卡片右上角同时挂 `S01E02` 角标（无季的写法显示 `第12集`）
+- **本次端点改动**：只有 1 个只读聚合 `GET /api/videos/series`，`VideoResponse` 多带 `series/season/episode` 三个字段
+- **测试**：后端 198 → 217 passed（解析器 13 例、系列聚合 3 例、扫描登记与回填 3 例、列表字段 1 例）；前端单测 149 → 157 passed（卡片角标 2 例、横排 5 例、api 路径 1 例）；Playwright e2e 39 → 41 passed；`npm run build` 通过
+- **验证**：隔离后端（临时库 + 4 个 ffmpeg 样片）实测。① 手工 `DROP COLUMN` 造出升级前的库，重启后 `PRAGMA table_info` 显示 `series/season/episode` 与 `ix_videos_series` 均已补回；② 扫描 4 个文件读出 `Severance S01E01/02/03` → `(Severance, 1, 1/2/3)`、`[NC-Raws] 海边的日子 第12集` → `(海边的日子, None, 12)` 且标签为 `['海边的日子','NC-Raws']`；③ E01 看完（4/4）、E02 看到 2 秒后，`/api/videos/series` 返回 `Severance total 3 finished 1 watched 2 next=(2, progress 2)`、`海边的日子 total 1 finished 0 watched 0 next=(4, progress None)`；④ 清空坐标与标签后重扫，两处数据原样恢复。真实浏览器侧由 e2e 覆盖：进度线按 `1/3` 铺到轨道宽度的 33.3%，像素实测填充落在 30%~40% 区间，点横排跳到 `/videos/1`
+- **顺带发现**：`POST /videos/{id}/progress` 的 `progress` 是整数字段，传 `1.5` 会 422（`int_from_float`）。播放器上报时已经 `Math.floor`，所以线上不会踩到，本次未改协议
+
 ### 新增功能：首页续播、可分享地址、通知清理与播放器偏好
 
 - **列表接口带回观看位置**：`VideoResponse` 新增 `progress`（秒，没看过为 `null`），由已有的 `play_history` 行直接带出，`GET /api/videos` 不必再逐条查历史。卡片封面底部据此画一条进度线，看完（≥99.5%）不画

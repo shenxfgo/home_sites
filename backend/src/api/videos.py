@@ -37,6 +37,9 @@ class VideoResponse(BaseModel):
     format: str | None
     resolution: str | None
     thumbnail_path: str | None
+    series: str | None = None
+    season: int | None = None
+    episode: int | None = None
     rating: int
     view_count: int
     is_new: bool = False
@@ -73,6 +76,18 @@ class VideoListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class SeriesProgressResponse(BaseModel):
+    """How far one parsed series has been watched."""
+
+    series: str
+    total: int
+    finished: int
+    watched: int
+    next: VideoResponse | None = None
+
+    model_config = {"from_attributes": True}
 
 
 class ProgressRequest(BaseModel):
@@ -121,6 +136,14 @@ async def list_new_videos(
     """Get newly discovered videos."""
     videos = await service.get_new_videos(source_id=source_id)
     return videos
+
+
+@router.get("/series", response_model=list[SeriesProgressResponse])
+async def list_series_progress(
+    service: VideoService = Depends(get_video_service),
+) -> list[SeriesProgressResponse]:
+    """Get every recognised series with how many episodes are done."""
+    return await service.get_series_progress()
 
 
 @router.get("/{video_id}", response_model=VideoResponse)
