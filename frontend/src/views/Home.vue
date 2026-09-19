@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { QuestionFilled, Search, VideoCamera } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { QuestionFilled, Search, VideoCamera, WarningFilled } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import VideoCard from '@/components/VideoCard.vue'
-import { listSeriesProgress, listVideos, thumbnailUrl } from '@/api/videos'
+import { deleteVideo, listSeriesProgress, listVideos, thumbnailUrl } from '@/api/videos'
 import { getContinueList } from '@/api/history'
 import { listSources } from '@/api/sources'
 import { listTags } from '@/api/tags'
@@ -13,6 +13,8 @@ import type { SeriesProgress, Tag, Video, VideoQueryParams } from '@/types/video
 import type { Source } from '@/types/source'
 
 const DEFAULT_PAGE_SIZE = 20
+/** Cap on the paging loop that collects the lost rows, at 100 rows a page. */
+const MISSING_PAGES_MAX = 20
 /** Query keys the URL mirrors, sorted so two serializations compare cleanly. */
 const QUERY_KEYS = ['page', 'q', 'size', 'source', 'tag'] as const
 
@@ -22,6 +24,8 @@ const sources = ref<Source[]>([])
 const tags = ref<Tag[]>([])
 const continueVideos = ref<Video[]>([])
 const seriesProgress = ref<SeriesProgress[]>([])
+const missingCount = ref(0)
+const clearingMissing = ref(false)
 const loading = ref(false)
 const total = ref(0)
 
@@ -45,6 +49,9 @@ const showResumeRail = computed(
 )
 const showSeriesRail = computed(
   () => !loading.value && !hasFilters.value && seriesProgress.value.length > 0,
+)
+const showMissingBar = computed(
+  () => !loading.value && !hasFilters.value && missingCount.value > 0,
 )
 
 /** How much of a title is still ahead of the stored position. */
@@ -204,6 +211,69 @@ async function loadSeries() {
   }
 }
 
+/** Ask for the count only; the page size keeps the probe off the grid. */
+const MISSING_FILTER = '丢失'
+
+async function loadMissingCount() {
+  try {
+    const { total: count } = await listVideos({ search: MISSING_FILTER, page: 1, page_size: 1 })
+    missingCount.value = count
+  } catch {
+    // Silently ignore — the banner is an extra, not a gate
+  }
+}
+
+/** Point the search box at the operator that isolates the lost rows. */
+function showMissingOnly() {
+  if (search.value === MISSING_FILTER) return
+  // The watcher would queue a second load behind this one.
+  syncingFromUrl = true
+  search.value = MISSING_FILTER
+  handleSearch()
+}
+
+/**
+ * Drop the records whose files are gone, through the ordinary single delete
+ * endpoint, so no bulk-deletion surface is added for the sake of a tidy-up.
+ */
+async function clearMissingRecords() {
+  try {
+    await ElMessageBox.confirm(
+      `将删除 ${missingCount.value} 条扫描时找不到文件的记录。磁盘上的视频不会被改动，但播放历史与收藏会一起删除；文件回来后重新扫描会重新登记。`,
+      '清理丢失记录',
+      { type: 'warning', confirmButtonText: '删除记录', cancelButtonText: '再想想' },
+    )
+  } catch {
+    return // 取消
+  }
+
+  clearingMissing.value = true
+  try {
+    const ids: number[] = []
+    for (let page = 1; page <= MISSING_PAGES_MAX; page++) {
+      const result = await listVideos({ search: MISSING_FILTER, page, page_size: 100 })
+      ids.push(...result.items.map((video) => video.id))
+      if (ids.length >= result.total) break
+    }
+    let failed = 0
+    for (const id of ids) {
+      try {
+        await deleteVideo(id)
+      } catch {
+        failed += 1
+      }
+    }
+    if (failed) {
+      ElMessage.warning(`已删除 ${ids.length - failed} 条，${failed} 条没删掉`)
+    } else {
+      ElMessage.success(`已删除 ${ids.length} 条丢失记录`)
+    }
+    await Promise.all([loadVideos(), loadMissingCount(), loadContinueList(), loadSeries()])
+  } finally {
+    clearingMissing.value = false
+  }
+}
+
 function handleSearch() {
   currentPage.value = 1
   // The keyword is a filter like any other, so it belongs in the address bar.
@@ -280,6 +350,7 @@ onMounted(() => {
   loadTags()
   loadContinueList()
   loadSeries()
+  loadMissingCount()
   loadVideos()
   document.addEventListener('keydown', handleGlobalKeydown)
 })
@@ -357,9 +428,32 @@ onUnmounted(() => {
             <dd>支持 小时/分钟/秒，省略单位按分钟</dd>
             <dt>没看过 / 未看完 / 已看完</dt>
             <dd>按播放进度筛选</dd>
+            <dt>丢失</dt>
+            <dd>只列扫描时找不到文件的记录</dd>
           </dl>
         </div>
       </el-popover>
+    </div>
+
+    <!-- Lost files: the rows survive the scan, the banner is the way back to them -->
+    <div v-if="showMissingBar" class="missing-bar">
+      <el-icon class="missing-icon"><WarningFilled /></el-icon>
+      <div class="missing-text">
+        <strong>{{ missingCount }} 个文件已不在磁盘上</strong>
+        <span>记录仍然保留，等挂载回来重新扫描会自动恢复；确认删掉了可以清掉记录。</span>
+      </div>
+      <div class="missing-actions">
+        <el-button size="small" @click="showMissingOnly">查看</el-button>
+        <el-button
+          size="small"
+          type="warning"
+          plain
+          :loading="clearingMissing"
+          @click="clearMissingRecords"
+        >
+          清理丢失记录
+        </el-button>
+      </div>
     </div>
 
     <!-- Resume rail: titles with an unfinished history row, most recent first -->
@@ -553,6 +647,46 @@ onUnmounted(() => {
   margin: 0;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+.missing-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 12px 14px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg-strong);
+}
+
+.missing-icon {
+  flex: none;
+  font-size: 18px;
+  color: var(--el-color-warning);
+}
+
+.missing-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.missing-text strong {
+  font-size: 13px;
+  color: var(--text-glass);
+}
+
+.missing-text span {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-glass-secondary);
+}
+
+.missing-actions {
+  margin-left: auto;
+  flex: none;
 }
 
 .resume-rail {

@@ -26,6 +26,13 @@ WATCH_STATES = {
     "已看完": "finished",
 }
 
+#: Standalone words that select whether the file is still on disk.
+PRESENCE_STATES = {
+    "丢失": True,
+    "已丢失": True,
+    "missing": True,
+}
+
 #: Keys accepted in front of a comparison operator.
 COMPARISON_KEYS = {
     "评分": "rating",
@@ -77,6 +84,8 @@ class VideoSearchQuery:
     rating: tuple[str, int] | None = None
     duration: tuple[str, int] | None = None
     watch_state: str | None = None
+    #: Only rows whose file the last scan could not find.
+    missing: bool | None = None
 
     @property
     def has_conditions(self) -> bool:
@@ -88,6 +97,7 @@ class VideoSearchQuery:
             or self.rating
             or self.duration
             or self.watch_state
+            or self.missing
         )
 
 
@@ -133,6 +143,7 @@ def parse_video_search(text: str | None) -> VideoSearchQuery:
         rating=_as_pair(fields.get("rating")),
         duration=_as_pair(fields.get("duration")),
         watch_state=_as_optional_str(fields.get("watch_state")),
+        missing=_as_optional_bool(fields.get("missing")),
     )
 
 
@@ -140,6 +151,9 @@ def _consume(token: str, tokens: list[dict], index: int, fields: dict[str, objec
     """Read one filter out of ``token`` (plus lookahead), or None if it is a keyword."""
     if token in WATCH_STATES:
         fields["watch_state"] = WATCH_STATES[token]
+        return index + 1
+    if token in PRESENCE_STATES:
+        fields["missing"] = PRESENCE_STATES[token]
         return index + 1
 
     inline = _NAME_INLINE.match(token)
@@ -232,6 +246,10 @@ def _parse_duration(value: str, allow_bare: bool) -> int | None:
 
 def _as_optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _as_optional_bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _as_pair(value: object) -> tuple[str, int] | None:

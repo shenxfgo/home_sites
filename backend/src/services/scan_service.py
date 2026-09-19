@@ -262,6 +262,14 @@ class ScanService:
 
             # Update source last_scan_at
             source.last_scan_at = datetime.now(timezone.utc)
+            # A row whose file the scan could not find is marked lost rather
+            # than deleted, but only when the source itself was reachable: an
+            # unmounted share returns an empty listing and must not black out
+            # the whole library.
+            if os.path.isdir(source.path):
+                found = {vf["filepath"] for vf in video_files}
+                for video in existing.values():
+                    video.is_missing = video.filepath not in found
             await self.session.commit()
 
             # Create scan completion notification

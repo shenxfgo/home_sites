@@ -62,7 +62,7 @@ function goToDetail() {
 <template>
   <el-card shadow="hover" class="video-card" @click="goToDetail">
     <!-- Thumbnail area -->
-    <div class="thumbnail-area">
+    <div class="thumbnail-area" :class="{ 'is-missing': video.is_missing }">
       <img
         v-if="video.thumbnail_path"
         :src="thumbnailUrl(video.id)"
@@ -92,7 +92,7 @@ function goToDetail() {
 
       <!-- New badge: set by the scan and cleared by the first play -->
       <el-tag
-        v-if="video.is_new"
+        v-if="video.is_new && !video.is_missing"
         type="danger"
         size="small"
         class="new-badge"
@@ -100,6 +100,9 @@ function goToDetail() {
       >
         新
       </el-tag>
+
+      <!-- The scan could not find the file any more -->
+      <span v-else-if="video.is_missing" class="missing-badge">丢失</span>
     </div>
 
     <!-- Info area -->
@@ -215,6 +218,25 @@ function goToDetail() {
   border-radius: 6px !important;
   border: none !important;
   background: var(--accent-fill) !important;
+}
+
+.thumbnail-area.is-missing .thumbnail-img,
+.thumbnail-area.is-missing .thumbnail-placeholder {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+
+.missing-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background-color: var(--overlay-badge);
+  border: 1px solid var(--el-color-warning);
+  color: var(--el-color-warning);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .episode-badge {

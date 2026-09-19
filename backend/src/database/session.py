@@ -31,6 +31,11 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("videos", "series", "ALTER TABLE videos ADD COLUMN series VARCHAR(512)"),
     ("videos", "season", "ALTER TABLE videos ADD COLUMN season INTEGER"),
     ("videos", "episode", "ALTER TABLE videos ADD COLUMN episode INTEGER"),
+    (
+        "videos",
+        "is_missing",
+        "ALTER TABLE videos ADD COLUMN is_missing INTEGER NOT NULL DEFAULT 0",
+    ),
 )
 
 VIDEOS_SERIES_INDEX = """

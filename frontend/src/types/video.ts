@@ -34,6 +34,8 @@ export interface Video {
   series: string | null
   season: number | null
   episode: number | null
+  /** The last scan could not find the file on disk. */
+  is_missing: boolean
   rating: number
   view_count: number
   /** Discovered by a recent scan and not played yet. */

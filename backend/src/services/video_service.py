@@ -144,6 +144,8 @@ def _search_filters(query: VideoSearchQuery) -> list:
         filters.append(_PLAYED & ~_FINISHED)
     elif query.watch_state == "finished":
         filters.append(_FINISHED)
+    if query.missing:
+        filters.append(Video.is_missing == True)  # noqa: E712
 
     return filters
 

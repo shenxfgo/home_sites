@@ -40,6 +40,8 @@ class VideoResponse(BaseModel):
     series: str | None = None
     season: int | None = None
     episode: int | None = None
+    #: The last scan could not find the file on disk.
+    is_missing: bool = False
     rating: int
     view_count: int
     is_new: bool = False
