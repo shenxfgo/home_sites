@@ -104,6 +104,42 @@ export const seriesProgress = [
   { series: '深夜客车', total: 3, finished: 1, watched: 2, next: videos[0] },
 ]
 
+/**
+ * A byte-identical second copy of 深夜测试. It never reaches the grid, because
+ * the duplicate report is the only route that serves it.
+ */
+const duplicateCopies: StubVideo[] = [
+  {
+    ...videos[0],
+    id: 41,
+    title: '深夜测试 备份',
+    filepath: 'D:\\videos\\重复\\深夜测试.mp4',
+    view_count: 0,
+    progress: null,
+    is_new: false,
+    last_played_at: null,
+    created_at: hoursAgo(20),
+    updated_at: hoursAgo(20),
+  },
+]
+
+/** Body for GET /videos/duplicates: the same bytes filed in two places. */
+function duplicateGroupsFor(alive: StubVideo[], copies: StubVideo[]) {
+  const items = alive.filter((video) => video.id === 1).concat(copies)
+  if (items.length < 2) return []
+  const size = items[0].file_size ?? 0
+  return [
+    {
+      file_size: size,
+      duration: items[0].duration,
+      count: items.length,
+      wasted_bytes: size * (items.length - 1),
+      keep_id: items[0].id,
+      items,
+    },
+  ]
+}
+
 export const sources = [
   {
     id: 1,
@@ -287,6 +323,7 @@ export async function mockApi(page: Page): Promise<void> {
   /** Rows the app deleted through DELETE /videos/{id} during a test. */
   const removedVideos = new Set<number>()
   const aliveVideos = () => videos.filter((video) => !removedVideos.has(video.id))
+  const aliveCopies = () => duplicateCopies.filter((video) => !removedVideos.has(video.id))
 
   const statusBody = (videoId: number) => ({
     video_id: videoId,
@@ -354,6 +391,9 @@ export async function mockApi(page: Page): Promise<void> {
       }
       if (path === '/videos/new') return respond(route, [])
       if (path === '/videos/series') return respond(route, seriesProgress)
+      if (path === '/videos/duplicates') {
+        return respond(route, duplicateGroupsFor(aliveVideos(), aliveCopies()))
+      }
       const subtitleStream = /^\/videos\/(\d+)\/subtitles\/(\d+)\/stream$/.exec(path)
       if (subtitleStream) {
         return route.fulfill({ status: 200, contentType: 'text/vtt', body: SAMPLE_VTT })
@@ -486,7 +526,8 @@ export async function mockApi(page: Page): Promise<void> {
       const videoRow = /^\/videos\/(\d+)$/.exec(path)
       if (videoRow) {
         const id = Number(videoRow[1])
-        if (!aliveVideos().some((video) => video.id === id)) {
+        const known = [...aliveVideos(), ...aliveCopies()].some((video) => video.id === id)
+        if (!known) {
           return respond(route, { detail: '视频不存在' }, 404)
         }
         removedVideos.add(id)

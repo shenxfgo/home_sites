@@ -1,6 +1,6 @@
 import type { Source } from '@/types/source'
 import type { Subtitle } from '@/types/subtitle'
-import type { SeriesProgress, Tag, Video } from '@/types/video'
+import type { DuplicateGroup, SeriesProgress, Tag, Video } from '@/types/video'
 
 export function makeSource(overrides: Partial<Source> = {}): Source {
   return {
@@ -56,6 +56,22 @@ export function makeVideo(overrides: Partial<Video> = {}): Video {
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     tags: [],
+    ...overrides,
+  }
+}
+
+export function makeDuplicateGroup(overrides: Partial<DuplicateGroup> = {}): DuplicateGroup {
+  const gigabyte = 1024 * 1024 * 1024
+  return {
+    file_size: gigabyte,
+    duration: 65,
+    count: 2,
+    wasted_bytes: gigabyte,
+    keep_id: 21,
+    items: [
+      makeVideo({ id: 21, title: '午夜列车', filepath: 'D:\\videos\\午夜列车.mkv' }),
+      makeVideo({ id: 22, title: '午夜列车 备份', filepath: 'D:\\videos\\备份\\午夜列车.mkv' }),
+    ],
     ...overrides,
   }
 }

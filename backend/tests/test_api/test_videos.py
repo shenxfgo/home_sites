@@ -76,6 +76,7 @@ async def _create_video(
     series=None,
     season=None,
     episode=None,
+    file_size=None,
 ):
     """Helper to create a video for tests."""
     from src.models.video import Video
@@ -87,6 +88,7 @@ async def _create_video(
         series=series,
         season=season,
         episode=episode,
+        file_size=file_size,
     )
     session.add(video)
     await session.commit()
@@ -438,5 +440,56 @@ async def test_series_progress_counts_watched_episodes_and_picks_the_next(
 async def test_series_progress_is_empty_without_a_series(client):
     """A library of plain movies reports no series at all."""
     response = await client.get("/api/videos/series")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_duplicates_endpoint_reports_identical_copies(client, db_session, tmp_path):
+    """GET /videos/duplicates is a list, not a video id that happens to match."""
+    source = await _create_source(db_session)
+    payload = b"the same file, twice" * 128
+    paths = []
+    for name in ("a.mkv", "b.mkv"):
+        path = tmp_path / name
+        path.write_bytes(payload)
+        paths.append(str(path))
+    kept = await _create_video(
+        db_session,
+        source_id=source.id,
+        title="午夜列车",
+        filepath=paths[0],
+        duration=90,
+        file_size=len(payload),
+    )
+    extra = await _create_video(
+        db_session,
+        source_id=source.id,
+        title="午夜列车 备份",
+        filepath=paths[1],
+        duration=90,
+        file_size=len(payload),
+    )
+    await client.post(f"/api/videos/{extra.id}/progress", json={"progress": 90})
+
+    response = await client.get("/api/videos/duplicates")
+    assert response.status_code == 200
+    groups = response.json()
+    assert len(groups) == 1
+    group = groups[0]
+    assert group["keep_id"] == extra.id
+    assert (group["count"], group["file_size"], group["wasted_bytes"]) == (
+        2,
+        len(payload),
+        len(payload),
+    )
+    assert [item["id"] for item in group["items"]] == [extra.id, kept.id]
+    assert group["items"][0]["filepath"] == paths[1]
+
+
+@pytest.mark.asyncio
+async def test_duplicates_endpoint_is_empty_without_a_library(client):
+    """An empty library has nothing to compare, and says so with an empty list."""
+    response = await client.get("/api/videos/duplicates")
     assert response.status_code == 200
     assert response.json() == []

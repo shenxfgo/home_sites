@@ -11,14 +11,14 @@ from src.models.tag import Tag
 from src.services.video_service import VideoService, is_completed
 
 
-async def _create_video(session, source_id=1, title="Test Video", filepath="/test/video.mp4", duration=120):
+async def _create_video(session, source_id=1, title="Test Video", filepath="/test/video.mp4", duration=120, file_size=1024000):
     """Helper to create a video directly in the database."""
     video = Video(
         source_id=source_id,
         filepath=filepath,
         title=title,
         duration=duration,
-        file_size=1024000,
+        file_size=file_size,
         format="mp4",
         resolution="1920x1080",
     )
@@ -464,3 +464,98 @@ async def test_update_progress_refreshes_played_at(db_session):
         select(PlayHistory).where(PlayHistory.video_id == video.id)
     )
     assert result.scalar_one().played_at > started_at
+
+
+def _write_copy(tmp_path, name: str, payload: bytes) -> str:
+    """Write a stand-in media file and return the path the library would store."""
+    path = tmp_path / name
+    path.write_bytes(payload)
+    return str(path)
+
+
+@pytest.mark.asyncio
+async def test_duplicates_only_report_identical_bytes(db_session, tmp_path):
+    """Same size and duration is a hint; the file contents decide."""
+    payload = b"the same episode twice" * 64
+    first = await _create_video(
+        db_session,
+        title="暗涌 EP01",
+        filepath=_write_copy(tmp_path, "copy1.mkv", payload),
+        duration=100,
+        file_size=len(payload),
+    )
+    second = await _create_video(
+        db_session,
+        title="暗涌 EP01 (字幕组A)",
+        filepath=_write_copy(tmp_path, "copy2.mkv", payload),
+        duration=100,
+        file_size=len(payload),
+    )
+    other = await _create_video(
+        db_session,
+        title="暗涌 EP02",
+        filepath=_write_copy(tmp_path, "other.mkv", b"z" * len(payload)),
+        duration=100,
+        file_size=len(payload),
+    )
+
+    groups = await VideoService(db_session).get_duplicates()
+
+    assert len(groups) == 1
+    group = groups[0]
+    assert [v.id for v in group["items"]] == [first.id, second.id]
+    assert (group["count"], group["wasted_bytes"], group["keep_id"]) == (
+        2,
+        len(payload),
+        first.id,
+    )
+    assert other.id not in [v.id for v in group["items"]]
+
+
+@pytest.mark.asyncio
+async def test_duplicates_ignore_a_lone_file(db_session, tmp_path):
+    """Nothing is a duplicate until a second copy shares its size."""
+    payload = b"one and only" * 64
+    await _create_video(
+        db_session,
+        filepath=_write_copy(tmp_path, "only.mkv", payload),
+        file_size=len(payload),
+    )
+
+    assert await VideoService(db_session).get_duplicates() == []
+
+
+@pytest.mark.asyncio
+async def test_duplicates_skip_rows_whose_file_cannot_be_read(db_session):
+    """A share that will not open must not be called a copy of anything."""
+    await _create_video(db_session, title="在 NAS 上", filepath="/nas/a.mkv")
+    await _create_video(db_session, title="也在 NAS 上", filepath="/nas/b.mkv")
+
+    assert await VideoService(db_session).get_duplicates() == []
+
+
+@pytest.mark.asyncio
+async def test_duplicates_keep_the_copy_that_has_been_watched(db_session, tmp_path):
+    """The record with the watch history is the one worth not deleting."""
+    payload = b"watched copy" * 64
+    fresh = await _create_video(
+        db_session,
+        title="暗涌 EP03",
+        filepath=_write_copy(tmp_path, "fresh.mkv", payload),
+        duration=100,
+        file_size=len(payload),
+    )
+    watched = await _create_video(
+        db_session,
+        title="暗涌 EP03 备份",
+        filepath=_write_copy(tmp_path, "backup.mkv", payload),
+        duration=100,
+        file_size=len(payload),
+    )
+    await VideoService(db_session).update_progress(watched.id, 60)
+
+    group = (await VideoService(db_session).get_duplicates())[0]
+
+    assert group["keep_id"] == watched.id
+    assert [v.id for v in group["items"]] == [watched.id, fresh.id]
+    assert group["items"][0].progress == 60
