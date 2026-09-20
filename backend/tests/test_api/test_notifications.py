@@ -1,18 +1,23 @@
 """Tests for the notification list, read and delete endpoints."""
 import pytest
 
-async def _create(db_session, title, read=False):
-    """Seed one notification and return it."""
+async def _create(db_session, title, reader_id=None):
+    """Seed one broadcast notification, optionally read by one person."""
     from src.models.notification import Notification
+    from src.models.read_state import NotificationRead
 
     notification = Notification(
         type="scan_complete",
         title=title,
         message="body",
-        read=read,
     )
     db_session.add(notification)
     await db_session.commit()
+    if reader_id is not None:
+        db_session.add(
+            NotificationRead(notification_id=notification.id, user_id=reader_id)
+        )
+        await db_session.commit()
     await db_session.refresh(notification)
     return notification
 
@@ -41,10 +46,10 @@ async def test_delete_missing_notification_is_not_found(client):
 
 
 @pytest.mark.asyncio
-async def test_clear_notifications_empties_the_list(client, db_session):
+async def test_clear_notifications_empties_the_list(client, db_session, signed_in_user):
     """The collection route wipes every row at once."""
     await _create(db_session, "A")
-    await _create(db_session, "B", read=True)
+    await _create(db_session, "B", reader_id=signed_in_user.id)
 
     response = await client.delete("/api/notifications")
     assert response.status_code == 204

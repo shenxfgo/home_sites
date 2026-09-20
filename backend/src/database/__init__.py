@@ -1,4 +1,17 @@
 from .base import Base
-from .session import engine, async_session_maker, init_db, get_session
+from .session import (
+    apply_schema_fixes,
+    async_session_maker,
+    engine,
+    get_session,
+    init_db,
+)
 
-__all__ = ["Base", "engine", "async_session_maker", "init_db", "get_session"]
+__all__ = [
+    "Base",
+    "apply_schema_fixes",
+    "async_session_maker",
+    "engine",
+    "get_session",
+    "init_db",
+]

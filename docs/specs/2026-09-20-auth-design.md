@@ -1,7 +1,7 @@
 # 多用户认证与权限设计文档
 
 **创建日期：** 2026-09-20
-**状态：** M1 认证骨架已实施（2026-09-20），M2–M4 待做
+**状态：** M1 认证骨架、M2 数据归属已实施（2026-09-20），M3–M4 待做
 **版本：** 1.1
 **适用范围：** 局域网自托管；公网部署需要的额外项见 [§12](#分期实施)
 
@@ -130,6 +130,8 @@
 - `notification_service.py:63/87` 标记已读、删除通知
 - `watchlist_service.py:51/71/84/93/119` 清单的读改写、加删条目
 - `video_service.py:440` `mark_video_viewed`
+
+M2 实施结果：以上除"删除/清空通知"外全部按 `(id, user_id)` 收口，用例见 `tests/test_services/test_isolation.py`、`tests/test_api/test_isolation.py`。**"删除通知 / 清空通知"仍是家庭级操作**——`notifications` 是广播表、没有 owner 列，标记已读已按人走 `notification_reads`，但删行对所有人生效。要收敛需先决定语义（每人隐藏 vs 只有 owner 能删），后者属 M3 的角色网关。
 
 ---
 
@@ -268,7 +270,7 @@ uv run python -m src.cli revoke-sessions --username admin
 | 期 | 内容 | 验收 |
 |---|---|---|
 | **M1 认证骨架** ✅ | `users`/`sessions` 模型、bcrypt、`cli.py create-user`、`/api/auth/*`、`AuthMiddleware` 默认拒绝、登录页 + `useAuth` + 路由守卫 + 401 拦截。限流与 `X-Requested-With` 校验一并提前做完 | 未登录访问任何 `/api/*` 都 401（`tests/test_middleware` 逐端点扫面 71 例）；能登录、能退出、刷新保持 |
-| **M2 数据归属** | 5 张表加 `user_id`/`owner_id` + 两张 `_reads`、§8 迁移、service 层全部过滤、越权清单修复 | 两个账号数据互不可见；老数据回填到第一个 owner；越权用例通过 |
+| **M2 数据归属** ✅ | 5 张表加 `user_id`/`owner_id` + 两张 `_reads`、§8 迁移、service 层全部过滤、越权清单修复 | 两个账号数据互不可见；老数据回填到第一个 owner；越权用例通过 |
 | **M3 角色与管理** | `require_role`、`user_preferences` 与 `settings` 拆分、`views/Users.vue`、`views/Profile.vue`、顶栏用户菜单 | member 看不到也调不动管理接口；主题偏好按人保存 |
 | **M4 收尾** | "我的设备"会话列表、README/CLAUDE.md/CHANGELOG 更新、公网部署注意事项（`auth_cookie_secure`、反代 https） | 全量测试 + 浏览器真机走查 |
 

@@ -10,11 +10,15 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
-from src.models.user import ROLES, User, UserSession
+from src.models.favorite import Favorite
+from src.models.history import PlayHistory
+from src.models.user import ROLES, ROLE_OWNER, User, UserSession
+from src.models.watch_event import WatchEvent
+from src.models.watchlist import Watchlist
 from src.utils.password import hash_password, password_too_long, verify_password
 
 # 浏览器原生资源请求（<video> / <img> / <track>）只能靠 Cookie 带上身份。
@@ -44,6 +48,12 @@ def _utc_now() -> datetime:
 def _as_utc(value: datetime) -> datetime:
     """SQLite 的 DATETIME 读回来不带 tzinfo，而写入的一律是 UTC。"""
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+async def _column_exists(session: AsyncSession, table: str, column: str) -> bool:
+    """Whether a leftover column is still in the schema (it is never added back)."""
+    rows = await session.execute(text(f"PRAGMA table_info({table})"))
+    return column in {row[1] for row in rows}
 
 
 class AuthService:
@@ -183,7 +193,53 @@ class AuthService:
         self.session.add(user)
         await self.session.commit()
         await self.session.refresh(user)
+        if role == ROLE_OWNER:
+            # The first owner inherits whatever a single-user database already
+            # wrote; later ones find nothing left to claim.
+            await self.claim_legacy_rows(user.id)
         return user
+
+    async def claim_legacy_rows(self, user_id: int) -> None:
+        """Hand every unowned row over to ``user_id``.
+
+        Upgrade order is what this fixes: the household already watched and
+        favourited titles before accounts existed, and without a claim the
+        history and favourites would come back empty on the first login and
+        look like deleted data.
+        """
+        for model, column in (
+            (Favorite, Favorite.user_id),
+            (PlayHistory, PlayHistory.user_id),
+            (WatchEvent, WatchEvent.user_id),
+            (Watchlist, Watchlist.owner_id),
+        ):
+            await self.session.execute(
+                update(model).where(column.is_(None)).values(**{column.name: user_id})
+            )
+        await self.session.commit()
+        await self._inherit_read_state(user_id)
+
+    async def _inherit_read_state(self, user_id: int) -> None:
+        """Turn the pre-split global ``viewed`` / ``read`` flags into read rows.
+
+        Those two columns only exist in a database written before read state
+        moved to per-person tables, so each statement is skipped when its column
+        is gone rather than failing the whole upgrade.
+        """
+        for table, flag, read_table, fk_column in (
+            ("new_videos", "viewed", "new_video_reads", "new_video_id"),
+            ("notifications", "read", "notification_reads", "notification_id"),
+        ):
+            if not await _column_exists(self.session, table, flag):
+                continue
+            await self.session.execute(
+                text(
+                    f"INSERT OR IGNORE INTO {read_table} ({fk_column}, user_id) "
+                    f"SELECT id, :user_id FROM {table} WHERE {flag} = 1"
+                ),
+                {"user_id": user_id},
+            )
+        await self.session.commit()
 
     async def change_password(
         self, user: User, old_password: str, new_password: str, *, keep_token_hash: str

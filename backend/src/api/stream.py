@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
-from src.services.video_service import VideoService
+from src.models.video import Video
 
 router = APIRouter(prefix="/api/videos", tags=["streaming"])
 
@@ -25,8 +25,9 @@ async def stream_video(
     In production, this would stream from local/NAS/MinIO storage.
     For now, serves the file directly if it exists locally.
     """
-    service = VideoService(session)
-    video = await service.get_video_by_id(video_id)
+    # The row is read directly rather than through VideoService: streaming only
+    # needs the path, and the service call would add a per-person history lookup.
+    video = await session.get(Video, video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -66,8 +67,7 @@ async def get_thumbnail(
 
     Returns the thumbnail file if available, or a placeholder response.
     """
-    service = VideoService(session)
-    video = await service.get_video_by_id(video_id)
+    video = await session.get(Video, video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 

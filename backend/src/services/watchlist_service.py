@@ -21,19 +21,36 @@ def _with_videos() -> select:
     )
 
 
+class DuplicateWatchlistName(ValueError):
+    """The owner already has a list under that name.
+
+    Names only have to be distinct inside one account, and the database now
+    enforces that with a unique index, so the routes need to answer 409 rather
+    than let the IntegrityError surface as a 500.
+    """
+
+
 class WatchlistService:
-    """Service for managing watchlists and the titles inside them."""
+    """Service for managing one person's watchlists and the titles inside them.
+
+    A queue is a personal asset, so every lookup carries the owner. Because all
+    of the write paths read the row through :meth:`get_watchlist` first, that
+    one filter is what makes another account's list come back as 404 instead of
+    being renamed, deleted or edited.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def list_watchlists(self, video_id: int | None = None) -> list[Watchlist]:
-        """List every watchlist, oldest first.
+    async def list_watchlists(
+        self, user_id: int, video_id: int | None = None
+    ) -> list[Watchlist]:
+        """List the caller's watchlists, oldest first.
 
         ``video_id`` narrows the result to the lists holding that title, which is
         how the detail page knows which boxes to pre-tick.
         """
-        query = _with_videos()
+        query = _with_videos().where(Watchlist.owner_id == user_id)
         if video_id is not None:
             query = query.where(
                 Watchlist.id.in_(
@@ -45,52 +62,71 @@ class WatchlistService:
         result = await self.session.execute(query.order_by(Watchlist.id))
         return list(result.scalars().all())
 
-    async def get_watchlist(self, watchlist_id: int) -> Watchlist | None:
-        """Get one watchlist with its videos attached."""
+    async def get_watchlist(
+        self, user_id: int, watchlist_id: int
+    ) -> Watchlist | None:
+        """Get one of the caller's watchlists with its videos attached."""
         result = await self.session.execute(
-            _with_videos().where(Watchlist.id == watchlist_id)
+            _with_videos().where(
+                Watchlist.id == watchlist_id, Watchlist.owner_id == user_id
+            )
         )
         return result.scalar_one_or_none()
 
-    async def create(self, name: str, description: str | None = None) -> Watchlist:
-        """Create an empty watchlist."""
-        watchlist = Watchlist(name=name, description=description)
+    async def create(
+        self, user_id: int, name: str, description: str | None = None
+    ) -> Watchlist:
+        """Create an empty watchlist owned by the caller."""
+        await self._require_free_name(user_id, name)
+        watchlist = Watchlist(owner_id=user_id, name=name, description=description)
         self.session.add(watchlist)
         await self.session.commit()
         # Read it back: a just-added row has no loaded item collection, and the
         # routes all answer with one.
-        return await self.get_watchlist(watchlist.id)
+        return await self.get_watchlist(user_id, watchlist.id)
+
+    async def _require_free_name(self, user_id: int, name: str) -> None:
+        result = await self.session.execute(
+            select(Watchlist.id).where(
+                Watchlist.owner_id == user_id, Watchlist.name == name
+            )
+        )
+        if result.scalar_one_or_none() is not None:
+            raise DuplicateWatchlistName(f"Watchlist '{name}' already exists")
 
     async def update(
         self,
+        user_id: int,
         watchlist_id: int,
         name: str | None = None,
         description: str | None = None,
     ) -> Watchlist:
         """Rename a watchlist or change what it says about itself."""
-        watchlist = await self.get_watchlist(watchlist_id)
+        watchlist = await self.get_watchlist(user_id, watchlist_id)
         if not watchlist:
             raise ValueError(f"Watchlist with id {watchlist_id} not found")
 
         if name is not None:
+            if name != watchlist.name:
+                await self._require_free_name(user_id, name)
             watchlist.name = name
         if description is not None:
             watchlist.description = description
         await self.session.commit()
         return watchlist
 
-    async def delete(self, watchlist_id: int) -> None:
+    async def delete(self, user_id: int, watchlist_id: int) -> None:
         """Delete a watchlist and, with it, only its own rows in ``watchlist_items``."""
-        watchlist = await self.get_watchlist(watchlist_id)
+        watchlist = await self.get_watchlist(user_id, watchlist_id)
         if not watchlist:
             raise ValueError(f"Watchlist with id {watchlist_id} not found")
 
         await self.session.delete(watchlist)
         await self.session.commit()
 
-    async def add_video(self, watchlist_id: int, video_id: int) -> Watchlist:
+    async def add_video(self, user_id: int, watchlist_id: int, video_id: int) -> Watchlist:
         """Put a title at the end of the queue; being in it already changes nothing."""
-        watchlist = await self.get_watchlist(watchlist_id)
+        watchlist = await self.get_watchlist(user_id, watchlist_id)
         if not watchlist:
             raise ValueError(f"Watchlist with id {watchlist_id} not found")
 
@@ -111,11 +147,13 @@ class WatchlistService:
             self.session.add(WatchlistItem(watchlist_id=watchlist_id, video_id=video_id))
             await self.session.commit()
 
-        return await self.get_watchlist(watchlist_id)
+        return await self.get_watchlist(user_id, watchlist_id)
 
-    async def remove_video(self, watchlist_id: int, video_id: int) -> Watchlist:
+    async def remove_video(
+        self, user_id: int, watchlist_id: int, video_id: int
+    ) -> Watchlist:
         """Take one title out of the queue, leaving the video itself in the library."""
-        watchlist = await self.get_watchlist(watchlist_id)
+        watchlist = await self.get_watchlist(user_id, watchlist_id)
         if not watchlist:
             raise ValueError(f"Watchlist with id {watchlist_id} not found")
 
@@ -125,4 +163,4 @@ class WatchlistService:
                 await self.session.commit()
                 break
 
-        return await self.get_watchlist(watchlist_id)
+        return await self.get_watchlist(user_id, watchlist_id)

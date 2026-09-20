@@ -21,22 +21,27 @@ def _longest_streak(days: list[date]) -> int:
 
 
 class HistoryService:
-    """Service for managing playback history."""
+    """Service for managing one person's playback history.
+
+    Where and how far a title was watched is a per-account fact, so every query
+    here is scoped by ``user_id``; the library is shared, the positions are not.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
     async def get_history(
-        self, page: int = 1, page_size: int = 20
+        self, user_id: int, page: int = 1, page_size: int = 20
     ) -> tuple[list[PlayHistory], int]:
         """Get paginated playback history, most recent watch first."""
         total_result = await self.session.execute(
-            select(func.count(PlayHistory.id))
+            select(func.count(PlayHistory.id)).where(PlayHistory.user_id == user_id)
         )
         total = total_result.scalar_one()
 
         query = (
             select(PlayHistory)
+            .where(PlayHistory.user_id == user_id)
             .order_by(desc(PlayHistory.played_at))
             .options(selectinload(PlayHistory.video))
             .offset((page - 1) * page_size)
@@ -47,15 +52,18 @@ class HistoryService:
 
         return history, total
 
-    async def get_continue_list(self) -> list[Video]:
-        """Get videos left unfinished, the one most recently watched first.
+    async def get_continue_list(self, user_id: int) -> list[Video]:
+        """Get the caller's videos left unfinished, most recently watched first.
 
         The history row already carries the position, so it is copied onto the
         video the resume rail renders instead of looking it up a second time.
         """
         query = (
             select(PlayHistory)
-            .where(PlayHistory.completed == False)  # noqa: E712
+            .where(
+                PlayHistory.user_id == user_id,
+                PlayHistory.completed == False,  # noqa: E712
+            )
             .order_by(desc(PlayHistory.played_at))
             .options(selectinload(PlayHistory.video))
             .limit(20)
@@ -69,8 +77,8 @@ class HistoryService:
                 videos.append(record.video)
         return videos
 
-    async def get_stats(self, days: int = 30) -> dict:
-        """Add up the watch-event log: hours in a window, streaks, and tags.
+    async def get_stats(self, user_id: int, days: int = 30) -> dict:
+        """Add up one person's watch-event log: hours, streaks, and tags.
 
         One row per title in ``play_history`` cannot say how much was watched
         this month, so this reads ``watch_events``, which is the timeline. Days
@@ -80,6 +88,7 @@ class HistoryService:
         today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         since = today - timedelta(days=days - 1)
         day = func.date(WatchEvent.occurred_at)
+        owned = WatchEvent.user_id == user_id
 
         rows = await self.session.execute(
             select(
@@ -87,7 +96,7 @@ class HistoryService:
                 func.sum(WatchEvent.seconds),
                 func.count(func.distinct(WatchEvent.video_id)),
             )
-            .where(WatchEvent.occurred_at >= since)
+            .where(WatchEvent.occurred_at >= since, owned)
             .group_by(day)
         )
         by_day = {str(row[0]): (row[1] or 0, row[2] or 0) for row in rows.all()}
@@ -102,7 +111,7 @@ class HistoryService:
             select(
                 func.coalesce(func.sum(WatchEvent.seconds), 0),
                 func.count(func.distinct(WatchEvent.video_id)),
-            ).where(WatchEvent.occurred_at >= since)
+            ).where(WatchEvent.occurred_at >= since, owned)
         )
         window_seconds, videos_watched = totals.one()
 
@@ -110,7 +119,7 @@ class HistoryService:
         month_seconds = (
             await self.session.execute(
                 select(func.coalesce(func.sum(WatchEvent.seconds), 0)).where(
-                    WatchEvent.occurred_at >= month_start
+                    WatchEvent.occurred_at >= month_start, owned
                 )
             )
         ).scalar_one()
@@ -119,7 +128,7 @@ class HistoryService:
             select(Tag.name, Tag.color, func.sum(WatchEvent.seconds))
             .join(video_tags, video_tags.c.tag_id == Tag.id)
             .join(WatchEvent, WatchEvent.video_id == video_tags.c.video_id)
-            .where(WatchEvent.occurred_at >= since)
+            .where(WatchEvent.occurred_at >= since, owned)
             .group_by(Tag.id)
             .order_by(desc(func.sum(WatchEvent.seconds)))
             .limit(8)
@@ -140,10 +149,16 @@ class HistoryService:
             ],
         }
 
-    async def delete_history(self, history_id: int) -> None:
-        """Delete a history record."""
+    async def delete_history(self, user_id: int, history_id: int) -> None:
+        """Delete one of the caller's history records.
+
+        The owner is part of the lookup, so another account's row reads as
+        missing rather than being deleted.
+        """
         result = await self.session.execute(
-            select(PlayHistory).where(PlayHistory.id == history_id)
+            select(PlayHistory).where(
+                PlayHistory.id == history_id, PlayHistory.user_id == user_id
+            )
         )
         history = result.scalar_one_or_none()
         if not history:

@@ -3,12 +3,13 @@ import asyncio
 import operator
 from datetime import datetime, timezone
 
-from sqlalchemy import case, delete, func, or_, select
+from sqlalchemy import case, delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.video import Video
 from src.models.favorite import Favorite
 from src.models.new_video import NewVideo
+from src.models.read_state import NewVideoRead
 from src.models.history import PlayHistory
 from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
@@ -42,6 +43,14 @@ async def delete_videos_cascade(
     orphaned history, favorite and new-video rows behind.
     """
     video_ids = select(Video.id).where(video_filter)
+    # The per-person "seen it" rows hang off ``new_videos``, so they go first.
+    await session.execute(
+        delete(NewVideoRead).where(
+            NewVideoRead.new_video_id.in_(
+                select(NewVideo.id).where(NewVideo.video_id.in_(video_ids))
+            )
+        )
+    )
     for model in (PlayHistory, Favorite, NewVideo, Subtitle, WatchEvent, WatchlistItem):
         await session.execute(
             delete(model).where(model.video_id.in_(video_ids))
@@ -53,12 +62,13 @@ async def delete_videos_cascade(
 
 
 async def attach_watch_progress(
-    session: AsyncSession, videos: list[Video]
+    session: AsyncSession, videos: list[Video], user_id: int
 ) -> None:
     """Set the transient ``progress`` (seconds watched) the resume UI reads.
 
-    One row per video means a single indexed lookup serves the whole page, and
-    the list endpoint stays the only place the rail's data comes from.
+    The position is whosever watched it, so the lookup is scoped to one account;
+    one indexed query still serves the whole page, and the list endpoint stays
+    the only place the rail's data comes from.
     """
     for video in videos:
         video.progress = None
@@ -66,7 +76,8 @@ async def attach_watch_progress(
         return
     result = await session.execute(
         select(PlayHistory.video_id, PlayHistory.progress).where(
-            PlayHistory.video_id.in_([v.id for v in videos])
+            PlayHistory.user_id == user_id,
+            PlayHistory.video_id.in_([v.id for v in videos]),
         )
     )
     positions = dict(result.all())
@@ -83,13 +94,43 @@ _COMPARATORS = {
 }
 
 # Correlated EXISTS fragments: a filter on a child table must not multiply the
-# video rows, which is why these stay subqueries instead of joins.
-_PLAYED = select(PlayHistory.id).where(PlayHistory.video_id == Video.id).exists()
-_FINISHED = (
-    select(PlayHistory.id)
-    .where(PlayHistory.video_id == Video.id, PlayHistory.completed == True)  # noqa: E712
-    .exists()
-)
+# video rows, which is why these stay subqueries instead of joins. Whether a
+# title counts as played is each person's own, so both take the viewer.
+def _played(user_id: int):
+    return (
+        select(PlayHistory.id)
+        .where(PlayHistory.video_id == Video.id, PlayHistory.user_id == user_id)
+        .exists()
+    )
+
+
+def _finished(user_id: int):
+    return (
+        select(PlayHistory.id)
+        .where(
+            PlayHistory.video_id == Video.id,
+            PlayHistory.user_id == user_id,
+            PlayHistory.completed == True,  # noqa: E712
+        )
+        .exists()
+    )
+
+
+def _unread_new_video(user_id: int):
+    """EXISTS for a scan record of this video the viewer has not read yet."""
+    return (
+        select(NewVideo.id)
+        .where(
+            NewVideo.video_id == Video.id,
+            ~exists(
+                select(NewVideoRead.new_video_id).where(
+                    NewVideoRead.new_video_id == NewVideo.id,
+                    NewVideoRead.user_id == user_id,
+                )
+            ),
+        )
+        .exists()
+    )
 
 
 def _like(column, term: str):
@@ -124,8 +165,12 @@ def _term_relevance(term: str):
     )
 
 
-def _search_filters(query: VideoSearchQuery) -> list:
-    """Turn a parsed search box into WHERE clauses, terms combined with AND."""
+def _search_filters(query: VideoSearchQuery, user_id: int) -> list:
+    """Turn a parsed search box into WHERE clauses, terms combined with AND.
+
+    ``user_id`` scopes the watch-state operators: "看完了" means this person has
+    finished it, not somebody else.
+    """
     filters = [_term_filter(term) for term in query.terms]
 
     if query.source_name:
@@ -143,11 +188,11 @@ def _search_filters(query: VideoSearchQuery) -> list:
         compare, seconds = query.duration
         filters.append(_COMPARATORS[compare](Video.duration, seconds))
     if query.watch_state == "never":
-        filters.append(~_PLAYED)
+        filters.append(~_played(user_id))
     elif query.watch_state == "unfinished":
-        filters.append(_PLAYED & ~_FINISHED)
+        filters.append(_played(user_id) & ~_finished(user_id))
     elif query.watch_state == "finished":
-        filters.append(_FINISHED)
+        filters.append(_finished(user_id))
     if query.missing:
         filters.append(Video.is_missing == True)  # noqa: E712
 
@@ -188,19 +233,20 @@ class VideoService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get_series_progress(self) -> list[dict]:
-        """How far each parsed series has been watched.
+    async def get_series_progress(self, user_id: int) -> list[dict]:
+        """How far each parsed series has been watched by one person.
 
         One grouped query counts the episodes, and only the episodes still
         outstanding are loaded as rows, so a big finished series costs nothing
         beyond its counters.
         """
+        finished_clause = _finished(user_id)
         counts = await self.session.execute(
             select(
                 Video.series,
                 func.count(Video.id),
-                func.sum(case((_FINISHED, 1), else_=0)),
-                func.sum(case((_PLAYED, 1), else_=0)),
+                func.sum(case((finished_clause, 1), else_=0)),
+                func.sum(case((_played(user_id), 1), else_=0)),
             )
             .where(Video.series.is_not(None))
             .group_by(Video.series)
@@ -220,7 +266,7 @@ class VideoService:
 
         outstanding = await self.session.execute(
             select(Video)
-            .where(Video.series.is_not(None), ~_FINISHED)
+            .where(Video.series.is_not(None), ~_finished(user_id))
             .order_by(
                 func.coalesce(Video.season, 1).asc(),
                 func.coalesce(Video.episode, 0).asc(),
@@ -231,12 +277,12 @@ class VideoService:
             entry = series.get(video.series)
             if entry is None or entry["next"] is not None:
                 continue
-            await attach_watch_progress(self.session, [video])
+            await attach_watch_progress(self.session, [video], user_id)
             entry["next"] = video
 
         return sorted(series.values(), key=lambda entry: entry["series"])
 
-    async def get_duplicates(self) -> list[dict]:
+    async def get_duplicates(self, user_id: int) -> list[dict]:
         """List copies of the same file that are both in the library.
 
         Size and duration are compared in SQL, which costs nothing, and only
@@ -285,7 +331,7 @@ class VideoService:
             return []
 
         flat = [video for group in probed for video in group]
-        await attach_watch_progress(self.session, flat)
+        await attach_watch_progress(self.session, flat, user_id)
         digests = await asyncio.gather(
             *(asyncio.to_thread(edge_fingerprint, video.filepath) for video in flat)
         )
@@ -319,6 +365,7 @@ class VideoService:
 
     async def get_videos(
         self,
+        user_id: int,
         source_id: int | None = None,
         tag_id: int | None = None,
         search: str | None = None,
@@ -328,7 +375,10 @@ class VideoService:
         """Get videos with optional filtering, search, and pagination.
 
         ``search`` is free text from the home page and is parsed here; see
-        :mod:`src.utils.video_search` for the operators it accepts.
+        :mod:`src.utils.video_search` for the operators it accepts. ``user_id``
+        scopes the per-person parts: the new badge, the resume position, and
+        any watch-state operator in the search text. The rows themselves are the
+        shared library.
 
         Returns a tuple of (videos, total_count).
         """
@@ -342,7 +392,7 @@ class VideoService:
                 )
             )
         parsed_search = parse_video_search(search)
-        filters.extend(_search_filters(parsed_search))
+        filters.extend(_search_filters(parsed_search, user_id))
 
         query = select(Video)
         count_query = select(func.count(Video.id))
@@ -360,44 +410,45 @@ class VideoService:
 
         result = await self.session.execute(query)
         videos = list(result.scalars().all())
-        await self._attach_new_flags(videos)
-        await attach_watch_progress(self.session, videos)
+        await self._attach_new_flags(videos, user_id)
+        await attach_watch_progress(self.session, videos, user_id)
 
         return videos, total
 
-    async def _attach_new_flags(self, videos: list[Video]) -> None:
+    async def _attach_new_flags(self, videos: list[Video], user_id: int) -> None:
         """Set the transient ``is_new`` flag the badge in the UI reads.
 
-        A video is new while an unwatched scan record for it exists, so the
-        badge follows "has the user watched it yet" instead of the file's age.
+        A video is new while an unwatched scan record for it exists that *this*
+        account has not read, so the badge follows "have you watched it yet".
         """
         for video in videos:
             video.is_new = False
         if not videos:
             return
         result = await self.session.execute(
-            select(NewVideo.video_id).where(
-                NewVideo.video_id.in_([v.id for v in videos]),
-                NewVideo.viewed == False,  # noqa: E712
+            select(Video.id).where(
+                Video.id.in_([v.id for v in videos]),
+                _unread_new_video(user_id),
             )
         )
         new_ids = set(result.scalars().all())
         for video in videos:
             video.is_new = video.id in new_ids
 
-    async def get_video_by_id(self, video_id: int) -> Video | None:
-        """Get a single video by ID, with its stored playback position attached."""
+    async def get_video_by_id(self, video_id: int, user_id: int) -> Video | None:
+        """Get a single video by ID, with the caller's playback position."""
         result = await self.session.execute(
             select(Video).where(Video.id == video_id)
         )
         video = result.scalar_one_or_none()
         if video:
-            await attach_watch_progress(self.session, [video])
+            await attach_watch_progress(self.session, [video], user_id)
         return video
 
-    async def update_video(self, video_id: int, **kwargs) -> Video:
-        """Update a video's metadata."""
-        video = await self.get_video_by_id(video_id)
+    async def update_video(self, video_id: int, user_id: int, **kwargs) -> Video:
+        """Update a video's metadata. The library is shared, so anyone signed in
+        edits the same row."""
+        video = await self.get_video_by_id(video_id, user_id)
         if not video:
             raise ValueError(f"Video with id {video_id} not found")
 
@@ -410,20 +461,27 @@ class VideoService:
         return video
 
     async def delete_video(self, video_id: int) -> None:
-        """Delete a video."""
-        video = await self.get_video_by_id(video_id)
+        """Delete a video, with every account's rows pointing at it."""
+        video = await self.session.get(Video, video_id)
         if not video:
             raise ValueError(f"Video with id {video_id} not found")
 
         await delete_videos_cascade(self.session, Video.id == video_id)
         await self.session.commit()
 
-    async def get_new_videos(self, source_id: int | None = None) -> list[Video]:
-        """Get videos that have been newly discovered and not yet viewed."""
+    async def get_new_videos(self, user_id: int, source_id: int | None = None) -> list[Video]:
+        """Get videos the caller discovered and has not looked at yet."""
         query = (
             select(Video)
             .join(NewVideo, NewVideo.video_id == Video.id)
-            .where(NewVideo.viewed == False)  # noqa: E712
+            .where(
+                ~exists(
+                    select(NewVideoRead.new_video_id).where(
+                        NewVideoRead.new_video_id == NewVideo.id,
+                        NewVideoRead.user_id == user_id,
+                    )
+                )
+            )
         )
         if source_id is not None:
             query = query.where(NewVideo.source_id == source_id)
@@ -431,26 +489,32 @@ class VideoService:
         query = query.order_by(NewVideo.discovered_at.desc())
         result = await self.session.execute(query)
         videos = list(result.scalars().all())
-        await self._attach_new_flags(videos)
+        await self._attach_new_flags(videos, user_id)
         return videos
 
-    async def mark_video_viewed(self, video_id: int) -> None:
-        """Mark a video's new_video entry as viewed."""
+    async def mark_video_viewed(self, user_id: int, video_id: int) -> None:
+        """Record that the caller has seen this arrival, clearing their badge."""
         result = await self.session.execute(
-            select(NewVideo).where(NewVideo.video_id == video_id)
+            select(NewVideo.id).where(NewVideo.video_id == video_id)
         )
-        new_video = result.scalar_one_or_none()
-        if new_video:
-            new_video.viewed = True
-            await self.session.commit()
+        for new_video_id in result.scalars():
+            already = await self.session.get(
+                NewVideoRead, (new_video_id, user_id)
+            )
+            if not already:
+                self.session.add(
+                    NewVideoRead(new_video_id=new_video_id, user_id=user_id)
+                )
+        await self.session.commit()
 
-    async def record_play(self, video_id: int) -> None:
+    async def record_play(self, user_id: int, video_id: int) -> None:
         """Start a playback session for a video.
 
-        History keeps one row per video, so replaying refreshes that row instead
-        of appending a duplicate; the first play also clears the new-video badge.
+        History keeps one row per person and title, so replaying refreshes that
+        row instead of appending a duplicate; the first play also clears the
+        new-video badge for whoever pressed play.
         """
-        video = await self.get_video_by_id(video_id)
+        video = await self.get_video_by_id(video_id, user_id)
         if not video:
             raise ValueError(f"Video with id {video_id} not found")
 
@@ -458,44 +522,49 @@ class VideoService:
         video.view_count += 1
         video.last_played_at = now
 
-        history = await self._get_or_create_history(video_id)
+        history = await self._get_or_create_history(user_id, video_id)
         history.played_at = now
         # Playback always starts from the beginning here, so the stored position
         # is wrong the moment a new session does; progress arrives right after.
         history.progress = 0
         history.completed = False
 
-        await self.mark_video_viewed(video_id)
+        await self.mark_video_viewed(user_id, video_id)
         await self.session.commit()
 
-    async def _get_or_create_history(self, video_id: int) -> PlayHistory:
-        """Return the single history row of a video, creating it when missing."""
+    async def _get_or_create_history(self, user_id: int, video_id: int) -> PlayHistory:
+        """Return the caller's history row of a video, creating it when missing."""
         result = await self.session.execute(
-            select(PlayHistory).where(PlayHistory.video_id == video_id)
+            select(PlayHistory).where(
+                PlayHistory.video_id == video_id,
+                PlayHistory.user_id == user_id,
+            )
         )
         history = result.scalar_one_or_none()
         if history is None:
-            history = PlayHistory(video_id=video_id)
+            history = PlayHistory(user_id=user_id, video_id=video_id)
             self.session.add(history)
         return history
 
-    async def update_progress(self, video_id: int, progress: int) -> None:
-        """Remember where playback of a video stands.
+    async def update_progress(self, user_id: int, video_id: int, progress: int) -> None:
+        """Remember where the caller's playback of a video stands.
 
         A report that moves the position forward is also the cheapest evidence of
         how much was really watched, so it appends a watch event for the seconds
         gained. Reports that move backwards — a seek, a replay — add nothing
         rather than subtracting, which keeps the totals a sum of watching done.
         """
-        video = await self.get_video_by_id(video_id)
+        video = await self.get_video_by_id(video_id, user_id)
         if not video:
             return
 
-        history = await self._get_or_create_history(video_id)
+        history = await self._get_or_create_history(user_id, video_id)
         gained = max(0, progress - (history.progress or 0))
         history.progress = progress
         history.completed = is_completed(progress, video.duration)
         history.played_at = datetime.now(timezone.utc)
         if gained:
-            self.session.add(WatchEvent(video_id=video_id, seconds=gained))
+            self.session.add(
+                WatchEvent(user_id=user_id, video_id=video_id, seconds=gained)
+            )
         await self.session.commit()

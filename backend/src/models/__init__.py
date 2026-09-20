@@ -10,6 +10,7 @@ from .watchlist import Watchlist, WatchlistItem
 from .subtitle import Subtitle
 from .setting import Setting
 from .user import User, UserSession
+from .read_state import NewVideoRead, NotificationRead
 
 __all__ = [
     "VideoSource",
@@ -27,4 +28,6 @@ __all__ = [
     "Setting",
     "User",
     "UserSession",
+    "NewVideoRead",
+    "NotificationRead",
 ]

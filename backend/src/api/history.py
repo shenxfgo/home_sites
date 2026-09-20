@@ -6,6 +6,7 @@ from pydantic import BaseModel, field_serializer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
+from src.middleware.auth import get_current_user_id
 from src.services.history_service import HistoryService
 from src.api.videos import VideoResponse
 
@@ -74,10 +75,11 @@ async def get_history_service(
 async def list_history(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    user_id: int = Depends(get_current_user_id),
     service: HistoryService = Depends(get_history_service),
 ) -> HistoryListResponse:
     """Get playback history."""
-    history, total = await service.get_history(page=page, page_size=page_size)
+    history, total = await service.get_history(user_id, page=page, page_size=page_size)
     return HistoryListResponse(
         items=[
             HistoryResponse(
@@ -98,28 +100,31 @@ async def list_history(
 
 @router.get("/continue", response_model=list[VideoResponse])
 async def get_continue_list(
+    user_id: int = Depends(get_current_user_id),
     service: HistoryService = Depends(get_history_service),
 ) -> list[VideoResponse]:
     """Get videos to continue watching."""
-    return await service.get_continue_list()
+    return await service.get_continue_list(user_id)
 
 
 @router.get("/stats", response_model=WatchStatsResponse)
 async def get_watch_stats(
     days: int = Query(30, ge=7, le=365),
+    user_id: int = Depends(get_current_user_id),
     service: HistoryService = Depends(get_history_service),
 ) -> WatchStatsResponse:
     """Aggregate the watch-event log into hours, a streak and a tag split."""
-    return await service.get_stats(days=days)
+    return await service.get_stats(user_id, days=days)
 
 
 @router.delete("/{history_id}", status_code=204)
 async def delete_history(
     history_id: int,
+    user_id: int = Depends(get_current_user_id),
     service: HistoryService = Depends(get_history_service),
 ) -> None:
     """Delete a history record."""
     try:
-        await service.delete_history(history_id)
+        await service.delete_history(user_id, history_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -220,9 +220,10 @@ async def test_list_new_videos(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_mark_new_video_viewed(client, db_session):
-    """Test marking a new video as viewed."""
+async def test_mark_new_video_viewed(client, db_session, signed_in_user):
+    """Viewing a title clears the badge for the viewer alone."""
     from src.models.new_video import NewVideo
+    from src.models.read_state import NewVideoRead
 
     source = await _create_source(db_session)
     video = await _create_video(db_session, source_id=source.id)
@@ -234,9 +235,7 @@ async def test_mark_new_video_viewed(client, db_session):
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
-    # Verify marked as viewed
-    await db_session.refresh(nv)
-    assert nv.viewed is True
+    assert await db_session.get(NewVideoRead, (nv.id, signed_in_user.id)) is not None
 
 
 @pytest.mark.asyncio

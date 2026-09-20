@@ -24,4 +24,3 @@ async def test_create_new_video(db_session):
     assert new_video.id is not None
     assert new_video.video_id == video.id
     assert new_video.source_id == source.id
-    assert new_video.viewed is False

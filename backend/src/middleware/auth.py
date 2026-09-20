@@ -86,6 +86,18 @@ async def get_current_user(
     return user
 
 
+async def get_current_user_id(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> int:
+    """The signed-in id, for routes that only scope a query by it.
+
+    Calling :func:`get_current_user` directly keeps this one lookup: as a
+    sub-dependency FastAPI would otherwise resolve the user a second time.
+    """
+    return (await get_current_user(request, session)).id
+
+
 async def get_session_token(request: Request) -> str:
     """The raw session token, so a route can revoke its own session."""
     token = getattr(request.state, "session_token", None)

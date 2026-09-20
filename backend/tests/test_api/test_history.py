@@ -7,8 +7,8 @@ from src.models.source import VideoSource
 from src.models.watch_event import WatchEvent
 
 
-async def _seed(session):
-    """Two videos and a small log: yesterday 600s, today 60s on one of them."""
+async def _seed(session, user_id):
+    """Two videos and one viewer's log: yesterday 600s, today 60s."""
     from src.models.tag import Tag, video_tags
 
     source = VideoSource(name="媒体库", path="/media", type="local")
@@ -25,11 +25,13 @@ async def _seed(session):
     now = datetime.now(timezone.utc)
     session.add_all([
         WatchEvent(
+            user_id=user_id,
             video_id=first.id,
             seconds=600,
             occurred_at=(now - timedelta(days=1)).replace(hour=12, minute=0, second=0),
         ),
         WatchEvent(
+            user_id=user_id,
             video_id=first.id,
             seconds=60,
             occurred_at=now.replace(hour=12, minute=0, second=0),
@@ -39,9 +41,9 @@ async def _seed(session):
 
 
 @pytest.mark.asyncio
-async def test_watch_stats_endpoint_aggregates_the_log(client, db_session):
+async def test_watch_stats_endpoint_aggregates_the_log(client, db_session, signed_in_user):
     """The stats page reads one endpoint for numbers, chart and tag split."""
-    await _seed(db_session)
+    await _seed(db_session, signed_in_user.id)
 
     response = await client.get("/api/history/stats", params={"days": 7})
     assert response.status_code == 200

@@ -21,15 +21,16 @@
 | 功能 | 说明 |
 |------|------|
 | 登录与访问控制 | `users` + `sessions` 两张表，bcrypt 校验口令，Cookie 会话（存 `sha256(token)`）；`AuthMiddleware` 默认拒绝所有 `/api/*`，只放行登录与状态探测，非 GET 另需 `X-Requested-With: fetch`；连续失败按 IP+账号 锁定。账号只由 `src/cli.py` 创建，没有注册接口 |
+| 数据归属（按人隔离） | `favorites`/`play_history`/`watch_events` 带 `user_id`、`watchlists` 带 `owner_id`，`new_videos` 与 `notifications` 保持全局一行、已读改由 `new_video_reads`/`notification_reads` 记录；service 层每个方法第一个参数就是 `user_id`，按别人的 id 读写一律 404，`POST /api/watchlists` 重名（同一账号内）返回 409。老库首次启动自动迁移，无归属的行回填给第一个 owner 账号 |
 | 视频源管理 | 本地/NAS/MinIO 视频源配置 |
 | 视频列表 | 多维度搜索（片名/简介/标签多词 AND，`源:` `标签:` `评分>=` `时长>` `没看过` `丢失` 等操作符，按相关度排序）、标签与视频源筛选、分页；筛选条件同步到 URL query，链接可分享 |
 | 视频播放 | 流式播放、进度记录、A-B 段重放、倍速与音量偏好持久化 |
 | 字幕支持 | 扫描登记外挂字幕，后端转 WebVTT，播放器可切换轨道、调字号与延迟 |
 | 标签管理 | 创建标签、视频打标签；扫描按文件名自动挂上系列名与字幕组标签 |
 | 系列追更 | 文件名解析出 `S01E02`、`第12集` 等季集坐标（`videos.series/season/episode`），`GET /api/videos/series` 汇总每个系列看到第几集，首页横排与卡片角标展示 |
-| 播放历史 | 记录播放进度、首页"继续观看"横排、卡片封面进度线 |
-| 收藏功能 | 视频收藏/取消收藏 |
-| 通知系统 | 扫描/转码通知，支持单条删除与一键清空 |
+| 播放历史 | 记录本人的播放进度（每人每片一行）、首页"继续观看"横排、卡片封面进度线 |
+| 收藏功能 | 视频收藏/取消收藏，只看得到自己的那份 |
+| 通知系统 | 扫描/转码通知，全库一份；已读与未读数按账号算，单条删除与一键清空影响所有人 |
 | 转码服务 | 多格式转码 |
 | 自动扫描 | APScheduler 定时扫描 |
 | 库内核对 | 扫描时找不到的文件只置 `videos.is_missing`，行与历史保留；源目录整体不可访问时不判定；首页横幅可逐条走 `DELETE /api/videos/{id}` 清理 |
@@ -159,6 +160,7 @@ chore: 构建/工具
 - 所有 API 必须有集成测试
 - 测试覆盖率 > 80%
 - 新增 `/api/*` 端点不必另写鉴权用例：`tests/test_middleware/test_auth.py` 会遍历 openapi 里每个非白名单端点，断言匿名请求一律 401
+- 碰到"某个人的数据"的读写必须有隔离用例（`tests/test_services/test_isolation.py`、`tests/test_api/test_isolation.py`）：A 的列表里查不到 B 的行，A 按 B 的 id 改删要变成 404/报错；fixture 用 `make_user`/`user_id`（service 层）与 `make_signed_in_client`（再要一个登录客户端）
 
 **前端：**
 - 关键组件有单元测试
@@ -216,6 +218,8 @@ LOGIN_LOCKOUT_MINUTES=10
 ```
 
 会话不签发自包含 token：`sessions` 表存的是 token 的 SHA-256，删行即失效，所以退出登录与踢下线是真实的。
+
+个人数据（收藏/进度/片单/统计/已读）都以 `user_id` 为键，影片库本身是共享的一份：`videos`、`tags`、`video_sources`、`subtitles` 都不加归属列，`videos.view_count`/`rating` 仍是全站热度。加归属列只能走 `init_db()` 的幂等 SQL（项目没有 Alembic），并且必须同时声明在模型上——测试用的内存库只跑 `create_all`；执行迁移前先复制一份 `data/videos.db`。
 
 ## 注意事项
 

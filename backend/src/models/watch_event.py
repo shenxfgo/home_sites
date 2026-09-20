@@ -7,18 +7,21 @@ from src.database.base import Base
 
 
 class WatchEvent(Base):
-    """A stretch of playback the user actually advanced through.
+    """A stretch of playback one person actually advanced through.
 
-    ``play_history`` keeps one row per title and says where the user left off,
-    which cannot answer "how much was watched this month". Each progress report
-    that moves the position forward appends the seconds it moved by, so the
-    stats page has a timeline to aggregate.
+    ``play_history`` keeps one row per title and says where that person left
+    off, which cannot answer "how much was watched this month". Each progress
+    report that moves the position forward appends the seconds it moved by, so
+    the stats page has a timeline to aggregate.
     """
 
     __tablename__ = "watch_events"
     __table_args__ = (Index("ix_watch_events_occurred_at", "occurred_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
     video_id: Mapped[int] = mapped_column(
         ForeignKey("videos.id", ondelete="CASCADE"), index=True
     )
@@ -31,4 +34,7 @@ class WatchEvent(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<WatchEvent(video_id={self.video_id}, seconds={self.seconds})>"
+        return (
+            f"<WatchEvent(user_id={self.user_id}, video_id={self.video_id}, "
+            f"seconds={self.seconds})>"
+        )

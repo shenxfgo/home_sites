@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey
+from sqlalchemy import DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime, timezone
 from src.database.base import Base
@@ -10,11 +10,17 @@ if TYPE_CHECKING:
 
 
 class Favorite(Base):
-    """Favorite videos."""
+    """A title one person kept. Each account has its own set."""
 
     __tablename__ = "favorites"
+    __table_args__ = (
+        UniqueConstraint("user_id", "video_id", name="ux_favorite_user_video"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
     video_id: Mapped[int] = mapped_column(
         ForeignKey("videos.id", ondelete="CASCADE")
     )
@@ -26,4 +32,4 @@ class Favorite(Base):
     video: Mapped["Video"] = relationship("Video", lazy="select")
 
     def __repr__(self) -> str:
-        return f"<Favorite(id={self.id}, video_id={self.video_id})>"
+        return f"<Favorite(id={self.id}, user_id={self.user_id}, video_id={self.video_id})>"

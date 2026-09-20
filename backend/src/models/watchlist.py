@@ -12,13 +12,20 @@ if TYPE_CHECKING:
 class Watchlist(Base):
     """A hand-picked queue of titles, such as 今晚看这些.
 
+    The queue is a personal asset: each account sees and edits its own lists.
     Items keep the order they were added in, which is the order the owner
     intends to watch them, so no position column is needed.
     """
 
     __tablename__ = "watchlists"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name", name="ux_watchlist_owner_name"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

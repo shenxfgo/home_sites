@@ -1,12 +1,19 @@
 """NotificationService for notification operations."""
-from sqlalchemy import delete, select, desc, func
+from sqlalchemy import delete, exists, select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.notification import Notification
+from src.models.read_state import NotificationRead
 
 
 class NotificationService:
-    """Service for managing notifications."""
+    """Service for managing notifications.
+
+    The feed itself is a broadcast: a scan or a transcode happened once, so one
+    row is shared by the household. What is personal is whether *you* have read
+    it, which lives in ``notification_reads``. Deleting stays a library-level
+    action and is gated to owners at the API.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -31,15 +38,13 @@ class NotificationService:
         return notification
 
     async def get_notifications(
-        self, page: int = 1, page_size: int = 20
+        self, user_id: int, page: int = 1, page_size: int = 20
     ) -> tuple[list[Notification], int]:
-        """Get paginated notifications."""
-        # Count total
-        count_query = select(func.count()).select_from(Notification)
-        result = await self.session.execute(count_query)
-        total = result.scalar() or 0
+        """Get paginated notifications with the caller's read flag attached."""
+        total = await self.session.scalar(
+            select(func.count()).select_from(Notification)
+        )
 
-        # Get paginated
         query = (
             select(Notification)
             .order_by(desc(Notification.created_at))
@@ -49,40 +54,82 @@ class NotificationService:
         result = await self.session.execute(query)
         notifications = list(result.scalars().all())
 
+        # One indexed lookup serves the page, the same way the resume rail reads
+        # its positions, so the response keeps its per-item ``read`` field.
+        read_ids = set(
+            (
+                await self.session.execute(
+                    select(NotificationRead.notification_id).where(
+                        NotificationRead.user_id == user_id,
+                        NotificationRead.notification_id.in_(
+                            [n.id for n in notifications] or [-1]
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for notification in notifications:
+            notification.read = notification.id in read_ids
+
         return notifications, total
 
-    async def get_unread_count(self) -> int:
-        """Get count of unread notifications."""
-        query = select(func.count()).select_from(Notification).where(Notification.read == False)  # noqa: E712
+    async def get_unread_count(self, user_id: int) -> int:
+        """Count the notifications this account has not read yet."""
+        query = (
+            select(func.count())
+            .select_from(Notification)
+            .where(
+                ~exists(
+                    select(NotificationRead.notification_id).where(
+                        NotificationRead.notification_id == Notification.id,
+                        NotificationRead.user_id == user_id,
+                    )
+                )
+            )
+        )
         result = await self.session.execute(query)
         return result.scalar() or 0
 
-    async def mark_read(self, notification_id: int) -> None:
-        """Mark a notification as read."""
-        result = await self.session.execute(
-            select(Notification).where(Notification.id == notification_id)
-        )
-        notification = result.scalar_one_or_none()
+    async def mark_read(self, user_id: int, notification_id: int) -> None:
+        """Record that the caller has read a notification."""
+        notification = await self.session.get(Notification, notification_id)
         if not notification:
             raise ValueError(f"Notification with id {notification_id} not found")
 
-        notification.read = True
-        await self.session.commit()
-
-    async def mark_all_read(self) -> None:
-        """Mark all notifications as read."""
-        result = await self.session.execute(
-            select(Notification).where(Notification.read == False)  # noqa: E712
+        already = await self.session.scalar(
+            select(NotificationRead).where(
+                NotificationRead.notification_id == notification_id,
+                NotificationRead.user_id == user_id,
+            )
         )
-        notifications = list(result.scalars().all())
+        if not already:
+            self.session.add(
+                NotificationRead(notification_id=notification_id, user_id=user_id)
+            )
+            await self.session.commit()
 
-        for notification in notifications:
-            notification.read = True
-
+    async def mark_all_read(self, user_id: int) -> None:
+        """Record every notification as read for the caller."""
+        unread = await self.session.execute(
+            select(Notification.id).where(
+                ~exists(
+                    select(NotificationRead.notification_id).where(
+                        NotificationRead.notification_id == Notification.id,
+                        NotificationRead.user_id == user_id,
+                    )
+                )
+            )
+        )
+        for notification_id in unread.scalars():
+            self.session.add(
+                NotificationRead(notification_id=notification_id, user_id=user_id)
+            )
         await self.session.commit()
 
     async def delete_notification(self, notification_id: int) -> None:
-        """Delete a single notification."""
+        """Delete a single notification for the whole household."""
         result = await self.session.execute(
             select(Notification).where(Notification.id == notification_id)
         )

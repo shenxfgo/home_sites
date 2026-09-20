@@ -19,5 +19,4 @@ async def test_create_notification(db_session):
 
     assert notification.id is not None
     assert notification.type == "scan_complete"
-    assert notification.read is False
     assert notification.data == {"count": 5, "source_id": 1}

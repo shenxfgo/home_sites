@@ -1,11 +1,17 @@
-from sqlalchemy import Boolean, DateTime, ForeignKey
+from sqlalchemy import DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime, timezone
 from src.database.base import Base
 
 
 class NewVideo(Base):
-    """Track newly discovered videos."""
+    """A title a scan brought in, shared by the whole household.
+
+    Whether it is still "new" is per person, so that state lives in
+    :class:`~src.models.read_state.NewVideoRead` rather than a flag here; the
+    column ``viewed`` that used to hold it is gone from the model, and a
+    database written before the change keeps a leftover copy SQLite ignores.
+    """
 
     __tablename__ = "new_videos"
 
@@ -19,7 +25,6 @@ class NewVideo(Base):
     discovered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
-    viewed: Mapped[bool] = mapped_column(Boolean, default=False)
 
     def __repr__(self) -> str:
-        return f"<NewVideo(id={self.id}, video_id={self.video_id}, viewed={self.viewed})>"
+        return f"<NewVideo(id={self.id}, video_id={self.video_id})>"

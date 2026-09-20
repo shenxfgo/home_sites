@@ -149,7 +149,7 @@ async def test_delete_source_not_found(db_session):
 
 
 @pytest.mark.asyncio
-async def test_delete_source_removes_videos_and_dependents(db_session):
+async def test_delete_source_removes_videos_and_dependents(db_session, user_id):
     """videos.source_id is NOT NULL, so a source with videos used to fail to delete."""
     from sqlalchemy import func, select
 
@@ -171,8 +171,8 @@ async def test_delete_source_removes_videos_and_dependents(db_session):
     db_session.add_all(
         [
             NewVideo(video_id=doomed_video.id, source_id=doomed.id),
-            Favorite(video_id=doomed_video.id),
-            PlayHistory(video_id=doomed_video.id, progress=42),
+            Favorite(user_id=user_id, video_id=doomed_video.id),
+            PlayHistory(user_id=user_id, video_id=doomed_video.id, progress=42),
             NewVideo(video_id=keeper_video.id, source_id=keeper.id),
         ]
     )

@@ -3,8 +3,8 @@ import pytest
 
 from src.models.video import Video
 
-async def _create_video(db_session, video_id, title, progress=None):
-    """Seed one title, optionally with a stored watch position."""
+async def _create_video(db_session, video_id, title, *, progress=None, user_id=None):
+    """Seed one title, optionally with a position one person stopped at."""
     from src.models.history import PlayHistory
 
     video = Video(
@@ -16,7 +16,9 @@ async def _create_video(db_session, video_id, title, progress=None):
     )
     db_session.add(video)
     if progress is not None:
-        db_session.add(PlayHistory(video_id=video_id, progress=progress))
+        db_session.add(
+            PlayHistory(user_id=user_id, video_id=video_id, progress=progress)
+        )
     await db_session.commit()
     return video
 
@@ -53,9 +55,13 @@ async def test_titles_join_the_queue_in_the_order_they_are_added(client, db_sess
 
 
 @pytest.mark.asyncio
-async def test_the_queue_carries_the_watch_position_of_each_title(client, db_session):
+async def test_the_queue_carries_the_watch_position_of_each_title(
+    client, db_session, signed_in_user
+):
     """今晚看这些 is a queue to resume, so each row has to say what is left."""
-    await _create_video(db_session, 1, "暗涌", progress=180)
+    await _create_video(
+        db_session, 1, "暗涌", progress=180, user_id=signed_in_user.id
+    )
     list_id = await _create_list(client)
     await client.post(f"/api/watchlists/{list_id}/videos", json={"video_id": 1})
 

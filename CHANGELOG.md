@@ -2,6 +2,21 @@
 
 ## 2026-09-20
 
+### 新增功能：数据按人隔离（M2 数据归属），收藏/历史/片单/统计跟着账号走
+
+- **为什么先做这一层**：M1 之后只有"登录 / 未登录"两档，但库里所有行都是全家共用一份——A 拖进度会把 B 的续播位置覆盖掉。这一轮不动界面，只把"这行数据是谁的"落进 schema 与 service 层
+- **5 张表加归属列 + 2 张已读表**：`favorites.user_id`、`play_history.user_id`、`watch_events.user_id`、`watchlists.user_id`（owner）、`new_videos` 与 `notifications` 不改结构，改为新增 `new_video_reads(video_id, user_id)` 与 `notification_reads(notification_id, user_id)` 两张纯关系表——**已读是"每个人一条记录"，不是原表上的一个布尔字段**，否则第一个人点掉角标全家就都"看过"了
+- **约束跟着换**：`play_history.video_id` 原来的单列唯一换成 `(video_id, user_id)` 联合唯一，`favorites` 同理，`watchlists.name` 的全局唯一换成 `(user_id, name)` 联合唯一（所以两口子可以各建一份"今晚看这些"）。这些约束同时写在模型上，因为测试库是 `create_all` 建出来的，只加迁移 SQL 会在测试里形同不存在
+- **SQLite 的两个事实决定了迁移形状**：`ADD COLUMN` 不能带非空默认值，所以老库加出来的 `user_id` 是 nullable，而模型里声明 `nullable=False`——新库严格、老库回填后重新建约束；唯一索引对 `NULL` 视为互不相等，所以老库残留的重复行必须先用 `DEDUPE_*` 语句按 `keep.user_id IS current.user_id` 去过一遍，再 `DROP` 旧索引、建新索引，否则建索引直接失败
+- **迁移没有 Alembic，靠幂等重放**：全部收进 `database/session.py` 的 `apply_schema_fixes(conn)`（`create_all` → `PRAGMA table_info` 补列 → 去重 → 换索引 → 建归属索引），启动即执行，重复启动无副作用。**首次执行前请先复制一份 `backend/data/videos.db`**
+- **老数据归第一个 owner**：`AuthService.claim_legacy_rows(user_id)` 把所有 `user_id IS NULL` 的行 UPDATE 给当前账号，`_inherit_read_state` 再把老 `new_videos.viewed` / `notifications.read` 布尔位翻译成 `_reads` 行（用 `_column_exists` 判断老库有没有这一列）。**只在第一次 `create-user --role owner` 时触发**，第二个 owner 不会把别人的数据抢走
+- **service 层一律 `user_id` 打头**：`favorite_service` / `history_service` / `watchlist_service` / `notification_service` 的每个方法第一个参数都是 `user_id`，查不到即 `ValueError`（API 转 404）。片单的越权收口只有一处：`WatchlistService.get_watchlist` 带 owner 条件，其余读改写都从它拿对象，所以"按裸 id 命中别人的行"在结构上不可能
+- **每档视角的相关子查询**：`_played(user_id)`、`_finished(user_id)`、`_unread_new_video(user_id)` 三个 `EXISTS` 助手让"看过了 / 已看完 / 有未读新片角标"随请求者变化。所以 `GET /api/videos/1` 对 A 返回 `progress=90`、对 B 返回 `progress=10`；搜索操作符 `已看完` 与 `没看过` 也是按人算的；系列进度"下一集"两个人指向不同集数
+- **越权清单（设计文档 §越权面）逐条修掉**：删除历史记录、标记通知已读、片单读改写与加删条目、`mark_video_viewed` 全部改成按 `(id, user_id)` 定位。**一个例外**：`notifications` 是全家广播、没有 owner 列，所以"删除通知 / 清空通知"仍然是全屋共享的操作——删了就大家都没了。这不是漏洞而是待定设计（原话写进 `backend/CLAUDE.md` 与用例 docstring），要按人收敛应该加 `user_id` 或走角色网关，归到 M3
+- **测试**：后端 372 → 396 passed。新增 `tests/test_services/test_isolation.py` 13 例（收藏互不可见且可同名共存、按 id 删别人的历史行报错、统计 600 vs 60、片单六条路全 raise、进度按调用者、看片状态操作符、系列 next、角标标记、通知已读）、`tests/test_api/test_isolation.py` 9 例（同一份越权清单走 HTTP + 两个已登录 client）、`tests/test_database.py` 重写为 4 例迁移用例（补列、换索引、去重、重放幂等）；fixtures 补 `make_user` / `user_id` / `make_signed_in_client`。前端 219 passed、Playwright e2e 61 passed、`npm run build` 通过（本轮无界面改动）
+- **验证**：拿**真实库的副本**（`backend/data/walkthrough_m2.db`）启动，迁移后逐表核对——列加上了、`play_history` 的单列唯一索引换成了联合唯一、1 条收藏 + 3 条历史被第一个 owner 完整继承、**没有一行被丢掉**；`_reads` 是空的属预期（老库里那两个布尔位当时都没置过）。再用两个账号走真实 HTTP：`A history total: 3 / B history total: 0`、`B deletes A history row -> 404`、同名片单两边各建一份 `1 2`、未读角标 `A 90 / B 91`。最后在真实浏览器里登录 xiaofeng（2 条收藏、角标 90、1 份片单）→ 退出 → 登录 guest（"暂无收藏视频"、只看得到自己那条历史、只剩自己的片单、角标 91），无 console 报错
+- **已知边界**：`role` 仍未参与鉴权，通知删除是家庭级操作；视频库本身对全体登录用户可见（要按源限制得另做 `source_acl`）；M1 之前的观看时长仍无法回推
+
 ### 新增功能：登录与访问控制（多用户认证骨架）
 
 - **为什么是 Cookie 会话而不是 JWT**：播放器、封面、字幕走的是 `<video>` / `<img>` / `<track>` 的原生请求，浏览器不会替它们带 `Authorization` 头；要签名 token 就得把身份塞进 URL，缩略图地址随之变成一份可以转发给别人长期使用的凭证。改为服务端会话，新增 `users` 与 `sessions` 两张表，Cookie 名 `sid`，`HttpOnly` + `SameSite=Lax` + `Path=/`

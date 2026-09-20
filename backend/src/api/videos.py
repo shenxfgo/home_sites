@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
+from src.middleware.auth import get_current_user_id
 from src.models.tag import Tag
 from src.services.video_service import VideoService
 
@@ -128,10 +129,12 @@ async def list_videos(
     search: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    user_id: int = Depends(get_current_user_id),
     service: VideoService = Depends(get_video_service),
 ) -> VideoListResponse:
     """Get paginated video list with optional filtering."""
     videos, total = await service.get_videos(
+        user_id,
         source_id=source_id,
         tag_id=tag_id,
         search=search,
@@ -149,23 +152,26 @@ async def list_videos(
 @router.get("/new", response_model=list[VideoResponse])
 async def list_new_videos(
     source_id: int | None = None,
+    user_id: int = Depends(get_current_user_id),
     service: VideoService = Depends(get_video_service),
 ) -> list[VideoResponse]:
-    """Get newly discovered videos."""
-    videos = await service.get_new_videos(source_id=source_id)
+    """Get the titles this account has not looked at yet."""
+    videos = await service.get_new_videos(user_id, source_id=source_id)
     return videos
 
 
 @router.get("/series", response_model=list[SeriesProgressResponse])
 async def list_series_progress(
+    user_id: int = Depends(get_current_user_id),
     service: VideoService = Depends(get_video_service),
 ) -> list[SeriesProgressResponse]:
-    """Get every recognised series with how many episodes are done."""
-    return await service.get_series_progress()
+    """Get every recognised series with how many episodes this account finished."""
+    return await service.get_series_progress(user_id)
 
 
 @router.get("/duplicates", response_model=list[DuplicateGroupResponse])
 async def list_duplicates(
+    user_id: int = Depends(get_current_user_id),
     service: VideoService = Depends(get_video_service),
 ) -> list[DuplicateGroupResponse]:
     """Report library entries whose files were confirmed byte-identical.
@@ -173,16 +179,17 @@ async def list_duplicates(
     Read-only, and on demand: it opens video files to hash them, which is far
     too slow to run while the home page loads.
     """
-    return await service.get_duplicates()
+    return await service.get_duplicates(user_id)
 
 
 @router.get("/{video_id}", response_model=VideoResponse)
 async def get_video(
     video_id: int,
+    user_id: int = Depends(get_current_user_id),
     service: VideoService = Depends(get_video_service),
 ) -> VideoResponse:
     """Get a specific video."""
-    video = await service.get_video_by_id(video_id)
+    video = await service.get_video_by_id(video_id, user_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
     return video
@@ -193,6 +200,7 @@ async def update_video(
     video_id: int,
     data: VideoUpdate,
     session: AsyncSession = Depends(get_session),
+    user_id: int = Depends(get_current_user_id),
     service: VideoService = Depends(get_video_service),
 ) -> VideoResponse:
     """Update video information."""
@@ -207,11 +215,11 @@ async def update_video(
     # Update basic fields
     if update_data:
         try:
-            video = await service.update_video(video_id, **update_data)
+            video = await service.update_video(video_id, user_id, **update_data)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
     else:
-        video = await service.get_video_by_id(video_id)
+        video = await service.get_video_by_id(video_id, user_id)
         if not video:
             raise HTTPException(status_code=404, detail="Video not found")
 
@@ -243,21 +251,23 @@ async def delete_video(
 @router.post("/new/{video_id}/viewed", status_code=200)
 async def mark_new_video_viewed(
     video_id: int,
+    user_id: int = Depends(get_current_user_id),
     service: VideoService = Depends(get_video_service),
 ) -> dict:
-    """Mark a new video as viewed."""
-    await service.mark_video_viewed(video_id)
+    """Clear the new badge for this account only."""
+    await service.mark_video_viewed(user_id, video_id)
     return {"status": "ok"}
 
 
 @router.post("/{video_id}/play", status_code=200)
 async def record_play(
     video_id: int,
+    user_id: int = Depends(get_current_user_id),
     service: VideoService = Depends(get_video_service),
 ) -> dict:
-    """Record that a video started playing."""
+    """Record that this account started playing a video."""
     try:
-        await service.record_play(video_id)
+        await service.record_play(user_id, video_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"status": "ok"}
@@ -267,8 +277,9 @@ async def record_play(
 async def report_progress(
     video_id: int,
     data: ProgressRequest,
+    user_id: int = Depends(get_current_user_id),
     service: VideoService = Depends(get_video_service),
 ) -> dict:
-    """Report playback progress."""
-    await service.update_progress(video_id, data.progress)
+    """Report this account's playback progress."""
+    await service.update_progress(user_id, video_id, data.progress)
     return {"status": "ok"}

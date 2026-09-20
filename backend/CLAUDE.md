@@ -68,7 +68,9 @@ backend/
 │   │   ├── source.py      # VideoSource 模型
 │   │   ├── user.py        # User / UserSession 模型（会话只存 token 的 sha256）
 │   │   ├── watch_event.py # WatchEvent 模型（观看时长的追加式日志）
-│   │   ├── watchlist.py   # Watchlist / WatchlistItem 模型（手排队列，一行一条排队记录）
+│   │   ├── watchlist.py   # Watchlist / WatchlistItem 模型（手排队列，一行一条排队记录；清单归 owner_id）
+│   │   ├── read_state.py  # NewVideoRead / NotificationRead（广播内容"谁读过哪一条"）
+│   │   ├── favorite.py    # 个人数据一律带 user_id：收藏、历史、观看日志唯一约束都按 (人, 影片)
 │   │   └── ...
 │   ├── services/          # 业务逻辑层
 │   │   ├── video_service.py
@@ -76,7 +78,7 @@ backend/
 │   │   ├── auth_service.py      # 口令校验、会话签发/撤销、滑动续期、登录限流计数器
 │   │   └── ...
 │   ├── middleware/        # HTTP 中间件
-│   │   └── auth.py        # 默认拒绝的鉴权中间件 + get_current_user / get_session_token
+│   │   └── auth.py        # 默认拒绝的鉴权中间件 + get_current_user / get_current_user_id / get_session_token
 │   ├── utils/             # 工具函数
 │   │   ├── ffmpeg.py      # FFmpeg 工具
 │   │   ├── file_scanner.py # 目录扫描与探针
@@ -94,7 +96,7 @@ backend/
 │   ├── config.py          # 配置管理
 │   └── main.py            # 应用入口
 ├── tests/                 # 测试文件
-│   ├── conftest.py        # 共享 fixtures：db_session / anon_client / client（已登录）
+│   ├── conftest.py        # 共享 fixtures：db_session / anon_client / client（已登录）+ make_user / user_id / make_signed_in_client
 │   ├── test_api/          # API 测试
 │   ├── test_middleware/   # 鉴权中间件测试（含"每个端点匿名必 401"的全路由扫面）
 │   ├── test_services/     # 服务测试
@@ -144,21 +146,25 @@ class ExampleService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(self, name: str) -> Example:
-        """创建示例。"""
-        example = Example(name=name)
+    async def create(self, user_id: int, name: str) -> Example:
+        """创建属于调用者的示例。"""
+        example = Example(user_id=user_id, name=name)
         self.session.add(example)
         await self.session.commit()
         await self.session.refresh(example)
         return example
 
-    async def get_by_id(self, example_id: int) -> Example | None:
-        """获取示例。"""
+    async def get_by_id(self, user_id: int, example_id: int) -> Example | None:
+        """获取示例。归属条件是查询的一部分：别人的行当不存在。"""
         result = await self.session.execute(
-            select(Example).where(Example.id == example_id)
+            select(Example).where(
+                Example.id == example_id, Example.user_id == user_id
+            )
         )
         return result.scalar_one_or_none()
 ```
+
+个人数据的 service 方法一律把 `user_id` 放在第一个参数（`session` 在构造函数里），写路径都先经这样一把带归属的读取，越权才会统一变成"找不到"而不是 500 或误改。全库共享的行（`videos`、`tags`、`video_sources`）反过来，不要按人过滤。
 
 ### 3. 创建 API
 
@@ -169,6 +175,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
+from src.middleware.auth import get_current_user_id
 from src.services.example_service import ExampleService
 
 router = APIRouter(prefix="/api/examples", tags=["examples"])
@@ -196,11 +203,14 @@ async def get_example_service(
 @router.post("", response_model=ExampleResponse, status_code=201)
 async def create_example(
     data: ExampleCreate,
+    user_id: int = Depends(get_current_user_id),
     service: ExampleService = Depends(get_example_service),
 ) -> ExampleResponse:
     """创建示例。"""
-    return await service.create(name=data.name)
+    return await service.create(user_id, name=data.name)
 ```
+
+中间件已经保证登录，路由不必再判 401；`user_id` 只用于取"当前这份数据属于谁"。
 
 ### 4. 注册路由
 
@@ -233,11 +243,15 @@ async def test_create_example(db_session):
 
 ### 建表与改表
 
-`init_db()` 只有 `Base.metadata.create_all`，它只补建新表、**从不修改已存在的表**。因此给已有表加约束或索引时，要把补齐用的 SQL 写成模块常量放在 `src/database/session.py`，在 `init_db` 里紧随 `create_all` 执行，并保证幂等（`IF NOT EXISTS`、先清洗再加约束）。参考 `play_history` 的"每部视频一行"：先 `DEDUPE_PLAY_HISTORY` 折叠老库的重复行，再建 `ix_play_history_video_id` 唯一索引——顺序反了会直接建索引失败。
+`init_db()` 只有 `Base.metadata.create_all`，它只补建新表、**从不修改已存在的表**。因此给已有表加约束或索引时，要把补齐用的 SQL 写成模块常量放在 `src/database/session.py`，在 `init_db` 里紧随 `create_all` 执行，并保证幂等（`IF NOT EXISTS`、先清洗再加约束）。参考 `play_history` 的"每人每片一行"：先 `DEDUPE_PLAY_HISTORY` 按 `(user_id, video_id)` 折叠老库的重复行，`DROP INDEX IF EXISTS ix_play_history_video_id` 去掉"每部视频全局一行"的旧唯一索引，再建 `ux_play_history_user_video`——顺序反了会直接建索引失败。`favorites`（`DEDUPE_FAVORITES`）与 `watchlists`（`DEDUPE_WATCHLIST_NAMES`，重名改写成 `X (2)`）同理。
 
-加**列**走的是同一条路的另一支：`ADDED_COLUMNS` 三元组（表名、列名、`ALTER TABLE ... ADD COLUMN`）配 `PRAGMA table_info` 探测，缺哪列补哪列，再单独建需要的索引（`VIDEOS_SERIES_INDEX`）。这类修复只在启动时跑，测试用的 `db_session` 直接 `create_all` 建全新库，所以新列必须同时在模型里声明。
+加**列**走的是同一条路的另一支：`ADDED_COLUMNS` 三元组（表名、列名、`ALTER TABLE ... ADD COLUMN`）配 `PRAGMA table_info` 探测，缺哪列补哪列，再单独建需要的索引（`VIDEOS_SERIES_INDEX`、`OWNERSHIP_INDEXES`）。SQLite 的 `ADD COLUMN` 不能带非默认值的 `NOT NULL`，所以四个归属列在库里是可空的，只有模型声明为 `nullable=False`。这类修复只在启动时跑（`apply_schema_fixes(conn)`，整体可重放），测试用的 `db_session` 直接 `create_all` 建全新库，所以新列与新索引必须同时在模型里声明。
 
 账号相关的两张表：`users`（`username` 唯一、`password_hash`、`role` 带 `CheckConstraint`、`is_active` 用停用代替删除）与 `sessions`（主键是 `token_hash`，即 Cookie 里那枚 token 的 SHA-256）。存摘要而不是 token 本身，是为了让"库被读走"不等于"人人可冒用"；删行即失效，因此退出登录和踢下线不需要等 Cookie 自然过期。会话寿命不存字段，滑动续期时按 `expires_at - created_at` 反推，"记住我"就不必单独记一档。
+
+归属分两种。**属于人**的表带外键列：`favorites`/`play_history`/`watch_events` 有 `user_id`，`watchlists` 有 `owner_id`，唯一约束都是 `(人, 影片)` 或 `(owner_id, name)` 这种成对形式；`watchlist_items` 不加列，归属随它所在的清单。**全库广播**的内容只有一份行——`new_videos`（扫描日志）与 `notifications`（系统通知）——"读过没"另记在 `new_video_reads`/`notification_reads`（复合主键天然去重），响应里的 `read`/`is_new` 是 service 现查现挂的临时属性，不在模型列里。因此标记已读是 INSERT 而不是 UPDATE，`unread_count` 走 `~EXISTS`；删掉一条通知则是全家一起少一条，它没有归属列，M3 用 `require_role` 收敛到 owner。删影片时 `delete_videos_cascade` 要连 `new_video_reads` 一起清（SQLite 不执行 `ON DELETE CASCADE`，得手写）。
+
+老库升级后的第一次 `create-user --role owner` 会顺手认领：`AuthService.claim_legacy_rows` 把 `user_id IS NULL` 的行交给这个账号，并把旧的 `new_videos.viewed` / `notifications.read` 一次性翻译成两张 `_reads` 表的记录（列已不存在就跳过）。这一步不做，升级后收藏与历史看起来就像被清空了。
 
 ### 模型定义
 
@@ -283,13 +297,16 @@ class Video(Base):
 ```
 tests/
 ├── conftest.py           # 公共 fixtures
+├── test_database.py      # 旧库跑 apply_schema_fixes：归属列、索引替换、可重放
 ├── test_api/
 │   ├── test_videos.py
+│   ├── test_isolation.py # 两个已登录客户端互相够不着对方的数据
 │   └── test_sources.py
 ├── test_middleware/
 │   └── test_auth.py      # 全路由匿名 401 扫面 + CSRF/过期/停用/滑动续期
 ├── test_services/
 │   ├── test_video_service.py
+│   ├── test_isolation.py # 收藏/历史/片单/统计/已读，全部以"另一个人"的视角问一遍
 │   └── test_source_service.py
 └── test_models/
     ├── test_video.py
@@ -303,6 +320,12 @@ tests/
 - `db_session` —— 每个用例一个临时库
 - `anon_client` —— 未登录的 `AsyncClient`，中间件走真实逻辑；服务替身由 `extra_overrides` 这个可覆盖 fixture 注入，测试文件里写 `async def extra_overrides(): return {get_video_service: override}` 即可，不必再自带 `client`
 - `client` —— `anon_client` 外加一枚有效会话 Cookie（`signed_in_user` 会建 owner 账号和对应 `sessions` 行）
+
+隔离用例需要"第二个人"，同一份 `db_session` 上再加三个 fixture：
+
+- `make_user(username, role)` —— 现建一个账号，service 测试用它拿两个 `user_id`
+- `user_id` —— 只想要"某个账号"的 service 测试直接拿它，替代以前裸写 `video.user_id=1` 那类假身份
+- `make_signed_in_client(username)` —— 再登一个账号进同一个 `app`，返回带自己 Cookie 的 `AsyncClient`，于是"A 打 B 的行"能走真实路由拿到 404
 
 `anon_client` 默认带 `X-Requested-With: fetch`，因为中间件对所有非 GET 都要它；要测 403 分支就在单次请求上覆盖 `{CSRF_HEADER: ""}`——httpx 没法用 `None` 删掉客户端默认头。中间件里的 `async_session_maker` 由 `monkeypatch` 换成一个"交出会话但不关闭"的壳，测试才能与 `db_session` 看同一份数据。
 
