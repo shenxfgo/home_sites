@@ -2,6 +2,23 @@
 
 ## 2026-09-20
 
+### 新增功能：登录与访问控制（多用户认证骨架）
+
+- **为什么是 Cookie 会话而不是 JWT**：播放器、封面、字幕走的是 `<video>` / `<img>` / `<track>` 的原生请求，浏览器不会替它们带 `Authorization` 头；要签名 token 就得把身份塞进 URL，缩略图地址随之变成一份可以转发给别人长期使用的凭证。改为服务端会话，新增 `users` 与 `sessions` 两张表，Cookie 名 `sid`，`HttpOnly` + `SameSite=Lax` + `Path=/`
+- **库里只存 `sha256(token)`**：`secrets.token_urlsafe(32)` 发给浏览器，落库的是它的摘要。所以"退出登录"和"踢下线"是真会生效的——删掉 `sessions` 行，那枚 Cookie 当场失效
+- **默认拒绝，而不是逐路由挂 `Depends`**：`AuthMiddleware` 对所有 `/api/*` 回 401，只放行 `/api/auth/login` 与 `/api/auth/status`。漏挂一个端点等于整套方案失效，而"忘记放行"会立刻挡在手上，是能被发现的 bug。中间件在 CORS 之后注册，预检 OPTIONS 不会被 401 拦掉
+- **CSRF 两道**：`SameSite=Lax` 之外，非 GET 还要求 `X-Requested-With: fetch`（跨站表单发不出这个头）。403 分支排在 401 之后，否则未登录会被误报成 CSRF 失败
+- **口令**：直接用 bcrypt（cost 12），删掉 `python-jose` 与 `passlib`——后者自 2020 年起停更、与 bcrypt>=4 有兼容告警。bcrypt 只看前 72 字节，超过就在入口报错而不是悄悄截断。账号不存在与密码错误给同一句"账号或密码错误"，不把账号枚举出去
+- **防爆破**：进程内按 `(客户端 IP, 账号)` 计数，5 次失败锁 10 分钟并回 429 + `Retry-After`，登录成功即清零。重启清零是可接受的：家用局域网要拦的是脚本，不是专业攻击者
+- **滑动续期**：过期时间随请求向前推，窗口取会话自身寿命（`expires_at - created_at`），因此"记住我"不需要单独存标记；写库节流到每 300 秒一次。**SQLite 坑**：`DateTime(timezone=True)` 读回来是 naive 的，比较前必须补 `tzinfo=utc`；测试里别用 `expire_all()` + `session.get()` 重读，会 `MissingGreenlet`，要 `await db_session.refresh(row)`
+- **端点**：新增 5 个 `/api/auth/*` —— `POST login`（签发会话并写 Cookie）、`GET status`（公开，登录页用它判断已登录与否、是否需要建号）、`GET me`、`POST logout`、`POST password`（改密后保住当前会话、踢掉其他设备）。**没有注册接口**，账号只能由命令行创建
+- **账号管理命令行**：`uv run python -m src.cli` 下的 `create-user`（密码交互输入两次，可 `--role owner`）、`list-users`、`set-role`、`revoke-sessions`
+- **前端**：`api/auth.ts` + `useAuth` composable（模块级 ref 共享状态，不引 Pinia）；`client.ts` 默认带 `X-Requested-With: fetch`，拦截到 401（`/auth/*` 自身除外）就清掉本地身份并跳登录，`?redirect=` 记录原地址——只跟站内相对路径，`//host` 会被浏览器按协议相对地址解析。登录页是裸页：`App.vue` 按 `route.meta.public` 决定套不套 MainLayout，没有账号时提示里直接给出建号命令。`beforeEach` 守卫先 `load()` 再放行；顶栏右侧加用户胶囊（账号 + 角色 + 退出登录）
+- **Playwright 严格模式**：有了用户菜单之后页面上存在两个 `.el-popover`，通知相关用例全部命中两处。给两个弹层分别加 `popper-class="notification-popper"` / `"user-popper"`，选择器随之收紧
+- **测试**：后端 590 → 684 passed（`test_api/test_auth.py` 15 例；`test_middleware/test_auth.py` 79 例，其中 71 例把 openapi 里每个非白名单 `/api` 端点用匿名请求逐个打一遍——本仓库这版 FastAPI 的 `app.routes` 里子路由是 `_IncludedRouter`、没有 `.path`，所以扫面取 `app.openapi()["paths"]`）；前端单测 199 → 219 passed（`useAuth` 6、登录页 5、auth api 2、401 拦截 2、用户菜单 2、路由守卫 7）；Playwright e2e 55 → 61 passed；`npm run build` 通过（入口 280.61 kB / gzip 91.73 kB）。顺带把 7 个 api 测试文件里各复制一份的 `client` fixture 收进 `tests/conftest.py`：`anon_client`（匿名）与 `client`（已登录），服务替身经 `extra_overrides` 注入
+- **验证**：真实后端 + 真实库 + vite 走全链路。CLI 建号后匿名访问首页被跳去 `/login?redirect=/`；登录后首页 8 张卡片、7 张缩略图全部 `naturalWidth > 0`（原生资源请求确实带上了会话 Cookie），`document.cookie` 读不到 `sid`（HttpOnly）；刷新身份仍在，弹层显示 `walkthrough 管理员`；退出后回到登录页且顶栏消失，此时 `GET /api/videos` 与 `/api/auth/me` 都是 401；错密码显示后端原话"账号或密码错误"，密码框被清空
+- **已知边界**：当前只有"登录 / 未登录"两档，`role` 已入库但还没参与鉴权（角色网关与用户管理页是下一步）；数据仍是全家共享，历史、收藏、片单暂时不分人；局域网 http 访问时 `AUTH_COOKIE_SECURE=false`，套上 https 才需要打开
+
 ### 新增功能：片单/合集，"今晚看这些"先排成一份队列
 
 - **两张表而不是一个 JSON 字段**：`watchlists(name, description, created_at)` + `watchlist_items(watchlist_id, video_id, added_at)`，后者带 `UniqueConstraint(watchlist_id, video_id)` 与 `cascade="all, delete-orphan"`。用真正的关联实体而不是 `Table` 中间表，是因为接口要立刻把刚改完的队列返回去。顺序按加入时间排（`order_by("WatchlistItem.id")`），没有 `position` 列——本片单不支持手工拖动排序

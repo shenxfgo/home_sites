@@ -13,9 +13,19 @@ import {
 } from '@element-plus/icons-vue'
 import NotificationCenter from '@/components/NotificationCenter.vue'
 import { isTypingTarget } from '@/composables/typingGuard'
+import { useAuth } from '@/composables/useAuth'
 
 const router = useRouter()
 const route = useRoute()
+const { user, signOut } = useAuth()
+
+// 顶栏只放一个字符当头像，省掉一张图片请求。
+const avatarText = computed(() => (user.value?.display_name || user.value?.username || '?').slice(0, 1).toUpperCase())
+
+async function handleSignOut() {
+  await signOut()
+  await router.push('/login')
+}
 
 const navItems = [
   { path: '/', label: '首页', icon: HomeFilled },
@@ -99,6 +109,22 @@ onUnmounted(() => document.removeEventListener('keydown', handleGlobalKeydown))
           快捷键
         </el-button>
         <NotificationCenter />
+
+        <el-popover v-if="user" placement="bottom-end" :width="188" trigger="click" popper-class="user-popper">
+          <template #reference>
+            <button class="user-chip" type="button" :title="user.display_name || user.username">
+              <span class="user-avatar">{{ avatarText }}</span>
+              <span class="user-name">{{ user.display_name || user.username }}</span>
+            </button>
+          </template>
+          <div class="user-menu">
+            <p class="user-account">
+              {{ user.username }}
+              <em>{{ user.role === 'owner' ? '管理员' : '成员' }}</em>
+            </p>
+            <el-button text class="user-signout" @click="handleSignOut">退出登录</el-button>
+          </div>
+        </el-popover>
       </div>
     </header>
 
@@ -243,6 +269,72 @@ onUnmounted(() => document.removeEventListener('keydown', handleGlobalKeydown))
   border: 1px solid var(--glass-border);
   background: var(--tile-bg);
   color: var(--text-glass);
+}
+
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 4px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-glass);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.16s ease;
+}
+
+.user-chip:hover {
+  background: var(--tile-bg);
+}
+
+.user-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent-fill);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.user-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.user-account {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-glass);
+}
+
+.user-account em {
+  font-size: 11px;
+  font-style: normal;
+  color: var(--text-glass-secondary);
+}
+
+.user-signout {
+  align-self: flex-start;
+  padding-left: 0;
+  color: var(--danger-solid);
 }
 
 .layout-main {

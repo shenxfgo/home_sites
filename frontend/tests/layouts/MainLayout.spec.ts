@@ -4,6 +4,17 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import type { Router } from 'vue-router'
 import MainLayout from '@/layouts/MainLayout.vue'
 import { notificationsApi } from '@/api/notifications'
+import { getAuthStatus, getMe, logout } from '@/api/auth'
+import { useAuth } from '@/composables/useAuth'
+import { domButtonByText } from '../helpers'
+
+vi.mock('@/api/auth', () => ({
+  getAuthStatus: vi.fn(),
+  getMe: vi.fn(),
+  login: vi.fn(),
+  logout: vi.fn(),
+  changePassword: vi.fn(),
+}))
 
 vi.mock('@/api/notifications', () => ({
   notificationsApi: {
@@ -26,6 +37,7 @@ async function mountLayout() {
     routes: [
       { path: '/', name: 'home', component: stub },
       { path: '/history', name: 'history', component: stub },
+      { path: '/login', name: 'login', component: stub },
     ],
   })
   await router.push('/')
@@ -104,6 +116,49 @@ describe('MainLayout shortcut help', () => {
     await router.push('/history')
     await flushPromises()
     expect(wrapper.findAll('.nav-item')[2].classes()).toContain('active')
+    wrapper.unmount()
+  })
+})
+
+describe('MainLayout account menu', () => {
+  beforeEach(async () => {
+    document.body.innerHTML = ''
+    vi.mocked(notificationsApi.list).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
+    vi.mocked(notificationsApi.getUnreadCount).mockResolvedValue(0)
+    vi.mocked(getAuthStatus).mockResolvedValue({ authenticated: true, needs_setup: false })
+    vi.mocked(getMe).mockResolvedValue({
+      id: 1,
+      username: 'tester',
+      role: 'owner',
+      display_name: 'Tester',
+    })
+    vi.mocked(logout).mockResolvedValue(undefined)
+    await useAuth().load(true)
+  })
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+    useAuth().forget()
+  })
+
+  it('shows who is signed in', async () => {
+    const wrapper = await mountLayout()
+
+    expect(wrapper.get('.user-name').text()).toBe('Tester')
+    expect(wrapper.get('.user-avatar').text()).toBe('T')
+    wrapper.unmount()
+  })
+
+  it('ends the session and hands over to the login page', async () => {
+    const wrapper = await mountLayout()
+    await wrapper.get('.user-chip').trigger('click')
+    await flushPromises()
+
+    domButtonByText(document.body, '退出登录')?.click()
+    await flushPromises()
+
+    expect(logout).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.name).toBe('login')
     wrapper.unmount()
   })
 })

@@ -11,6 +11,7 @@
 | 前端 | Vue 3 + TypeScript + Vite + Element Plus（播放器为手写组件，未引入 Video.js） |
 | 后端 | Python 3.11+ + FastAPI + SQLAlchemy 2.0+ + APScheduler |
 | 数据库 | SQLite 3（aiosqlite 异步驱动） |
+| 认证 | Cookie 会话（服务端表存 token 摘要）+ bcrypt，不用 JWT：`<video>` / `<img>` / `<track>` 的原生请求带不了 `Authorization` |
 | 视频处理 | FFmpeg |
 | 依赖管理 | uv（Python）、npm（Node.js） |
 | 部署 | Docker Compose |
@@ -19,6 +20,7 @@
 
 | 功能 | 说明 |
 |------|------|
+| 登录与访问控制 | `users` + `sessions` 两张表，bcrypt 校验口令，Cookie 会话（存 `sha256(token)`）；`AuthMiddleware` 默认拒绝所有 `/api/*`，只放行登录与状态探测，非 GET 另需 `X-Requested-With: fetch`；连续失败按 IP+账号 锁定。账号只由 `src/cli.py` 创建，没有注册接口 |
 | 视频源管理 | 本地/NAS/MinIO 视频源配置 |
 | 视频列表 | 多维度搜索（片名/简介/标签多词 AND，`源:` `标签:` `评分>=` `时长>` `没看过` `丢失` 等操作符，按相关度排序）、标签与视频源筛选、分页；筛选条件同步到 URL query，链接可分享 |
 | 视频播放 | 流式播放、进度记录、A-B 段重放、倍速与音量偏好持久化 |
@@ -96,9 +98,11 @@ home_sites/
 │   │   ├── api/            # API 路由
 │   │   ├── models/         # 数据模型
 │   │   ├── services/       # 业务逻辑
+│   │   ├── middleware/     # 鉴权中间件（默认拒绝 + current_user 依赖）
 │   │   ├── utils/          # 工具函数
 │   │   ├── scheduler/      # 定时任务
 │   │   ├── database/       # 数据库配置
+│   │   ├── cli.py          # 账号管理命令行（建号/列账号/改角色/踢下线）
 │   │   ├── config.py       # 配置管理
 │   │   └── main.py         # 应用入口
 │   ├── tests/              # 测试文件
@@ -154,6 +158,7 @@ chore: 构建/工具
 - 所有 Service 必须有单元测试
 - 所有 API 必须有集成测试
 - 测试覆盖率 > 80%
+- 新增 `/api/*` 端点不必另写鉴权用例：`tests/test_middleware/test_auth.py` 会遍历 openapi 里每个非白名单端点，断言匿名请求一律 401
 
 **前端：**
 - 关键组件有单元测试
@@ -167,6 +172,9 @@ cd backend
 uv sync                    # 安装依赖
 uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000  # 启动开发服务器
 uv run pytest              # 运行测试
+uv run python -m src.cli create-user --username admin --role owner  # 建账号（没有其他注册途径）
+uv run python -m src.cli list-users      # 列出账号
+uv run python -m src.cli revoke-sessions # 踢下线（省略 --username 则清全部会话）
 ```
 
 ### 前端
@@ -198,7 +206,16 @@ THUMBNAIL_PATH=./data/thumbnails
 API_HOST=0.0.0.0
 API_PORT=8000
 CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+
+# Auth（有默认值，可整体省略）
+SESSION_HOURS=12
+REMEMBER_ME_DAYS=30
+AUTH_COOKIE_SECURE=false      # 改 true 之前先确认站点走 https，否则 Cookie 不会发送
+LOGIN_MAX_FAILURES=5
+LOGIN_LOCKOUT_MINUTES=10
 ```
+
+会话不签发自包含 token：`sessions` 表存的是 token 的 SHA-256，删行即失效，所以退出登录与踢下线是真实的。
 
 ## 注意事项
 

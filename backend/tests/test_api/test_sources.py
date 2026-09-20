@@ -1,62 +1,18 @@
 """Tests for Source API endpoints."""
 import pytest
-import httpx
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-from src.database.base import Base
-
-# Import all models so they register with Base.metadata
-import src.models  # noqa: F401
+from src.api.sources import get_source_service
+from src.services.source_service import SourceService
 
 
 @pytest.fixture
-async def db_session():
-    """Create a fresh in-memory database for API tests."""
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        echo=False,
-    )
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-
-    async with session_factory() as session:
-        yield session
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
-
-@pytest.fixture
-async def client(db_session):
-    """Create async test client with overridden database session."""
-    from src.main import app
-    from src.database import get_session
-    from src.services.source_service import SourceService
-    from src.api.sources import get_source_service
-
-    async def override_get_session():
-        yield db_session
+async def extra_overrides(db_session):
+    """The source route builds its service through this dependency."""
 
     async def override_get_source_service():
         return SourceService(db_session)
 
-    app.dependency_overrides[get_session] = override_get_session
-    app.dependency_overrides[get_source_service] = override_get_source_service
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as ac:
-        yield ac
-
-    app.dependency_overrides.clear()
+    return {get_source_service: override_get_source_service}
 
 
 @pytest.mark.asyncio

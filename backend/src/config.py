@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     # Scan Settings
     default_scan_interval: int = 3600
 
+    # Auth Settings
+    session_hours: int = 12
+    remember_me_days: int = 30
+    auth_cookie_secure: bool = False
+    login_max_failures: int = 5
+    login_lockout_minutes: int = 10
+
     def get_cors_origins_list(self) -> list[str]:
         """Parse CORS origins from comma-separated string."""
         return [origin.strip() for origin in self.cors_origins.split(",")]

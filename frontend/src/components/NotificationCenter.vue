@@ -1,6 +1,6 @@
 <template>
   <div class="notification-center">
-    <el-popover placement="bottom" :width="400" trigger="click">
+    <el-popover placement="bottom" :width="400" trigger="click" popper-class="notification-popper">
       <template #reference>
         <el-badge :value="unreadCount" :hidden="unreadCount === 0" class="notification-badge">
           <el-button :icon="Bell" circle />

@@ -101,7 +101,8 @@ async function fetchData<T>(url: string): Promise<T> {
 frontend/
 ├── src/
 │   ├── api/                # API 调用模块
-│   │   ├── client.ts      # Axios 实例
+│   │   ├── client.ts      # Axios 实例（默认带 X-Requested-With，401 统一跳登录）
+│   │   ├── auth.ts        # 认证 API（登录/登出/me/status/改密）
 │   │   ├── videos.ts      # 视频 API
 │   │   ├── subtitles.ts   # 字幕 API（列表/登记/删除 + WebVTT 地址）
 │   │   ├── sources.ts     # 视频源 API
@@ -115,9 +116,11 @@ frontend/
 │   │   ├── DuplicateChecker.vue # 重复文件检测（按需调 /videos/duplicates）
 │   │   └── ...
 │   ├── composables/        # 组合式函数
-│   │   └── useTheme.ts    # 主题切换
+│   │   ├── useTheme.ts    # 主题切换
+│   │   └── useAuth.ts     # 当前用户（模块级 ref 共享，未引 Pinia）
 │   ├── views/              # 页面组件
 │   │   ├── Home.vue       # 首页/视频列表
+│   │   ├── Login.vue      # 登录页（裸页，不套 MainLayout）
 │   │   ├── Sources.vue    # 视频源管理
 │   │   ├── Stats.vue      # 观影统计（数字卡 + 纯 CSS 柱状图 + 标签分布）
 │   │   ├── Watchlists.vue # 片单（一份份手排队列，移出/删除只动队列行）
@@ -130,6 +133,7 @@ frontend/
 │   │   └── index.ts
 │   ├── types/              # TypeScript 类型
 │   │   ├── video.ts
+│   │   ├── auth.ts         # UserRole / AuthUser / AuthStatus
 │   │   ├── subtitle.ts
 │   │   └── source.ts
 │   ├── styles/             # 全局样式
@@ -522,41 +526,46 @@ setTheme('auto')    // 跟随系统
 
 ### Axios 实例
 
+`src/api/client.ts` 已经在做两件事，新增模块直接用它就行：
+
 ```typescript
 // src/api/client.ts
-import axios from 'axios'
-
-const apiClient = axios.create({
+const client = axios.create({
   baseURL: '/api',
   timeout: 10000,
   headers: {
     'Content-Type': 'application/json',
+    // 后端对非 GET 的 Cookie 请求强制要这个头（跨站表单发不出来），写在这里最省事
+    'X-Requested-With': 'fetch',
   },
 })
 
-// 请求拦截器
-apiClient.interceptors.request.use(
-  (config) => {
-    // 添加 token 等
-    return config
-  },
-  (error) => Promise.reject(error)
-)
+// 身份与跳转都在 router 里注册，client 只负责通知，避免反向依赖
+export function setUnauthorizedHandler(handler: () => void) { ... }
 
-// 响应拦截器
-apiClient.interceptors.response.use(
+client.interceptors.response.use(
   (response) => response,
   (error) => {
-    // 统一错误处理
-    if (error.response?.status === 401) {
-      // 处理未授权
+    const url: string = error.config?.url ?? ''
+    // /auth/* 自己的 401 是"密码错了"，不是"会话没了"，不能触发跳转
+    if (error.response?.status === 401 && !url.startsWith('/auth/') && onUnauthorized) {
+      onUnauthorized()
     }
-    return Promise.reject(error)
+    const message = error.response?.data?.detail ?? error.message ?? 'Unknown error'
+    return Promise.reject(new Error(message))
   }
 )
-
-export default apiClient
 ```
+
+所以调用侧拿到的一直是 `Error(后端 detail)`，`catch` 里直接 `e.message` 就是给人看的那句话。
+
+## 认证与路由守卫
+
+- 状态在 `composables/useAuth.ts`：模块级 `ref`（`user` / `needsSetup` / `loaded`）+ `load()` / `signIn()` / `signOut()` / `forget()`，全站共享一份，**没有引 Pinia**。
+- 会话是后端发的 `HttpOnly` Cookie，前端读不到也不需要读；`load()` 打 `/auth/status` 判断登录态，`/auth/me` 取身份。
+- `router.beforeEach` 对非 `meta.public` 的路由先 `load()` 再放行，未登录跳 `/login?redirect=<原地址>`。跳回原地址时只认 `/` 开头的站内路径，`//host` 会被浏览器按协议相对地址解析，必须挡掉。
+- 登录页要脱离布局：`App.vue` 用 `route.meta.public === true` 决定套不套 `MainLayout`，因此新增公开页时记得打 `meta: { public: true }`，否则会被顶栏包进去。
+- 后端重启或被 `revoke-sessions` 踢掉之后，任何一次请求都会回 401，`setUnauthorizedHandler` 里清本地身份并跳登录，页面不会停在"看着有数据、点什么都没反应"的状态。
 
 ### API 模块
 
@@ -599,14 +608,18 @@ tests/
 约定：
 
 - 页面/组件依赖 `useRouter`、`useRoute` 时按文件 `vi.mock('vue-router', ...)`，不要安装真实路由。
+- 测路由守卫要 `vi.mock('@/api/auth')` 控制登录态，并在每个用例前 `useAuth().forget()`——`useAuth` 的状态是模块级 ref，不清就会跨用例串味。
 - 视图里的请求走 `@/api/client`，用 `vi.hoisted` + `vi.mock('@/api/client')` 记录 `url`，再断言路径**不带 `/api` 前缀**（`baseURL` 已经是 `/api`）；`tests/api/paths.spec.ts` 会自动遍历所有 api 模块做同样校验。
-- 只测 api 模块本身时，可以改用 `client.defaults.adapter` 拦截，能顺带验证 `baseURL + url` 拼出的完整地址。
+- 只测 api 模块本身时，可以改用 `client.defaults.adapter` 拦截，能顺带验证 `baseURL + url` 拼出的完整地址。注意请求体到这里已被 axios 序列化过，要 `JSON.parse(String(config.data))` 再断言字段名。
 - Element Plus 的弹层（popover / dialog）会 teleport 到 `document.body`，挂载时传 `attachTo: document.body` 并用 `document.body.querySelector` 查询。
+- 弹层一定要给 `popper-class`（如 `notification-popper` / `user-popper`）：页面上同时有两个弹层时，`.el-popover` 这种选择器在 Playwright 严格模式下会因命中两处直接报错。
 - 定时器轮询用 `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync()`，用例结束前 `vi.useRealTimers()`。
 
 ### 端到端测试（Playwright）
 
-`frontend/e2e/`，由 `playwright.config.ts` 自动拉起 `localhost:4173` 的 dev server。`e2e/fixtures.ts` 里的 `mockApi(page)` 用带状态的假接口替换整个 `/api` 面，因此 **E2E 不需要启动后端**；注意路由要按 `url.pathname.startsWith('/api/')` 匹配，用 `**/api/**` 通配会把 Vite 的 `/src/api/*.ts` 模块请求一起拦掉导致白屏。
+`frontend/e2e/`，由 `playwright.config.ts` 自动拉起 `localhost:4173` 的 dev server。`e2e/fixtures.ts` 里的 `mockApi(page, { signedIn, needsSetup })` 用带状态的假接口替换整个 `/api` 面，因此 **E2E 不需要启动后端**；注意路由要按 `url.pathname.startsWith('/api/')` 匹配，用 `**/api/**` 通配会把 Vite 的 `/src/api/*.ts` 模块请求一起拦掉导致白屏。
+
+默认 `signedIn: true`：所有非 `/auth/*` 请求正常回数据。传 `signedIn: false` 时替身一律回 `401 {detail:'未认证'}`，登录流程、守卫跳转、401 拦截这些用例就是这么打的。
 
 ## 常见问题
 

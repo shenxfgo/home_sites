@@ -9,6 +9,7 @@ from .new_video import NewVideo
 from .watchlist import Watchlist, WatchlistItem
 from .subtitle import Subtitle
 from .setting import Setting
+from .user import User, UserSession
 
 __all__ = [
     "VideoSource",
@@ -24,4 +25,6 @@ __all__ = [
     "WatchlistItem",
     "Subtitle",
     "Setting",
+    "User",
+    "UserSession",
 ]

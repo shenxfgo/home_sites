@@ -192,6 +192,15 @@ export const subtitles = [
 /** WebVTT body the subtitle stream route answers with. */
 export const SAMPLE_VTT = 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n中文测试\n'
 
+/** The one account the fake auth routes know, and its password. */
+export const STUB_USER = {
+  id: 1,
+  username: 'tester',
+  role: 'owner' as const,
+  display_name: 'Tester',
+}
+export const STUB_PASSWORD = 'secret-pass'
+
 /** A hand-picked queue of video ids, in the order they were added. */
 interface StubWatchlist {
   id: number
@@ -339,8 +348,15 @@ function matchesSearch(video: StubVideo, raw: string): boolean {
 /**
  * Stub the whole `/api` surface with a small stateful fake so the browser tests
  * exercise the real app (routing, components, axios layer) without a backend.
+ *
+ * `signedIn` mirrors the backend's default-deny middleware: while false, every
+ * non-auth route answers 401, so the login flow can be tested end to end.
  */
-export async function mockApi(page: Page): Promise<void> {
+export async function mockApi(
+  page: Page,
+  options: { signedIn?: boolean; needsSetup?: boolean } = {},
+): Promise<void> {
+  let signedIn = options.signedIn ?? true
   let transcode: TranscodeState = 'idle'
   let transcodeProgress = 0
   let transcodeFormat: string | null = null
@@ -419,6 +435,33 @@ export async function mockApi(page: Page): Promise<void> {
     const url = new URL(request.url())
     const path = url.pathname.replace(/^\/api/, '')
     const method = request.method()
+
+    if (path.startsWith('/auth/')) {
+      if (method === 'GET' && path === '/auth/status') {
+        return respond(route, {
+          authenticated: signedIn,
+          needs_setup: options.needsSetup ?? false,
+        })
+      }
+      if (method === 'GET' && path === '/auth/me') {
+        return signedIn ? respond(route, STUB_USER) : respond(route, { detail: '未认证' }, 401)
+      }
+      if (method === 'POST' && path === '/auth/login') {
+        const body = JSON.parse(request.postData() ?? '{}')
+        if (body.username !== STUB_USER.username || body.password !== STUB_PASSWORD) {
+          return respond(route, { detail: '账号或密码错误' }, 401)
+        }
+        signedIn = true
+        return respond(route, STUB_USER)
+      }
+      if (method === 'POST' && path === '/auth/logout') {
+        signedIn = false
+        return route.fulfill({ status: 204, body: '' })
+      }
+      return respond(route, { detail: `未预置的接口: ${method} ${path}` }, 500)
+    }
+    // 后端的默认拒绝：没有会话时业务接口一律 401，登录流程才测得真。
+    if (!signedIn) return respond(route, { detail: '未认证' }, 401)
 
     if (method === 'GET') {
       if (path === '/videos') {

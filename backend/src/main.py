@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from src.config import settings
 from src.database import init_db, async_session_maker
+from src.middleware.auth import AuthMiddleware
 from src.models import *  # noqa: F401, F403 - Import all models to register them
 from src.models.source import VideoSource
 from src.scheduler import scheduler
@@ -54,6 +55,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 鉴权在 CORS 之后注册，因此 CORS 位于最外层：跨域预检的 OPTIONS 不应被 401 拦掉。
+app.add_middleware(AuthMiddleware)
+
 
 @app.get("/health")
 async def health_check() -> dict[str, str]:
@@ -62,6 +66,7 @@ async def health_check() -> dict[str, str]:
 
 
 # Include API routers
+from src.api.auth import router as auth_router  # noqa: E402
 from src.api.sources import router as sources_router  # noqa: E402
 from src.api.videos import router as videos_router  # noqa: E402
 from src.api.subtitles import router as subtitles_router  # noqa: E402
@@ -76,6 +81,7 @@ from src.api.transcode import router as transcode_router  # noqa: E402
 from src.api.scheduler import router as scheduler_router  # noqa: E402
 from src.api.settings import router as settings_router  # noqa: E402
 
+app.include_router(auth_router)
 app.include_router(sources_router)
 app.include_router(videos_router)
 app.include_router(subtitles_router)

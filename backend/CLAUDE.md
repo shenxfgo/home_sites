@@ -8,6 +8,7 @@
 - aiosqlite（SQLite 异步驱动）
 - APScheduler（定时任务）
 - FFmpeg（视频处理）
+- bcrypt（口令哈希，cost 12；不引 `python-jose` / `passlib`，前者是 JWT 才需要的，后者停更且与 bcrypt>=4 有兼容告警）
 - uv（依赖管理）
 
 ## 代码规范
@@ -60,20 +61,26 @@ backend/
 │   ├── api/                # API 路由层
 │   │   ├── videos.py      # 视频 API
 │   │   ├── sources.py     # 视频源 API
+│   │   ├── auth.py        # 登录/登出/当前用户/改密（没有注册接口）
 │   │   └── ...
 │   ├── models/            # 数据模型层
 │   │   ├── video.py       # Video 模型
 │   │   ├── source.py      # VideoSource 模型
+│   │   ├── user.py        # User / UserSession 模型（会话只存 token 的 sha256）
 │   │   ├── watch_event.py # WatchEvent 模型（观看时长的追加式日志）
 │   │   ├── watchlist.py   # Watchlist / WatchlistItem 模型（手排队列，一行一条排队记录）
 │   │   └── ...
 │   ├── services/          # 业务逻辑层
 │   │   ├── video_service.py
 │   │   ├── watchlist_service.py # 片单读写，返回前一定重新查，别拿身份映射里的旧集合
+│   │   ├── auth_service.py      # 口令校验、会话签发/撤销、滑动续期、登录限流计数器
 │   │   └── ...
+│   ├── middleware/        # HTTP 中间件
+│   │   └── auth.py        # 默认拒绝的鉴权中间件 + get_current_user / get_session_token
 │   ├── utils/             # 工具函数
 │   │   ├── ffmpeg.py      # FFmpeg 工具
 │   │   ├── file_scanner.py # 目录扫描与探针
+│   │   ├── password.py    # bcrypt 哈希与校验（72 字节上限）
 │   │   ├── video_search.py # 搜索串解析（源/标签/评分/时长/观看状态/丢失）
 │   │   ├── file_fingerprint.py # 首尾 1MB 哈希，用来确认两份文件真是同一份
 │   │   └── name_parser.py  # 文件名解析（片名、系列、季集、字幕组）
@@ -83,10 +90,13 @@ backend/
 │   ├── database/          # 数据库配置
 │   │   ├── base.py        # SQLAlchemy 基类
 │   │   └── session.py     # 会话管理
+│   ├── cli.py             # 账号管理命令行（create-user / list-users / set-role / revoke-sessions）
 │   ├── config.py          # 配置管理
 │   └── main.py            # 应用入口
 ├── tests/                 # 测试文件
+│   ├── conftest.py        # 共享 fixtures：db_session / anon_client / client（已登录）
 │   ├── test_api/          # API 测试
+│   ├── test_middleware/   # 鉴权中间件测试（含"每个端点匿名必 401"的全路由扫面）
 │   ├── test_services/     # 服务测试
 │   └── test_models/       # 模型测试
 └── pyproject.toml         # 项目配置
@@ -200,6 +210,8 @@ from src.api.examples import router as examples_router
 app.include_router(examples_router)
 ```
 
+新路由一注册就落在 `AuthMiddleware` 后面，匿名请求拿到的就是 401，不需要（也不应该）自己往依赖里挂鉴权。确实要公开的话得改 `PUBLIC_API_PATHS`，目前只有登录与登录页的状态探测在里面。路由内部取当前用户用 `Depends(get_current_user)`，要知道自己这枚会话就用 `Depends(get_session_token)`。
+
 ### 5. 编写测试
 
 ```python
@@ -224,6 +236,8 @@ async def test_create_example(db_session):
 `init_db()` 只有 `Base.metadata.create_all`，它只补建新表、**从不修改已存在的表**。因此给已有表加约束或索引时，要把补齐用的 SQL 写成模块常量放在 `src/database/session.py`，在 `init_db` 里紧随 `create_all` 执行，并保证幂等（`IF NOT EXISTS`、先清洗再加约束）。参考 `play_history` 的"每部视频一行"：先 `DEDUPE_PLAY_HISTORY` 折叠老库的重复行，再建 `ix_play_history_video_id` 唯一索引——顺序反了会直接建索引失败。
 
 加**列**走的是同一条路的另一支：`ADDED_COLUMNS` 三元组（表名、列名、`ALTER TABLE ... ADD COLUMN`）配 `PRAGMA table_info` 探测，缺哪列补哪列，再单独建需要的索引（`VIDEOS_SERIES_INDEX`）。这类修复只在启动时跑，测试用的 `db_session` 直接 `create_all` 建全新库，所以新列必须同时在模型里声明。
+
+账号相关的两张表：`users`（`username` 唯一、`password_hash`、`role` 带 `CheckConstraint`、`is_active` 用停用代替删除）与 `sessions`（主键是 `token_hash`，即 Cookie 里那枚 token 的 SHA-256）。存摘要而不是 token 本身，是为了让"库被读走"不等于"人人可冒用"；删行即失效，因此退出登录和踢下线不需要等 Cookie 自然过期。会话寿命不存字段，滑动续期时按 `expires_at - created_at` 反推，"记住我"就不必单独记一档。
 
 ### 模型定义
 
@@ -272,6 +286,8 @@ tests/
 ├── test_api/
 │   ├── test_videos.py
 │   └── test_sources.py
+├── test_middleware/
+│   └── test_auth.py      # 全路由匿名 401 扫面 + CSRF/过期/停用/滑动续期
 ├── test_services/
 │   ├── test_video_service.py
 │   └── test_source_service.py
@@ -279,6 +295,18 @@ tests/
     ├── test_video.py
     └── test_source.py
 ```
+
+### 共享的 HTTP fixtures（不要再在各测试文件里复制）
+
+`tests/conftest.py` 提供三份：
+
+- `db_session` —— 每个用例一个临时库
+- `anon_client` —— 未登录的 `AsyncClient`，中间件走真实逻辑；服务替身由 `extra_overrides` 这个可覆盖 fixture 注入，测试文件里写 `async def extra_overrides(): return {get_video_service: override}` 即可，不必再自带 `client`
+- `client` —— `anon_client` 外加一枚有效会话 Cookie（`signed_in_user` 会建 owner 账号和对应 `sessions` 行）
+
+`anon_client` 默认带 `X-Requested-With: fetch`，因为中间件对所有非 GET 都要它；要测 403 分支就在单次请求上覆盖 `{CSRF_HEADER: ""}`——httpx 没法用 `None` 删掉客户端默认头。中间件里的 `async_session_maker` 由 `monkeypatch` 换成一个"交出会话但不关闭"的壳，测试才能与 `db_session` 看同一份数据。
+
+新增 `/api/*` 端点不需要另写鉴权用例：`test_middleware/test_auth.py` 从 `app.openapi()["paths"]` 取所有非白名单端点（`{id}` 统一替换成 `1`，跳过 head/options）参数化成 401 断言。别改走 `app.routes`——这版 FastAPI 把 include 进来的路由存成 `_IncludedRouter` 对象，没有 `.path` 属性。
 
 ### 测试示例
 
@@ -332,6 +360,10 @@ created_at: Mapped[datetime] = mapped_column(
     default=lambda: datetime.now(timezone.utc)
 )
 ```
+
+SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzinfo**，和 `datetime.now(timezone.utc)` 直接比大小会抛 `can't compare offset-naive and offset-aware datetimes`。凡要拿库里读出的时间做比较或运算，先过一道 `_as_utc()`（`value if value.tzinfo else value.replace(tzinfo=timezone.utc)`），`auth_service` 里就是这么做的。
+
+同理，测试里改过某行的时间后要看真实结果，用 `await db_session.refresh(row)` 重新读；`expire_all()` 之后靠关系属性懒加载会抛 `MissingGreenlet`。
 
 ## 依赖管理
 

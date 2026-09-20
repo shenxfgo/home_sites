@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
-import client from '@/api/client'
+import client, { setUnauthorizedHandler } from '@/api/client'
 
 function failingAdapter(status: number, data: unknown, message: string) {
   return (config: InternalAxiosRequestConfig) => {
@@ -38,5 +38,38 @@ describe('api client', () => {
       } as AxiosResponse)
 
     await expect(client.get('/videos', { adapter })).resolves.toMatchObject({ data: payload })
+  })
+
+  it('sends the header that stands in for a CSRF token', async () => {
+    let sent: string | undefined
+    const adapter = (config: InternalAxiosRequestConfig) => {
+      sent = config.headers.get('X-Requested-With')
+      return Promise.resolve({
+        status: 204,
+        statusText: 'No Content',
+        headers: {},
+        config,
+        data: undefined,
+      } as AxiosResponse)
+    }
+
+    await client.delete('/sources/1', { adapter })
+
+    expect(sent).toBe('fetch')
+  })
+
+  it('hands a 401 on a data path to the session handler, and not a failed login', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+
+    await expect(
+      client.post('/auth/login', {}, { adapter: failingAdapter(401, { detail: '账号或密码错误' }, 'Unauthorized') }),
+    ).rejects.toThrow('账号或密码错误')
+    expect(handler).not.toHaveBeenCalled()
+
+    await expect(
+      client.get('/videos', { adapter: failingAdapter(401, { detail: '未认证' }, 'Unauthorized') }),
+    ).rejects.toThrow('未认证')
+    expect(handler).toHaveBeenCalledTimes(1)
   })
 })

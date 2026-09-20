@@ -6,6 +6,7 @@
 
 | 功能 | 说明 |
 |------|------|
+| 🔐 登录与账号 | 全站默认需要登录（含封面、视频流、字幕这类原生请求），账号只能由命令行创建；会话存库，退出登录与踢下线立即生效，连续输错密码会临时锁定 |
 | 📁 视频源管理 | 支持本地目录、NAS、MinIO 多种视频源 |
 | 🎥 视频播放 | 流式播放、从上次位置续播、键盘快捷键、A-B 段重放 |
 | 💬 字幕支持 | 扫描自动识别外挂字幕，播放器可切换轨道（SRT/ASS/VTT → WebVTT），可调字号与延迟 |
@@ -34,6 +35,7 @@
 | 数据库 | SQLite 3（异步驱动） |
 | 视频处理 | FFmpeg |
 | 依赖管理 | uv（Python）、npm（Node.js） |
+| 认证 | Cookie 会话（服务端存 `sha256(token)`）+ bcrypt 口令哈希 |
 
 ## 🚀 快速开始
 
@@ -70,6 +72,18 @@ uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 npm run dev
 ```
 
+### 建第一个账号
+
+全站需要登录才能访问，而项目**没有注册接口**——账号只能在后端目录用命令行创建：
+
+```bash
+cd backend
+uv run python -m src.cli create-user --username admin --role owner   # 密码交互式输入，至少 8 位
+uv run python -m src.cli list-users                                 # 查看已有账号与上次登录时间
+```
+
+之后访问 http://localhost:5173 会先跳登录页。其余命令见 [使用指南 › 登录与账号](#8-登录与账号)。
+
 ### 访问地址
 
 | 服务 | 地址 |
@@ -85,9 +99,10 @@ npm run dev
 home_sites/
 ├── backend/                 # 后端服务
 │   ├── src/
-│   │   ├── api/            # API 路由（66 个端点）
-│   │   ├── models/         # 数据模型（13 张表）
+│   │   ├── api/            # API 路由（74 个端点）
+│   │   ├── models/         # 数据模型（15 张表）
 │   │   ├── services/       # 业务逻辑
+│   │   ├── middleware/     # 鉴权中间件（默认拒绝）
 │   │   ├── scheduler/      # 定时任务
 │   │   └── database/       # 数据库配置
 │   ├── tests/              # 测试文件
@@ -96,7 +111,7 @@ home_sites/
 │   ├── src/
 │   │   ├── api/            # API 调用模块
 │   │   ├── components/     # 可复用组件
-│   │   ├── views/          # 页面组件（11 个）
+│   │   ├── views/          # 页面组件（12 个）
 │   │   ├── composables/    # 组合式函数
 │   │   ├── layouts/        # 布局组件
 │   │   ├── styles/         # 样式文件
@@ -118,10 +133,13 @@ home_sites/
 
 启动后端后访问 Swagger UI：http://localhost:8000/docs
 
+除 `/api/auth/login`、`/api/auth/status` 与 `/health` 之外，所有 `/api/*` 都要带有效会话才回数据（未登录统一 401）。
+
 ### 主要 API 模块
 
 | 模块 | 路径 | 说明 |
 |------|------|------|
+| 认证 | `/api/auth` | `POST login` / `POST logout` / `GET me` / `GET status` / `POST password`；无注册接口，账号走 CLI |
 | 视频源 | `/api/sources` | 视频源 CRUD |
 | 视频 | `/api/videos` | 视频管理、播放；`/api/videos/series` 汇总系列追更进度，`/api/videos/duplicates` 按需检测重复文件 |
 | 字幕 | `/api/videos/{id}/subtitles` | 字幕轨道管理与 WebVTT 输出 |
@@ -186,6 +204,24 @@ home_sites/
 4. `没看过` / `未看完` / `已看完` 按观看状态过滤；`丢失` 只列扫描时找不到文件的记录
 5. 命中片名排在只命中简介或标签前面；点搜索框右侧的 `?` 可以看完整语法
 
+### 8. 登录与账号
+
+1. 打开任意页面都会先跳到 `/login`，登录后回到原来的地址；顶栏右侧的用户胶囊里可以退出登录
+2. 建号、改角色、列账号都在后端目录用命令行：
+
+   ```bash
+   uv run python -m src.cli create-user --username dad --display-name "爸爸"       # 默认 member 角色
+   uv run python -m src.cli create-user --username admin --role owner
+   uv run python -m src.cli list-users
+   uv run python -m src.cli set-role --username dad --role owner
+   uv run python -m src.cli revoke-sessions --username dad                        # 把某个账号的全部浏览器踢下线
+   ```
+
+3. 账号名限 3-64 位小写字母、数字与 `. _ -`（登录时大小写与首尾空格不影响），密码至少 8 位、上限 72 字节
+4. 默认 12 小时过期，勾选"记住我 30 天"则按 30 天；期间持续使用会自动续期
+5. 同一个账号连续输错密码 5 次会锁定 10 分钟（按"来源 IP + 账号"计，重启后端即清零）
+6. 目前只有"登录 / 未登录"这一档：`owner` 与 `member` 都能看到整个库，历史与收藏也还是全家共享——角色网关与按人隔离是后续里程碑
+
 ## 🔧 环境变量
 
 创建 `backend/.env` 文件：
@@ -197,6 +233,13 @@ THUMBNAIL_PATH=./data/thumbnails
 API_HOST=0.0.0.0
 API_PORT=8000
 CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+
+# 认证（都可省略，下面是默认值）
+SESSION_HOURS=12             # 普通会话有效期
+REMEMBER_ME_DAYS=30          # 勾选"记住我"时的有效期
+AUTH_COOKIE_SECURE=false     # 只在 https 访问时改 true，否则 Cookie 不会被发送
+LOGIN_MAX_FAILURES=5         # 连续失败几次锁定
+LOGIN_LOCKOUT_MINUTES=10     # 锁定多久
 ```
 
 ## 🧪 测试

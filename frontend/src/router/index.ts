@@ -1,7 +1,15 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
+import { setUnauthorizedHandler } from '@/api/client'
+import { useAuth } from '@/composables/useAuth'
 
 const routes: RouteRecordRaw[] = [
+  {
+    path: '/login',
+    name: 'login',
+    component: () => import('@/views/Login.vue'),
+    meta: { title: '登录', public: true },
+  },
   {
     path: '/',
     name: 'home',
@@ -73,6 +81,28 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
+})
+
+const { load, forget, isAuthenticated } = useAuth()
+
+// 会话过期只在这一处处理：业务代码收到的仍然是普通报错，不需要各自判断 401。
+setUnauthorizedHandler(() => {
+  forget()
+  const from = router.currentRoute.value
+  if (!from.meta.public) {
+    void router.replace({ name: 'login', query: { redirect: from.fullPath } })
+  }
+})
+
+// 除登录页外一律要求会话；/api 那边默认拒绝，这里只是让人先看登录页而不是满屏报错。
+router.beforeEach(async (to) => {
+  if (to.meta.public) {
+    const signedIn = await load().catch(() => null)
+    return to.name === 'login' && signedIn ? { path: '/' } : true
+  }
+  if (!isAuthenticated.value) await load().catch(() => null)
+  if (!isAuthenticated.value) return { name: 'login', query: { redirect: to.fullPath } }
+  return true
 })
 
 // Update document title on navigation.
