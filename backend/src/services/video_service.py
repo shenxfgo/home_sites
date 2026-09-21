@@ -16,7 +16,7 @@ from src.models.subtitle import Subtitle
 from src.models.tag import Tag, video_tags
 from src.models.watch_event import WatchEvent
 from src.models.watchlist import WatchlistItem
-from src.utils.file_fingerprint import edge_fingerprint
+from src.storage import fingerprint
 from src.utils.video_search import VideoSearchQuery, parse_video_search
 
 
@@ -333,7 +333,7 @@ class VideoService:
         flat = [video for group in probed for video in group]
         await attach_watch_progress(self.session, flat, user_id)
         digests = await asyncio.gather(
-            *(asyncio.to_thread(edge_fingerprint, video.filepath) for video in flat)
+            *(asyncio.to_thread(fingerprint, video.filepath) for video in flat)
         )
         fingerprints = dict(zip((video.id for video in flat), digests))
 

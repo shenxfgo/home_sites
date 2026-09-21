@@ -13,7 +13,12 @@
           <el-button link @click="handleMarkAllRead" :disabled="unreadCount === 0">
             全部已读
           </el-button>
-          <el-button v-if="notifications.length" link class="clear-btn" @click="handleClearAll">
+          <el-button
+            v-if="notifications.length && isOwner"
+            link
+            class="clear-btn"
+            @click="handleClearAll"
+          >
             {{ confirmingClear ? '确认清空' : '清空' }}
           </el-button>
         </div>
@@ -40,6 +45,7 @@
               <div class="notification-time">{{ formatTime(notification.created_at) }}</div>
             </div>
             <button
+              v-if="isOwner"
               class="notification-remove"
               title="删除这条通知"
               @click.stop="handleDelete(notification.id)"
@@ -54,21 +60,31 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { Bell, CircleCheck, InfoFilled, Warning } from '@element-plus/icons-vue'
 import { notificationsApi } from '@/api/notifications'
 import type { Notification } from '@/api/notifications'
+import { useAuth } from '@/composables/useAuth'
 
 const notifications = ref<Notification[]>([])
 const unreadCount = ref(0)
 const confirmingClear = ref(false)
 
+// 删通知是全家一起少一条，所以只有管理员看得到删的地方；成员点了只会吃到 403。
+const { isOwner, isAuthenticated } = useAuth()
+
 let clearConfirmTimer: ReturnType<typeof setTimeout> | null = null
 
-onMounted(() => {
-  fetchNotifications()
-  fetchUnreadCount()
-})
+// 顶栏会比会话探测先挂上来，未确认登录时这两个请求只换回一对 401：等状态真了再拉。
+watch(
+  isAuthenticated,
+  (signedIn) => {
+    if (!signedIn) return
+    fetchNotifications()
+    fetchUnreadCount()
+  },
+  { immediate: true },
+)
 
 onUnmounted(() => {
   if (clearConfirmTimer) clearTimeout(clearConfirmTimer)

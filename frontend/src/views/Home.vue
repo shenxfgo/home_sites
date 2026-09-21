@@ -9,6 +9,7 @@ import { getContinueList } from '@/api/history'
 import { listSources } from '@/api/sources'
 import { listTags } from '@/api/tags'
 import { isTypingTarget } from '@/composables/typingGuard'
+import { useAuth } from '@/composables/useAuth'
 import type { SeriesProgress, Tag, Video, VideoQueryParams } from '@/types/video'
 import type { Source } from '@/types/source'
 
@@ -17,6 +18,9 @@ const DEFAULT_PAGE_SIZE = 20
 const MISSING_PAGES_MAX = 20
 /** Query keys the URL mirrors, sorted so two serializations compare cleanly. */
 const QUERY_KEYS = ['page', 'q', 'size', 'source', 'tag'] as const
+
+// 删记录是库级操作，中间件只放行给管理员；这里不给成员留一个点了就 403 的按钮。
+const { isOwner } = useAuth()
 
 // State
 const videos = ref<Video[]>([])
@@ -445,6 +449,7 @@ onUnmounted(() => {
       <div class="missing-actions">
         <el-button size="small" @click="showMissingOnly">查看</el-button>
         <el-button
+          v-if="isOwner"
           size="small"
           type="warning"
           plain

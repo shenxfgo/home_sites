@@ -80,6 +80,8 @@ from src.api.notifications import router as notifications_router  # noqa: E402
 from src.api.transcode import router as transcode_router  # noqa: E402
 from src.api.scheduler import router as scheduler_router  # noqa: E402
 from src.api.settings import router as settings_router  # noqa: E402
+from src.api.users import router as users_router  # noqa: E402
+from src.api.preferences import router as preferences_router  # noqa: E402
 
 app.include_router(auth_router)
 app.include_router(sources_router)
@@ -95,3 +97,5 @@ app.include_router(notifications_router)
 app.include_router(transcode_router)
 app.include_router(scheduler_router)
 app.include_router(settings_router)
+app.include_router(users_router)
+app.include_router(preferences_router)

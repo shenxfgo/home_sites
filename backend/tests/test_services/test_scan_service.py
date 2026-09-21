@@ -15,6 +15,72 @@ from src.models.video import Video
 from src.models.new_video import NewVideo
 from src.services import scan_service as scan_module
 from src.services.scan_service import ScanService
+from src.storage import Capabilities, FoundFile
+
+
+class _FakeStorage:
+    """A storage whose listing can be watched and steered from a test.
+
+    Scan code reaches files through the storage seam now, so that is the seam a
+    test has to stand in for -- patching ``scan_directory`` would only prove the
+    fake was called.
+    """
+
+    def __init__(
+        self,
+        files: list[FoundFile] | None = None,
+        reachable: bool = True,
+        sidecar_subtitles: bool = False,
+        local_path: bool = True,
+        on_list=None,
+    ) -> None:
+        self.files = files or []
+        self._reachable = reachable
+        self.capabilities = Capabilities(
+            streaming=True,
+            local_path=local_path,
+            sidecar_subtitles=sidecar_subtitles,
+        )
+        self.listed_paths: list[str] = []
+        self._on_list = on_list
+
+    def reachable(self, root: str) -> bool:
+        return self._reachable
+
+    def list_videos(self, root: str) -> list[FoundFile]:
+        self.listed_paths.append(root)
+        if self._on_list is not None:
+            self._on_list()
+        return self.files
+
+    def exists(self, locator: str) -> bool:
+        return True
+
+    def size(self, locator: str) -> int | None:
+        return None
+
+    def iter_range(self, locator: str, start: int, end: int):
+        return iter(())
+
+    def edge_fingerprint(self, locator: str) -> str | None:
+        return None
+
+    def local_path(self, locator: str) -> str:
+        return locator
+
+
+def _found(locator: str, size: int = 1024) -> FoundFile:
+    name = locator.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    return FoundFile(
+        locator=locator,
+        filename=name,
+        extension="." + name.rsplit(".", 1)[-1].lower(),
+        size=size,
+    )
+
+
+def _patch_storage(monkeypatch, storage) -> None:
+    monkeypatch.setattr(scan_module, "storage_for_source", lambda source_type: storage)
 
 
 async def _create_source(session, name="Test Source", path="/test/path", is_active=True):
@@ -223,11 +289,10 @@ async def test_scan_progress_visible_to_other_service_instances(db_session, monk
         source = await _create_source(db_session, name="正在扫描", path=tmpdir)
         observed: list[dict] = []
 
-        def fake_scan_directory(path: str) -> list:
+        def watch_progress() -> None:
             observed.append(ScanService(db_session).get_scan_progress())
-            return []
 
-        monkeypatch.setattr(scan_module, "scan_directory", fake_scan_directory)
+        _patch_storage(monkeypatch, _FakeStorage(on_list=watch_progress))
 
         await ScanService(db_session).scan_source(source.id)
 

@@ -81,6 +81,9 @@ const typeOptions = Object.entries(SOURCE_TYPE_LABELS).map(([value, label]) => (
   value,
   label,
 }))
+
+const pathPlaceholder = () =>
+  form.value.type === 'minio' ? '例如：s3://my-videos/shows' : '例如：/mnt/videos 或 \\\\nas\\media'
 </script>
 
 <template>
@@ -115,9 +118,13 @@ const typeOptions = Object.entries(SOURCE_TYPE_LABELS).map(([value, label]) => (
       <el-form-item label="路径" prop="path">
         <el-input
           v-model="form.path"
-          placeholder="例如：/mnt/videos 或 s3://bucket"
+          :placeholder="pathPlaceholder()"
           maxlength="1024"
         />
+        <p v-if="form.type === 'minio'" class="path-hint">
+          对象存储里的影片可以直接播放，但没有缩略图、转码和字幕（外挂与内嵌都不支持），
+          需要在 backend/.env 里配置 S3 凭证。
+        </p>
       </el-form-item>
 
       <el-form-item label="扫描间隔" prop="scan_interval">
@@ -149,5 +156,14 @@ const typeOptions = Object.entries(SOURCE_TYPE_LABELS).map(([value, label]) => (
   margin-left: 12px;
   color: var(--el-text-color-secondary);
   font-size: 13px;
+}
+
+/* el-form-item 的内容区是 flex 行，不换行就会挤在输入框右边。 */
+.path-hint {
+  width: 100%;
+  margin: 4px 0 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 </style>

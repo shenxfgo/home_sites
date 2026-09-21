@@ -68,7 +68,7 @@ async def test_create_source_minio(client):
     """Test creating a MinIO source."""
     data = {
         "name": "MinIO Bucket",
-        "path": "bucket-name",
+        "path": "s3://bucket-name/shows",
         "type": "minio",
     }
 
@@ -77,6 +77,45 @@ async def test_create_source_minio(client):
     assert response.status_code == 201
     result = response.json()
     assert result["type"] == "minio"
+
+
+@pytest.mark.asyncio
+async def test_create_minio_source_requires_s3_path(client):
+    """A MinIO source typed as a plain folder would scan an empty bucket in silence."""
+    response = await client.post(
+        "/api/sources",
+        json={"name": "Bad MinIO", "path": "/mnt/videos", "type": "minio"},
+    )
+
+    assert response.status_code == 400
+    assert "s3://" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_local_source_rejects_s3_path(client):
+    """An s3:// path under a local type would walk a directory literally named 's3:'."""
+    response = await client.post(
+        "/api/sources",
+        json={"name": "Bad Local", "path": "s3://bucket/shows", "type": "local"},
+    )
+
+    assert response.status_code == 400
+    assert "MinIO" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_update_source_path_must_match_stored_type(client):
+    """The check uses the type already on the row, not just the fields sent now."""
+    create = await client.post(
+        "/api/sources",
+        json={"name": "Bucket", "path": "s3://bucket/shows", "type": "minio"},
+    )
+    source_id = create.json()["id"]
+
+    response = await client.put(f"/api/sources/{source_id}", json={"path": "/mnt/videos"})
+
+    assert response.status_code == 400
+    assert "s3://" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

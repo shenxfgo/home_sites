@@ -17,7 +17,7 @@ import { useAuth } from '@/composables/useAuth'
 
 const router = useRouter()
 const route = useRoute()
-const { user, signOut } = useAuth()
+const { user, isOwner, signOut } = useAuth()
 
 // 顶栏只放一个字符当头像，省掉一张图片请求。
 const avatarText = computed(() => (user.value?.display_name || user.value?.username || '?').slice(0, 1).toUpperCase())
@@ -27,16 +27,21 @@ async function handleSignOut() {
   await router.push('/login')
 }
 
+// owner 只是"看得见"，真正拦人的是路由守卫和中间件；这里少给一个入口就少一次 403。
 const navItems = [
   { path: '/', label: '首页', icon: HomeFilled },
-  { path: '/sources', label: '视频源', icon: VideoCamera },
+  { path: '/sources', label: '视频源', icon: VideoCamera, ownerOnly: true },
   { path: '/history', label: '播放历史', icon: Clock },
   { path: '/stats', label: '观影统计', icon: TrendCharts },
   { path: '/favorites', label: '收藏', icon: Star },
   { path: '/watchlists', label: '片单', icon: Tickets },
-  { path: '/tags', label: '标签管理', icon: CollectionTag },
-  { path: '/settings', label: '设置', icon: Setting },
+  { path: '/tags', label: '标签管理', icon: CollectionTag, ownerOnly: true },
+  { path: '/settings', label: '设置', icon: Setting, ownerOnly: true },
 ]
+
+const visibleNavItems = computed(() =>
+  navItems.filter((item) => !item.ownerOnly || isOwner.value)
+)
 
 const shortcutsVisible = ref(false)
 
@@ -69,8 +74,16 @@ const activeMenu = computed(() => {
   return match?.path ?? '/'
 })
 
+const userMenuVisible = ref(false)
+
 function navigate(path: string) {
   router.push(path)
+}
+
+// 弹层挂在布局上，路由换了它不会自己关，所以点菜单项时手动收。
+function goFromMenu(path: string) {
+  userMenuVisible.value = false
+  navigate(path)
 }
 
 // "?" lists the shortcuts; typing it into a field must not steal the key.
@@ -93,7 +106,7 @@ onUnmounted(() => document.removeEventListener('keydown', handleGlobalKeydown))
 
       <nav class="nav-menu">
         <button
-          v-for="item in navItems"
+          v-for="item in visibleNavItems"
           :key="item.path"
           class="nav-item"
           :class="{ active: activeMenu === item.path }"
@@ -110,7 +123,14 @@ onUnmounted(() => document.removeEventListener('keydown', handleGlobalKeydown))
         </el-button>
         <NotificationCenter />
 
-        <el-popover v-if="user" placement="bottom-end" :width="188" trigger="click" popper-class="user-popper">
+        <el-popover
+          v-if="user"
+          v-model:visible="userMenuVisible"
+          placement="bottom-end"
+          :width="188"
+          trigger="click"
+          popper-class="user-popper"
+        >
           <template #reference>
             <button class="user-chip" type="button" :title="user.display_name || user.username">
               <span class="user-avatar">{{ avatarText }}</span>
@@ -122,6 +142,10 @@ onUnmounted(() => document.removeEventListener('keydown', handleGlobalKeydown))
               {{ user.username }}
               <em>{{ user.role === 'owner' ? '管理员' : '成员' }}</em>
             </p>
+            <button class="user-menu-item" type="button" @click="goFromMenu('/profile')">个人设置</button>
+            <button v-if="isOwner" class="user-menu-item" type="button" @click="goFromMenu('/users')">
+              用户管理
+            </button>
             <el-button text class="user-signout" @click="handleSignOut">退出登录</el-button>
           </div>
         </el-popover>
@@ -329,6 +353,24 @@ onUnmounted(() => document.removeEventListener('keydown', handleGlobalKeydown))
   font-size: 11px;
   font-style: normal;
   color: var(--text-glass-secondary);
+}
+
+.user-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-tile);
+  background: transparent;
+  color: var(--text-glass);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.16s ease;
+}
+
+.user-menu-item:hover {
+  background: var(--tile-bg);
 }
 
 .user-signout {

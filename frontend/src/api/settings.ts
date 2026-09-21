@@ -1,12 +1,12 @@
 import api from './client'
 
+/** 系统配置：只有 owner 读得到，也只有 owner 写得动。主题不在这里，见 api/preferences。 */
 export interface Settings {
   auto_scan_enabled: boolean
   auto_scan_interval: number
   default_transcode_format: string
   thumbnail_width: number
   thumbnail_height: number
-  theme: string
 }
 
 /** Get all application settings. */

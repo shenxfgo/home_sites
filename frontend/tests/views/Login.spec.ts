@@ -3,7 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import type { Router } from 'vue-router'
 import Login from '@/views/Login.vue'
-import { getAuthStatus, getMe, login } from '@/api/auth'
+import { getAuthStatus, login } from '@/api/auth'
 import { useAuth } from '@/composables/useAuth'
 
 vi.mock('@/api/auth', () => ({
@@ -11,6 +11,12 @@ vi.mock('@/api/auth', () => ({
   getMe: vi.fn(),
   login: vi.fn(),
   logout: vi.fn(),
+}))
+
+// 登录成功后会去拉这个人的主题；别让真实请求留在用例里。
+vi.mock('@/api/preferences', () => ({
+  getPreferences: vi.fn().mockResolvedValue({ theme: 'light' }),
+  updatePreferences: vi.fn().mockResolvedValue({ theme: 'light' }),
 }))
 
 const OWNER = { id: 1, username: 'tester', role: 'owner' as const, display_name: 'Tester' }

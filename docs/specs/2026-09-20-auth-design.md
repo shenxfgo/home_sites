@@ -1,8 +1,8 @@
 # 多用户认证与权限设计文档
 
 **创建日期：** 2026-09-20
-**状态：** M1 认证骨架、M2 数据归属已实施（2026-09-20），M3–M4 待做
-**版本：** 1.1
+**状态：** M1 认证骨架、M2 数据归属、M3 角色与管理、M4 收尾均已实施（2026-09-20 ~ 2026-09-21）
+**版本：** 1.2
 **适用范围：** 局域网自托管；公网部署需要的额外项见 [§12](#分期实施)
 
 ---
@@ -69,6 +69,8 @@
 
 判定规则：**读接口只看"是否登录"，写接口按矩阵看角色**。视频库本身对所有登录用户可见（不做源级 ACL）。
 
+> **M3 实施偏差（有意为之）**：`GET /api/users` 与 `GET /api/settings` 这两处**读**接口也收为 owner-only。前者返回全家账号与在线设备数，后者返回局域网路径与转码参数，都不是普通成员该拿来盘点的东西；前端 `views/Users.vue`、`Settings.vue` 本身就是管理页，member 登录后根本进不去。矩阵里"登录即可读"的仍然是面向所有人的业务数据（视频、历史、收藏、清单、通知）。
+
 ---
 
 ## 数据模型
@@ -101,6 +103,8 @@
 
 `(user_id PK/FK, prefs JSON)`。把现在 `settings` 表里的**界面偏好**（主题、播放器偏好）搬进来；`settings` 退化为纯系统配置（扫描间隔、缩略图尺寸、默认转码格式），仅 owner 可写。
 
+> **M3 实施偏差**：一期只把 **主题** 挪到服务端按人保存。倍速、音量、字幕字号/延迟这些**播放器偏好仍留在 `localStorage`（跟着浏览器走）**——它们本来就是"这台设备上次怎么放的"，换台电视接着用反而符合直觉，而且没有非搬不可的理由。`prefs` 存的是 JSON 对象，将来要按人同步哪个字段只是加一个键，不必再动表结构。
+
 ### 新增：两张"已读"关联表
 
 `new_videos`（扫描发现日志）和 `notifications`（扫描/转码产生的系统通知）本质是**广播内容**，不该按人复制行。做法是保留全局行 + 记录每人已读：
@@ -131,7 +135,9 @@
 - `watchlist_service.py:51/71/84/93/119` 清单的读改写、加删条目
 - `video_service.py:440` `mark_video_viewed`
 
-M2 实施结果：以上除"删除/清空通知"外全部按 `(id, user_id)` 收口，用例见 `tests/test_services/test_isolation.py`、`tests/test_api/test_isolation.py`。**"删除通知 / 清空通知"仍是家庭级操作**——`notifications` 是广播表、没有 owner 列，标记已读已按人走 `notification_reads`，但删行对所有人生效。要收敛需先决定语义（每人隐藏 vs 只有 owner 能删），后者属 M3 的角色网关。
+M2 实施结果：以上除"删除/清空通知"外全部按 `(id, user_id)` 收口，用例见 `tests/test_services/test_isolation.py`、`tests/test_api/test_isolation.py`。**"删除通知 / 清空通知"仍是家庭级操作**——`notifications` 是广播表、没有 owner 列，标记已读已按人走 `notification_reads`，但删行对所有人生效。
+
+M3 收尾：删行/清空语义保持"家庭级"不变，但**只有 owner 能做**——`DELETE /api/notifications/{id}` 与 `DELETE /api/notifications` 都不在 `MEMBER_WRITE_PATHS` 白名单里，成员一律 403，M2 留下的这个例外就此闭合。
 
 ---
 
@@ -148,6 +154,11 @@ GET  /api/auth/status   公开 → {authenticated: bool, needs_setup: bool}
 GET  /api/auth/me       → 当前用户；未登录 401
 POST /api/auth/logout   删 sessions 行 + Max-Age=0 清 Cookie
 POST /api/auth/password {old_password, new_password} → 成功后撤销其它所有会话
+
+GET  /api/auth/sessions  → [{token_hash, current, user_agent, created_at, last_seen_at, expires_at}]
+                           这个账号当前有效的会话；回的是摘要不是 Cookie 值（M4）
+DELETE /api/auth/sessions/{token_hash} → 204 只退这一台，当前这台不动
+                           不属于本人或已退出 404，不是 64 位十六进制 422（M4）
 ```
 
 **建号只走 CLI，不开注册接口：**
@@ -172,7 +183,11 @@ uv run python -m src.cli revoke-sessions --username admin
 
    > 为什么不用逐路由 `Depends`：现在 55 个端点，将来还会加。**漏挂一个就等于整个方案失效**，而且新加接口的人不知道要挂。默认拒绝把"忘记保护"变成"忘记放行"，后者会立刻炸在手上，是能被发现的 bug。
 
-2. **`require_role("owner")` 依赖** —— 只管"够格吗"，挂在写接口上，不满足 → `403`。角色检查的接口数量少且语义明确，适合显式声明。
+2. **同一个中间件里的角色网关** —— 只管"够格吗"，判定同样是默认拒绝：
+   - `MEMBER_WRITE_PATHS` 白名单列出成员唯一可以写的路径（收藏、历史、清单、已读、播放进度、自己的偏好与密码），**非 GET 且不在白名单 → 403**。新加一个管理写接口忘了登记，成员就是 403，立刻就有人喊；反过来默认放行则把"谁能删库"交给了每个登录用户。
+   - `OWNER_ONLY_READ_PATHS` 是"读接口只看登录"的例外：`/api/users*`、`/api/settings*` 连读都限 owner。
+   - `require_role("owner")` / `require_owner` 依赖留给**确实需要拿到操作者 `User` 对象**的路由（改角色、停用、重置密码、踢下线），规则写在签名上而不是只靠路径正则。
+   - 用例：`tests/test_middleware/test_roles.py` 从 openapi 扫面，断言每个非白名单写/管理读接口对 member 返回 403，与 M1 的匿名 401 扫面同一思路。
 
 中间件内取 DB：直接 `async with sessionmaker()()`，不走 `get_session` 依赖（中间件拿不到它）。注意别在每个请求上多开一次连接池等待——SQLite 单文件，家庭并发下可接受。
 
@@ -215,13 +230,15 @@ uv run python -m src.cli revoke-sessions --username admin
 
 ## 前端设计
 
-- **`src/composables/useAuth.ts`**（项目没有 Pinia，沿用 `useTheme` 的模块级 ref 风格）：`user` / `status` / `login()` / `logout()` / `fetchMe()`，导出 `isAdmin` computed。
-- **`src/api/auth.ts`**：`login` / `logout` / `getMe` / `getAuthStatus` / `changePassword`。
+- **`src/composables/useAuth.ts`**（项目没有 Pinia，沿用 `useTheme` 的模块级 ref 风格）：`user` / `status` / `login()` / `logout()` / `fetchMe()`，导出 `isOwner` computed。
+- **`src/api/auth.ts`**：`login` / `logout` / `getMe` / `getAuthStatus` / `changePassword`，M4 再加 `listSessions` / `revokeSession`。
 - **路由**：`/login` 用**独立布局，不套 `MainLayout`**（顶栏本身会泄露"有哪些功能、有没有数据"），`meta: { public: true }`；`beforeEach` 里非 public 且未登录 → `/login?redirect=<fullPath>`。启动时 `fetchMe()` 一次，结果缓存在 composable。
 - **axios 拦截器**（`src/api/client.ts:13` 现有位置）：加一条"401 → 清空 auth 状态 + 跳登录并带 redirect"。注意 `<img>` / `<track>` 的 401 不经过拦截器，靠路由守卫兜底 + 图片 `onerror` 占位。
-- **`MainLayout`** 右侧用户菜单：显示名 + 角色标记，菜单项"修改密码 / 退出登录"，owner 额外看到"用户管理"。管理入口用 `v-if="isAdmin"` 隐藏 —— 只是体验，**后端必须再判一次**。
-- **`views/Users.vue`**（owner）：列用户、建号、改角色、禁用、踢下线。
-- **`views/Profile.vue`**：改密码 + 个人偏好（把现在 `Settings.vue` 里的"界面设置/主题"迁过来，`Settings.vue` 只留系统配置并加 owner 守卫）。
+- **`MainLayout`** 右侧用户菜单：显示名 + 角色标记，菜单项"个人设置 / 退出登录"，owner 额外看到"用户管理"。导航项与菜单入口按 `isOwner` 隐藏 —— 只是体验，**后端必须再判一次**；少给一个入口就少一次 403。
+- **`views/Users.vue`**（owner，`/users`）：列账号、建号、改角色、启用/停用、重置密码、踢下线。任何一次写操作之后**整表重读**，因为服务端可能顺带踢会话、改在线设备数，只更新本地一行会显示假状态。
+- **`views/Profile.vue`**（`/profile`）：改密码 + 个人偏好（`Settings.vue` 里的"界面设置/主题"迁到这里，`Settings.vue` 只留系统配置）。主题写服务端的同时立即作用到本页，登录/刷新时按人拉回。
+- **路由守卫的角色面**：`meta.roles` 声明可达角色，member 手敲管理地址被带回首页，而不是进去了再吃一串 403。`/videos/:id/transcode` 也算管理页（转码写盘、只归 owner），整页标了 `roles: ['owner']`。
+- **同一个判断要落到按钮**：成员打得开的页面也摆着库级操作——首页横幅的「清理丢失记录」（逐条走 `DELETE /api/videos/{id}`）、影片详情的「转码 / 编辑 / 删除」与标签行加号（`PUT /api/videos/{id}`、标签写接口），全部 `v-if="isOwner"`，通知弹层的删除同理。判据只有一条：**中间件会拒的操作，界面上不留入口**。
 
 ---
 
@@ -252,6 +269,7 @@ uv run python -m src.cli revoke-sessions --username admin
 - 现有 `client` fixture 在 4 个测试文件里各抄了一份（`test_history.py:31-48` 等）→ **提到根 `tests/conftest.py`**，并加 `as_role` 参数：默认覆盖 `get_current_user` 为 owner，避免 278 个既有用例集体改。
 - 新增 `tests/test_api/test_auth.py`：登录成功/失败/枚举同响应、限流、me、logout、改密后其它会话失效、`needs_setup`。
 - 新增 `tests/test_middleware/test_auth.py`：未登录访问每个 `/api/*` 前缀都 401（参数化列全部路由，防"漏挂"回归）、白名单可匿名、member 打 owner 接口 403。
+- **两张扫面是自动的**：`test_auth.py`（匿名 401）与 `test_roles.py`（member 403）都从 `app.openapi()` 枚举端点，不手写清单。因此**新增 `/api/*` 接口不必另写鉴权用例**——忘了登记白名单，扫面会立刻红。
 - 新增 `tests/test_services/test_isolation.py`：**A 的收藏/历史/清单/统计不出现在 B 的列表里；A 按 id 删 B 的行返回 404**。这是多用户改造真正的价值点，越权清单（§数据模型末尾）逐条要有用例。
 - 迁移用例：给一个带旧数据的库跑 `init_db()` 两次，断言幂等且回填正确（含 `play_history` 索引替换）。
 
@@ -259,6 +277,7 @@ uv run python -m src.cli revoke-sessions --username admin
 
 - `tests/composables/useAuth.spec.ts`、`tests/views/Login.spec.ts`（失败提示、回车提交、redirect）、`tests/router.spec.ts` 补守卫用例（未登录跳 `/login?redirect=`、public 路由放行）。
 - `e2e/fixtures.ts` 的接口替身加 `/api/auth/*` 分支（未登录 → 401），新增 `e2e/login.spec.ts` 走一遍"被拦到登录页 → 登录 → 回到原页面"。
+- M3：`e2e/fixtures.ts` 里放三个账号（owner / member / 停用号），成员禁写名单按 `MEMBER_WRITE` 一条正则照抄中间件的 `MEMBER_WRITE_PATHS`，`e2e/roles.spec.ts` 覆盖"成员看不到入口（顶栏、用户菜单、通知删除、首页清理横幅、详情页的转码/编辑/删除/标签加号）、手敲管理地址（含 `/videos/:id/transcode`）被带回首页、建号与改角色、服务端否决时给出原因并回到原样、系统设置里不再有主题、主题跟着人不跟着浏览器"。
 - 验收：`uv run pytest`、`npm run test`、`npm run test:e2e`、`npm run build` 全绿。
 
 ---
@@ -269,12 +288,12 @@ uv run python -m src.cli revoke-sessions --username admin
 
 | 期 | 内容 | 验收 |
 |---|---|---|
-| **M1 认证骨架** ✅ | `users`/`sessions` 模型、bcrypt、`cli.py create-user`、`/api/auth/*`、`AuthMiddleware` 默认拒绝、登录页 + `useAuth` + 路由守卫 + 401 拦截。限流与 `X-Requested-With` 校验一并提前做完 | 未登录访问任何 `/api/*` 都 401（`tests/test_middleware` 逐端点扫面 71 例）；能登录、能退出、刷新保持 |
+| **M1 认证骨架** ✅ | `users`/`sessions` 模型、bcrypt、`cli.py create-user`、`/api/auth/*`、`AuthMiddleware` 默认拒绝、登录页 + `useAuth` + 路由守卫 + 401 拦截。限流与 `X-Requested-With` 校验一并提前做完 | 未登录访问任何 `/api/*` 都 401（`tests/test_middleware` 逐端点扫面，M3 后 87 例，随端点增减自动跟随 openapi）；能登录、能退出、刷新保持 |
 | **M2 数据归属** ✅ | 5 张表加 `user_id`/`owner_id` + 两张 `_reads`、§8 迁移、service 层全部过滤、越权清单修复 | 两个账号数据互不可见；老数据回填到第一个 owner；越权用例通过 |
-| **M3 角色与管理** | `require_role`、`user_preferences` 与 `settings` 拆分、`views/Users.vue`、`views/Profile.vue`、顶栏用户菜单 | member 看不到也调不动管理接口；主题偏好按人保存 |
-| **M4 收尾** | "我的设备"会话列表、README/CLAUDE.md/CHANGELOG 更新、公网部署注意事项（`auth_cookie_secure`、反代 https） | 全量测试 + 浏览器真机走查 |
+| **M3 角色与管理** ✅ | 中间件里的角色网关（`MEMBER_WRITE_PATHS` + `OWNER_ONLY_READ_PATHS` + `require_owner`）、`user_preferences` 与 `settings` 拆分、`views/Users.vue`、`views/Profile.vue`、顶栏用户菜单与按角色显隐的导航 | member 看不到也调不动管理接口（`tests/test_middleware/test_roles.py` 逐端点扫面 403；e2e `roles.spec.ts` 断言入口不可见且手敲地址被带回首页，成员在影片详情页只剩"播放 / 收藏 / 片单"三个按钮）；主题偏好按人保存（退出后换账号登录，主题跟着账号变） |
+| **M4 收尾** ✅ | "我的设备"会话列表（`GET /api/auth/sessions` + `DELETE /api/auth/sessions/{token_hash}`，`/profile` 最后一张卡）、README/CLAUDE.md/CHANGELOG 同步、公网部署注意事项（`AUTH_COOKIE_SECURE`、https 反代、反代后登录限流失真） | 全量测试通过（后端 495、前端单测 264、e2e 78）；真机走查：同一账号三副不同 User-Agent 的会话在「登录设备」里各占一行（`Safari · iOS` / `Chrome · Android` / `Edge · Windows`），当前这台带标记且不给「退出」按钮，退掉一台后行数少一、再退同一摘要 404，`记住我` 那副的有效期明显是 30 天；成员登录只看得到自己名下那几台，控制台无报错 |
 
-**公网路线（本期不做，只保留口子）**：角色矩阵与 Cookie 的 `Secure` 开关已为此准备好；真要暴露公网，优先在反代加 mTLS 或 IP 白名单，其次才考虑接 Authentik/Authelia。
+**公网路线（代码本期不做，只保留口子）**：角色矩阵与 Cookie 的 `Secure` 开关已为此准备好；真要暴露公网，优先在反代加 mTLS 或 IP 白名单，其次才考虑接 Authentik/Authelia。部署侧要动什么已经落成 README 的「公网部署注意事项」一节，其中一条是这一期实测出来的坑：登录限流按 `request.client.host` 计数，反代之后全家压成同一个 IP。
 
 ---
 

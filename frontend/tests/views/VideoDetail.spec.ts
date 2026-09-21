@@ -47,6 +47,15 @@ vi.mock('@/api/watchlists', () => ({
   removeVideoFromWatchlist: vi.fn(),
 }))
 
+// 详情页上有一排只有管理员能按的按钮，所以用例也要能换人。
+const signedInAs = vi.hoisted(() => ({ role: 'owner' as 'owner' | 'member' }))
+vi.mock('@/composables/useAuth', async () => {
+  const { computed } = await import('vue')
+  return {
+    useAuth: () => ({ isOwner: computed(() => signedInAs.role === 'owner') }),
+  }
+})
+
 function watchlist(overrides: Partial<Watchlist> = {}): Watchlist {
   return {
     id: 1,
@@ -58,7 +67,8 @@ function watchlist(overrides: Partial<Watchlist> = {}): Watchlist {
   }
 }
 
-async function mountDetail() {
+async function mountDetail(role: 'owner' | 'member' = 'owner') {
+  signedInAs.role = role
   vi.mocked(getVideo).mockResolvedValue(makeVideo({ id: 21, title: '午夜列车', tags: [] }))
   vi.mocked(checkFavorite).mockResolvedValue(false)
   vi.mocked(listTags).mockResolvedValue([])
@@ -178,6 +188,37 @@ describe('VideoDetail watchlist dialog', () => {
 
     expect(ElMessage.error).toHaveBeenCalledWith('片单加载失败：服务未就绪')
     expect(dialog()).toBeNull()
+    wrapper.unmount()
+  })
+})
+
+/** Labels on the action row: which buttons one particular role is handed. */
+function actionLabels(wrapper: Awaited<ReturnType<typeof mountDetail>>) {
+  return wrapper.findAll('.action-buttons button').map((node) => node.text().trim())
+}
+
+describe('VideoDetail role gate', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+  })
+
+  it('gives the owner the whole library surface', async () => {
+    const wrapper = await mountDetail()
+
+    expect(actionLabels(wrapper)).toEqual(
+      expect.arrayContaining(['播放', '收藏', '片单', '转码', '编辑', '删除']),
+    )
+    expect(wrapper.findAll('.tags-list button')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('leaves a member only the row they can actually use', async () => {
+    const wrapper = await mountDetail('member')
+
+    // 改信息、删片、转码都在中间件的成员禁写名单里，点了只会拿 403，这里就不摆出来
+    expect(actionLabels(wrapper)).toEqual(['播放', '收藏', '片单'])
+    expect(wrapper.find('.tags-list button').exists()).toBe(false)
     wrapper.unmount()
   })
 })

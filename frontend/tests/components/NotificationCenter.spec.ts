@@ -15,6 +15,18 @@ vi.mock('@/api/notifications', () => ({
   },
 }))
 
+const signedInAs = vi.hoisted(() => ({ role: 'owner' as 'owner' | 'member' | 'anonymous' }))
+
+vi.mock('@/composables/useAuth', async () => {
+  const { computed } = await import('vue')
+  return {
+    useAuth: () => ({
+      isOwner: computed(() => signedInAs.role === 'owner'),
+      isAuthenticated: computed(() => signedInAs.role !== 'anonymous'),
+    }),
+  }
+})
+
 function notification(overrides: Partial<Notification> = {}): Notification {
   return {
     id: 1,
@@ -28,7 +40,12 @@ function notification(overrides: Partial<Notification> = {}): Notification {
   }
 }
 
-async function mountOpened(items: Notification[], unread: number) {
+async function mountOpened(
+  items: Notification[],
+  unread: number,
+  role: 'owner' | 'member' = 'owner',
+) {
+  signedInAs.role = role
   vi.mocked(notificationsApi.list).mockResolvedValue({ items, total: items.length, page: 1, page_size: 50 })
   vi.mocked(notificationsApi.getUnreadCount).mockResolvedValue(unread)
   const wrapper = mount(NotificationCenter, { attachTo: document.body })
@@ -180,5 +197,34 @@ describe('NotificationCenter', () => {
     )
     expect(labels).not.toContain('清空')
     wrapper.unmount()
+  })
+
+  it('gives a member the feed without the delete affordances', async () => {
+    const wrapper = await mountOpened([notification({ id: 1 })], 1, 'member')
+
+    const buttons = popper()?.querySelectorAll('button') ?? []
+    expect(Array.from(buttons).map((node) => node.textContent?.trim())).not.toContain('清空')
+    expect(popper()?.querySelector('.notification-remove')).toBeNull()
+
+    // 读与标记已读仍然是成员自己的事。
+    const markAll = Array.from(buttons).find((node) =>
+      node.textContent?.includes('全部已读'),
+    )
+    markAll?.click()
+    await flushPromises()
+    expect(notificationsApi.markAllRead).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('没有会话时不去拉通知', async () => {
+    signedInAs.role = 'anonymous'
+    const wrapper = mount(NotificationCenter, { attachTo: document.body })
+    await flushPromises()
+
+    // 首帧顶栏会先闪一下，那时还没有会话，中间件回的是 401 而不是空列表。
+    expect(notificationsApi.list).not.toHaveBeenCalled()
+    expect(notificationsApi.getUnreadCount).not.toHaveBeenCalled()
+    wrapper.unmount()
+    signedInAs.role = 'owner'
   })
 })

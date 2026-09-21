@@ -1,6 +1,8 @@
 """账号管理命令行。
 
-应用没有注册接口，账号只能在这里建：
+一个账号都没有的时候这里是唯一的入口（登录页也会把这条命令原话贴出来）；有了
+第一个管理员之后，日常建号改角色也可以走界面上的"用户管理"。两条路共用同一套
+服务层规则，包括"不能把最后一个管理员降级/停用"那道护栏。
 
     uv run python -m src.cli create-user --username admin --role owner
     uv run python -m src.cli list-users
@@ -81,7 +83,11 @@ async def _set_role(service: AuthService, args: argparse.Namespace) -> int:
     if not user:
         print(f"失败：账号 {normalize_username(args.username)} 不存在", file=sys.stderr)
         return 1
-    await service.set_role(user, args.role)
+    try:
+        await service.set_role(user, args.role)
+    except ValueError as exc:  # 例如把最后一个管理员降级，规则在服务层
+        print(f"失败：{exc}", file=sys.stderr)
+        return 1
     print(f"{user.username} 的角色已改为 {user.role}")
     return 0
 

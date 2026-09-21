@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
+import { AxiosError, type AxiosHeaderValue, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
 import client, { setUnauthorizedHandler } from '@/api/client'
 
 function failingAdapter(status: number, data: unknown, message: string) {
@@ -41,7 +41,7 @@ describe('api client', () => {
   })
 
   it('sends the header that stands in for a CSRF token', async () => {
-    let sent: string | undefined
+    let sent: AxiosHeaderValue | undefined
     const adapter = (config: InternalAxiosRequestConfig) => {
       sent = config.headers.get('X-Requested-With')
       return Promise.resolve({

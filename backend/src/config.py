@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     video_storage_path: str = "./data/videos"
     thumbnail_path: str = "./data/thumbnails"
 
+    # Object storage (any S3-compatible endpoint: MinIO, RustFS, Ceph, cloud)
+    s3_endpoint_url: str = ""
+    s3_region: str = "us-east-1"
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    # 自建 MinIO 常需要 "path"（http://host:9000/bucket/key）；留 auto 让 SDK 判断
+    s3_addressing_style: str = "auto"
+
     # API Settings
     api_host: str = "0.0.0.0"
     api_port: int = 8000

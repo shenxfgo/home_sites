@@ -8,10 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
 from src.models.video import Video
+from src.storage import storage_for_locator
 
 router = APIRouter(prefix="/api/videos", tags=["streaming"])
-
-CHUNK_SIZE = 1024 * 1024  # 1MB
 
 
 @router.get("/{video_id}/stream")
@@ -22,8 +21,8 @@ async def stream_video(
 ):
     """Stream video with Range support for seeking.
 
-    In production, this would stream from local/NAS/MinIO storage.
-    For now, serves the file directly if it exists locally.
+    Where the bytes come from is the storage layer's business: the locator
+    stored on the row says whether it is a path on disk or an object key.
     """
     # The row is read directly rather than through VideoService: streaming only
     # needs the path, and the service call would add a per-person history lookup.
@@ -32,10 +31,10 @@ async def stream_video(
         raise HTTPException(status_code=404, detail="Video not found")
 
     filepath = video.filepath
+    storage = storage_for_locator(filepath)
 
-    # Check if file exists locally
-    if os.path.isfile(filepath):
-        file_size = os.path.getsize(filepath)
+    file_size = storage.size(filepath)
+    if file_size is not None:
         content_type = _get_content_type(filepath)
 
         # Handle Range request for seeking
@@ -43,18 +42,30 @@ async def stream_video(
         if range_header:
             return _handle_range_request(filepath, range_header, file_size, content_type)
 
-        # Return full file
-        return FileResponse(
-            path=filepath,
+        if storage.capabilities.local_path:
+            return FileResponse(
+                path=filepath,
+                media_type=content_type,
+                filename=os.path.basename(filepath),
+            )
+
+        # 对象存储没有本地文件可交给 FileResponse，整文件就是"从头读到尾的那一段"
+        return StreamingResponse(
+            storage.iter_range(filepath, 0, max(0, file_size - 1)),
+            status_code=200,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+                "Content-Type": content_type,
+            },
             media_type=content_type,
-            filename=os.path.basename(filepath),
         )
 
-    # Placeholder response for non-local files
+    # Placeholder response for files this process cannot read at all
     return {
         "message": f"Stream endpoint for video {video_id}",
         "filepath": filepath,
-        "note": "File not found locally. In production, this would stream from storage.",
+        "note": "文件当前读不到。挂载盘未就绪、对象存储凭证缺失或文件已删除都会走到这里。",
     }
 
 
@@ -97,9 +108,15 @@ def _get_content_type(filepath: str) -> str:
 
 
 def _handle_range_request(
-    filepath: str, range_header: str, file_size: int, content_type: str
+    locator: str, range_header: str, file_size: int, content_type: str
 ) -> StreamingResponse:
-    """Handle HTTP Range request for video seeking."""
+    """Handle HTTP Range request for video seeking.
+
+    区间的解析与越界收敛留在这里，取字节交给存储层。参数收 locator 而不是收一
+    个已打开的 reader，是为了让 tests/test_api/test_stream.py 能继续拿真实文件
+    直接调这个函数验 RFC 7233 的边界语义——由它自己按地址挑存储，那套用例一行
+    都不用改。
+    """
     last_byte = file_size - 1
     try:
         # Parse Range spec: "bytes=0-1023", "bytes=1024-", "bytes=-1024"
@@ -124,15 +141,8 @@ def _handle_range_request(
     content_length = end - start + 1
 
     def file_iterator():
-        with open(filepath, "rb") as f:
-            f.seek(start)
-            remaining = content_length
-            while remaining > 0:
-                chunk = f.read(min(CHUNK_SIZE, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                yield chunk
+        # 惰性交给存储层：响应头此刻已经提交，第一次取字节才真正打开文件。
+        yield from storage_for_locator(locator).iter_range(locator, start, end)
 
     headers = {
         "Content-Range": f"bytes {start}-{end}/{file_size}",

@@ -192,14 +192,75 @@ export const subtitles = [
 /** WebVTT body the subtitle stream route answers with. */
 export const SAMPLE_VTT = 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n中文测试\n'
 
-/** The one account the fake auth routes know, and its password. */
-export const STUB_USER = {
-  id: 1,
-  username: 'tester',
-  role: 'owner' as const,
-  display_name: 'Tester',
-}
+/** 替身认识的账号，以及登录用的密码。 */
 export const STUB_PASSWORD = 'secret-pass'
+export const STUB_USER = { id: 1, username: 'tester', role: 'owner' as const, display_name: 'Tester' }
+export const STUB_MEMBER = { id: 2, username: 'kid', role: 'member' as const, display_name: '小明' }
+const ACCOUNTS = { owner: STUB_USER, member: STUB_MEMBER }
+
+export type StubRole = keyof typeof ACCOUNTS
+
+/**
+ * 成员可写的接口，一比一照抄后端 `src/middleware/auth.py` 的 `MEMBER_WRITE_PATHS`：
+ * 只有自己的收藏、历史、片单、已读和偏好。后端放行一条新的写接口，这里要跟着加，
+ * 否则替身会替界面挡掉一次本该成功的请求。
+ *
+ * `/auth/*` 那几条（登录、退出、我的设备）在替身里由 auth 分支自己处理，两种角色
+ * 都放行，所以不进这张表。
+ */
+const MEMBER_WRITE =
+  /^(\/preferences|\/favorites\/\d+|\/history\/\d+|\/notifications\/(\d+\/read|read-all)|\/videos\/new\/\d+\/viewed|\/videos\/\d+\/(play|progress)|\/watchlists(\/\d+(\/videos(\/\d+)?)?)?)$/
+
+/** "我的设备"的两行：这一台是跑用例的浏览器，另一台造出来好让列表不只一行。 */
+const HERE_HASH = 'e'.repeat(64)
+const PHONE_HASH = 'b'.repeat(64)
+const PHONE_USER_AGENT =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+
+/** Rows for GET /users: what the 用户管理 table shows per account. */
+interface StubAccountRow {
+  id: number
+  username: string
+  role: 'owner' | 'member'
+  display_name: string | null
+  is_active: boolean
+  created_at: string
+  last_login_at: string | null
+  signed_in_devices: number
+}
+
+const userRowsSeed: StubAccountRow[] = [
+  {
+    id: 1,
+    username: 'tester',
+    role: 'owner',
+    display_name: 'Tester',
+    is_active: true,
+    created_at: hoursAgo(300),
+    last_login_at: hoursAgo(1),
+    signed_in_devices: 2,
+  },
+  {
+    id: 2,
+    username: 'kid',
+    role: 'member',
+    display_name: '小明',
+    is_active: true,
+    created_at: hoursAgo(200),
+    last_login_at: hoursAgo(6),
+    signed_in_devices: 1,
+  },
+  {
+    id: 3,
+    username: 'guest',
+    role: 'member',
+    display_name: null,
+    is_active: false,
+    created_at: hoursAgo(90),
+    last_login_at: null,
+    signed_in_devices: 0,
+  },
+]
 
 /** A hand-picked queue of video ids, in the order they were added. */
 interface StubWatchlist {
@@ -351,17 +412,37 @@ function matchesSearch(video: StubVideo, raw: string): boolean {
  *
  * `signedIn` mirrors the backend's default-deny middleware: while false, every
  * non-auth route answers 401, so the login flow can be tested end to end.
+ * `role` picks which account holds that session, and a member gets the same 403
+ * the role gateway hands out for the management surface.
  */
 export async function mockApi(
   page: Page,
-  options: { signedIn?: boolean; needsSetup?: boolean } = {},
+  options: {
+    signedIn?: boolean
+    needsSetup?: boolean
+    role?: StubRole
+    themes?: Partial<Record<StubRole, string>>
+  } = {},
 ): Promise<void> {
   let signedIn = options.signedIn ?? true
+  /** 当前会话是谁：登录成功后会换人，角色网关和偏好都按这个人来判。 */
+  let account = ACCOUNTS[options.role ?? 'owner']
+  const byUsername = (username: unknown) =>
+    Object.values(ACCOUNTS).find((item) => item.username === username) ?? null
+  /** 主题按人存：换账号登录就该看到那个人自己的选择。 */
+  const themeStore: Record<number, string> = {
+    [STUB_USER.id]: options.themes?.owner ?? 'light',
+    [STUB_MEMBER.id]: options.themes?.member ?? 'light',
+  }
+  const userRows = userRowsSeed.map((row) => ({ ...row }))
+  let nextUserId = 100
   let transcode: TranscodeState = 'idle'
   let transcodeProgress = 0
   let transcodeFormat: string | null = null
   const readNotifications = new Set<number>()
   const removedNotifications = new Set<number>()
+  /** 退出过的设备：真后端删掉那一行 sessions，替身就从这份名单里划掉它。 */
+  const revokedDevices = new Set<string>()
   /** Rows the app deleted through DELETE /videos/{id} during a test. */
   const removedVideos = new Set<number>()
   /** Queues the page mutates through /watchlists, seeded per test. */
@@ -384,6 +465,27 @@ export async function mockApi(
   })
 
   const findQueue = (id: number) => queues.find((list) => list.id === id)
+
+  /** 这个账号此刻开着的会话。当前这台报进去的 User-Agent，另一台是造好的手机。 */
+  const deviceRows = (userAgent: string | null) =>
+    [
+      {
+        token_hash: HERE_HASH,
+        current: true,
+        user_agent: userAgent,
+        created_at: hoursAgo(2),
+        last_seen_at: hoursAgo(0),
+        expires_at: new Date(Date.now() + 12 * 3600_000).toISOString(),
+      },
+      {
+        token_hash: PHONE_HASH,
+        current: false,
+        user_agent: PHONE_USER_AGENT,
+        created_at: hoursAgo(300),
+        last_seen_at: hoursAgo(3),
+        expires_at: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+      },
+    ].filter((row) => !revokedDevices.has(row.token_hash))
 
   const statusBody = (videoId: number) => ({
     video_id: videoId,
@@ -444,24 +546,124 @@ export async function mockApi(
         })
       }
       if (method === 'GET' && path === '/auth/me') {
-        return signedIn ? respond(route, STUB_USER) : respond(route, { detail: '未认证' }, 401)
+        return signedIn ? respond(route, account) : respond(route, { detail: '未认证' }, 401)
       }
       if (method === 'POST' && path === '/auth/login') {
         const body = JSON.parse(request.postData() ?? '{}')
-        if (body.username !== STUB_USER.username || body.password !== STUB_PASSWORD) {
+        const found = byUsername(body.username)
+        if (!found || body.password !== STUB_PASSWORD) {
           return respond(route, { detail: '账号或密码错误' }, 401)
         }
         signedIn = true
-        return respond(route, STUB_USER)
+        account = found
+        return respond(route, account)
       }
       if (method === 'POST' && path === '/auth/logout') {
         signedIn = false
         return route.fulfill({ status: 204, body: '' })
       }
+      if (method === 'POST' && path === '/auth/password') {
+        const body = JSON.parse(request.postData() ?? '{}')
+        // 替身账号共用同一个密码，所以"原密码对不对"这件事能照真后端判。
+        if (body.old_password !== STUB_PASSWORD) {
+          return respond(route, { detail: '原密码不正确' }, 400)
+        }
+        // 真后端改完密码会顺手退了别的浏览器，只留发起的这一台。
+        revokedDevices.add(PHONE_HASH)
+        return route.fulfill({ status: 204, body: '' })
+      }
+      if (path.startsWith('/auth/sessions')) {
+        // 和 /auth/logout 同一档：两种角色都管得动自己的会话，这里不该有 403。
+        if (!signedIn) return respond(route, { detail: '未认证' }, 401)
+        if (method === 'GET' && path === '/auth/sessions') {
+          return respond(route, deviceRows(request.headers()['user-agent'] ?? null))
+        }
+        const deviceOut = /^\/auth\/sessions\/([0-9a-f]{64})$/.exec(path)
+        if (method === 'DELETE' && deviceOut) {
+          if (revokedDevices.has(deviceOut[1])) {
+            return respond(route, { detail: '设备不存在或已退出' }, 404)
+          }
+          revokedDevices.add(deviceOut[1])
+          return route.fulfill({ status: 204, body: '' })
+        }
+      }
       return respond(route, { detail: `未预置的接口: ${method} ${path}` }, 500)
     }
     // 后端的默认拒绝：没有会话时业务接口一律 401，登录流程才测得真。
     if (!signedIn) return respond(route, { detail: '未认证' }, 401)
+    if (account.role !== 'owner') {
+      // 管理面连读都不给成员，界面上也就该没有这些入口。
+      if (/^\/(users|settings)(\/|$)/.test(path)) {
+        return respond(route, { detail: '需要管理员权限' }, 403)
+      }
+      // 写接口反过来按白名单放行，和中间件一样：不在名单里的都是库级操作。
+      if (method !== 'GET' && !MEMBER_WRITE.test(path)) {
+        return respond(route, { detail: '需要管理员权限' }, 403)
+      }
+    }
+
+    if (method === 'GET' && path === '/preferences') {
+      return respond(route, { theme: themeStore[account.id] ?? 'light' })
+    }
+    if (method === 'PUT' && path === '/preferences') {
+      const body = JSON.parse(request.postData() ?? '{}')
+      if (typeof body.theme === 'string') themeStore[account.id] = body.theme
+      return respond(route, { theme: themeStore[account.id] ?? 'light' })
+    }
+
+    if (path.startsWith('/users')) {
+      const rowBody = (row: StubAccountRow) => ({ ...row })
+      if (method === 'GET' && path === '/users') {
+        return respond(route, userRows.map(rowBody))
+      }
+      if (method === 'POST' && path === '/users') {
+        const body = JSON.parse(request.postData() ?? '{}')
+        const created: StubAccountRow = {
+          id: nextUserId++,
+          username: body.username,
+          role: body.role ?? 'member',
+          display_name: body.display_name ?? null,
+          is_active: true,
+          created_at: new Date().toISOString(),
+          last_login_at: null,
+          signed_in_devices: 0,
+        }
+        userRows.push(created)
+        return respond(route, rowBody(created), 201)
+      }
+      const managed = /^\/users\/(\d+)(?:\/(\w+))?$/.exec(path)
+      if (managed) {
+        const found = userRows.find((row) => row.id === Number(managed[1]))
+        if (!found) return respond(route, { detail: '账号不存在' }, 404)
+        const body = JSON.parse(request.postData() ?? '{}')
+        if (method === 'PUT' && managed[2] === 'role') {
+          // 和后端一样：不能把最后一个可用管理员降级。
+          const owners = userRows.filter((row) => row.role === 'owner' && row.is_active)
+          if (found.role === 'owner' && body.role !== 'owner' && owners.length < 2) {
+            return respond(route, { detail: '至少要保留一个可用的管理员，不能降级最后一个' }, 400)
+          }
+          found.role = body.role
+          return respond(route, rowBody(found))
+        }
+        if (method === 'PUT' && managed[2] === 'status') {
+          if (found.id === account.id && body.is_active === false) {
+            return respond(route, { detail: '不能停用自己的账号' }, 400)
+          }
+          found.is_active = body.is_active
+          if (!found.is_active) found.signed_in_devices = 0
+          return respond(route, rowBody(found))
+        }
+        if (method === 'POST' && managed[2] === 'password') {
+          return route.fulfill({ status: 204, body: '' })
+        }
+        if (method === 'DELETE' && managed[2] === 'sessions') {
+          const revoked = found.signed_in_devices
+          found.signed_in_devices = 0
+          return respond(route, { revoked })
+        }
+      }
+      return respond(route, { detail: `未预置的接口: ${method} ${path}` }, 500)
+    }
 
     if (method === 'GET') {
       if (path === '/videos') {
@@ -574,7 +776,6 @@ export async function mockApi(
           default_transcode_format: 'mp4',
           thumbnail_width: 320,
           thumbnail_height: 180,
-          theme: 'light',
         })
       }
       if (path === '/notifications') {

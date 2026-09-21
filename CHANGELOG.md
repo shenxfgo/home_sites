@@ -1,5 +1,58 @@
 # 更新日志
 
+## 2026-09-21
+
+### 重构 + 新增功能：取文件收成一道接缝（`src/storage/`），对象存储视频源落地
+
+- **先改文档，再写代码**：README 的"支持 MinIO"、CLAUDE.md 技术栈的"Docker Compose 部署"都是写了没做（`type` 只有一个枚举值，仓库里没有 Dockerfile）。上一轮核对代码后把三处文档改成现状，这一轮才把对象存储真的接出来——顺序不能反过来，文档一旦跑到实现前面，后面所有人都按它估工
+- **接缝只有一句**：上层拿到的永远是 `videos.filepath` 这个 locator 字符串，列举整源用 `storage_for_source(source.type)`，读单个文件用 `storage_for_locator(video.filepath)`。**分成两个函数是刻意的**：地址本身自描述（`D:\…` / `\\nas\…` / `s3://bucket/key`），所以播放每换一个 Range 都不用回库 join `video_sources` 去问"这是哪个源"
+- **本地实现就是原来那份 `os.walk`**：`LocalMediaStorage.list_videos()` 直接复用 `scan_directory()` 而没有重写成 pathlib。原因是 `Video.filepath` 靠**字符串全等**做去重键，分隔符差一个就会让整库同时变成"全部新增"和"全部丢失"。这条不变量由 `test_local_storage.py` 钉住：同一棵目录树分别按原样、带尾分隔符、正斜杠三种写法走一遍，新旧两份列表逐字节比对
+- **NAS 与本地共用一份实现**：SMB/NFS 挂载之后就是本地路径，这里没有任何挂载协议。真要说清"我是挂载盘"的能力得另放一层，这期不做
+- **能力用 `Capabilities(streaming, local_path, sidecar_subtitles)` 问，不嗅探 `s3://`**：真正承重的只有 `local_path` 那一位——FFmpeg 得能 `open()` 一个文件并在里面 seek，对象存储给不了。于是缩略图（扫描时直接跳过）、转码、内嵌字幕提取、外挂字幕登记四项一起关，路由回中文 400 而不是 500。前端不需要为此加分支：拦截器把那句话原样弹出来
+- **"够不着"和"空"是两回事**：只有 `reachable()` 为真才允许把记录标成 `is_missing`。挂载盘掉线、`S3_ACCESS_KEY_ID` 填错都走 False，此时列表当空处理但一行都不判定——否则改错一个字符就把整库灰掉。同一条也管凭证缺失时的 `size()`：返回 `None` 让播放回落到占位响应，而不是每部桶里的影片都抛 500
+- **首尾各 1MB 的摘要只定义一处**（`utils/file_fingerprint.py` 的 `hash_edges`），两份实现都调它。故意不用 ETag：那是整个对象的 MD5，分片上传时又是另一套算法，两种摘要混进同一个比较里，本地块与桶里副本就永远匹配不上——而且匹配不上时不会报错，只会安静地"没有重复"
+- **顺手改掉一个进程级缓存的坑**：S3 client 一开始按"进程里建一次"缓存，用例立刻表现为拿旧密钥签出的 403。现在按 `(endpoint, region, access_key, secret, addressing_style)` 这个元组缓存，用户改完 `backend/.env` 才会真的换客户端
+- **层的方向是被两次的循环导入教出来的**：`src/utils/*` 不能 import `src.storage`——`storage/__init__.py` 会加载两份实现，实现又依赖 utils，一 import 就绕成环、服务起不来。所以"什么算视频文件"留在 `file_scanner.py`、摘要算法留在 `file_fingerprint.py`，由存储层反向引用
+- **依赖是可选的**：`boto3` 在 `.[s3]` extra 里、`import` 延迟到真要建客户端时，没装也能起服务，读到对象存储才提示「请安装 .[s3]」。测试用 `moto`（进 `.[dev]`）在内存里演一个桶，不碰网络；两个包都没装时相关用例 `importorskip` 跳过而不是整文件报错。**顺带发现 README 少写了一步**：`uv sync` 连 `dev` extra 都不装（实测会把 pytest 一起删掉），跑测试要 `uv sync --extra dev --extra s3`
+- **类型与路径不匹配现在当场 400**：`minio` 不以 `s3://` 开头、`local`/`nas` 却填了 `s3://`，过去都会安静地扫出一个空列表。更新时按**合并后的值**判，不是只看请求里带的那一半字段——只改 path 也得对得上库里那行的 type
+- **测试**：后端 495 → **539 passed**（+44。`tests/test_storage/` 新增 35 例：本地实现 9 / 分发与能力真值表 12 / moto 桶 10 / 扫描走接缝 4，其中包含"桶里的副本与同一份字节在本地算出的摘要一致"这条跨提供方断言）+ `test_api/test_storage_gates.py` 6 例（四项能力各一条 400、凭证缺失时播放不 500、重复检测读不到摘要时返回空而非崩）+ `test_api/test_sources.py` 3 例。前端单测 264 不变，Playwright e2e 78 → **79**（新增一例：类型切到 `S3 / MinIO` 时占位符换成 `s3://` 写法、能力说明出现）；`npm run build` 入口 286.29 kB / gzip 93.05 kB 未变
+- **端点没有增加**：仍是 65 条路径 / 84 个操作、18 张表。这一轮唯一的新写面是 `POST/PUT /api/sources` 上多出来的格式校验，对象存储侧只读，没有任何上传或删除对象的路径
+- **验证到什么程度**：S3 那份实现验的是"客户端接线正确"（moto 在进程内拦 botocore），**不等于**真 MinIO 端点行为一致——虚拟主机寻址与 path 寻址、自建服务的 `S3_ENDPOINT_URL` 都要人肉连一次才算数。本地/NAS 那一路是逐字节行为保持，539 例里原本就有的扫描与 Range 播放用例（`test_stream.py` 10 例，含开放尾、闭区间、后缀、越界钳制与非法区间）一行没改仍通过
+- **已知边界**：桶里的影片没有缩略图（前端显示无封面占位）、不能转码、两种字幕都不登记，要这些只能把片放回本地或挂载盘——对象存储上做这些得先落临时文件再喂 FFmpeg，收益抵不过复杂度；扫描入库时这类行的 `duration`/分辨率为 `None`（探针同样要本地文件）；没有批量导入、没有按人的源可见性；`S3_ADDRESSING_STYLE` 默认 `auto`，自建 MinIO 用域名寻址失败时要手改成 `path`
+
+### 新增功能：我的设备（M4 收尾），一个账号看得见、也退得掉自己挂在哪些浏览器上
+
+- **这一期收的是设计文档 M4 那一行**：`sessions.user_agent` 从 M1 就存着，但一直只在 `/users` 里以"在线设备数"一个数字露面。现在 `/profile` 最后一张卡把它摊开——这个账号当前还登录着哪几台浏览器、每台最近什么时候活动、什么时候过期，并且可以只退掉其中一台，不必把整个账号踢下线
+- **行的地址就是那枚摘要**：`sessions` 的主键是 `token_hash`，没有自增 id，所以 `DELETE /api/auth/sessions/{token_hash}` 直接拿 sha256 的十六进制输出当地址用（它是摘要、不是 Cookie 值，也推不回原 token）。合法形状 `[0-9a-f]{64}` 收在 `TOKEN_HASH_HEX` 一处，被路由的 `Path(pattern=...)` 和中间件白名单那条正则共用——形状不对在路由层就是 422，不会先撞上角色判定把"参数不合法"和"角色被拒"混成一个 403
+- **撤销按 `(user_id, token_hash)` 联合定位**：少了 `user_id` 这一半，一枚猜中的摘要就能把陌生人的浏览器退掉；现在别人的摘要只会得到 404。列表同样只覆盖本人名下的行，响应回给浏览器的是摘要，用例断言过整个响应体里不含 Cookie 原值
+- **这是 M3 之后第一次给成员开写口**：`MEMBER_WRITE_PATHS` 14 → 15 条，`test_roles.py` 的 `MEMBER_WRITABLE_OPERATIONS` 与 e2e 替身的 `MEMBER_WRITE` 同步跟上（三张清单一起改是 M3 定下的规矩）。这一条不需要额外的角色判断——它动的会话行本来就按人 scoped，界面上成员也只看得到自己的
+- **不做分页，也不给"退出全部"**：一个家的浏览器就几台，行会随过期自然消失。"全部退出"已经有两处各管一档：顶栏「退出登录」只管这台，`/users` 的踢下线管这个账号所有台——再加一个同名按钮只会让人误判它的作用范围
+- **User-Agent 只决定这一行显示什么**：`deviceLabel()` 把它翻成 `Chrome · Windows`、`Safari · iOS` 这类文案，认不出来就原样截 40 字符留个能核对的痕迹（走查时 `curl/8.19.0` 就是这么显示的）。任何判断都不依据它——那句话是客户端自己写的，改起来不需要成本
+- **端点变化**：新增 2 个操作，全库 63 条路径 / 82 个操作 → **65 条路径 / 84 个操作**，表数不变（18 张），**没有新增任何能碰磁盘或提权的端点**，读写的还是 `sessions` 那一张
+- **顺手修掉一处只有真机才会看见的脏**：`NotificationCenter` 在 `onMounted` 里无条件打 `/api/notifications` 与 `/unread`，而顶栏会比会话探测先挂上来，于是每次进登录页控制台都留一对 401。改成 `watch(isAuthenticated, ..., { immediate: true })`——不能退回"在 `onMounted` 里判一次登录态"，首帧那次挂载恰恰就是还没有会话的那一帧，而登录完成后组件也不会重新挂载。这是"中间件会拒绝的操作，界面上就不该留入口"第一次管到顶栏自己身上
+- **测试**：后端 484 → 495 passed（`test_api/test_auth.py` 15 → 22 例，新增 7 例：列表覆盖范围与"当前这台"标记、UA 原样记录、只覆盖登录账号本人、退一台不动另一台、成员管得动自己名下、别人的摘要 404、不是摘要的形状 422；两张扫面表各自随端点自动涨——匿名 401 从 87 → 89 例，成员 403 从 51 → 53 例，都不用手写）。前端单测 257 → 264 passed（28 文件；`Profile` 登录设备 6 例 + `NotificationCenter` 无会话不请求 1 例）、Playwright e2e 75 → 78 passed（`login.spec.ts` +2、`roles.spec.ts` +1）；`npm run build` 通过，入口 286.29 kB / gzip 93.05 kB；`npm run typecheck:test` 干净
+- **e2e 替身这次要改的不止清单**：`fixtures.ts` 的 `/auth/sessions` 分支做成**有状态**——`revokedDevices` 记下退过哪些摘要，重复退返回 404，改密码会顺手把另一台标成已退。这样"点退出 → 行数少一"在浏览器测里是真发生的，而不是接口永远回 200。顺带把 `.profile-card` "第几张"这种定位换成 `card-account` / `card-theme` / `card-password` / `card-devices` 四个语义 class：加一张卡就会错位，M3 的改密码用例已经踩过一次
+- **验证**：拿**真实库的副本**（`backend/data/walkthrough_m4.db`）起后端 + vite，管理员与成员两个走查账号，再用 curl 以 iPhone Safari / Android Chrome / Edge 三种 User-Agent 造出额外会话（其中一副带 `remember`）。真实浏览器逐账号走查：管理员那张卡列出 9 行，`Safari · iOS` 一行的有效期是 30 天后、其余是 12 小时（`记住我` 与滑动续期在界面上对得上），当前这台是 `当前设备` 标签 + 「顶栏的『退出登录』管这一台」而没有按钮，`curl/8.19.0` 原样显示；点「退出」后该行当场消失并提示"该设备已退出，下次要用密码重新登录"，服务端那行也确实没了（重读少一条，再退同一摘要 404）；换成成员账号登录，同一张卡只剩他自己名下三台，顶栏仍然只有 5 个入口。全程 console 无报错
+- **公网部署注意事项**（新增 README「公网部署注意事项」一节 + CLAUDE.md「放到公网之前」）：`AUTH_COOKIE_SECURE=true` 只在 https 下有意义，而 `sid` 就是唯一凭据、还会随使用滑动续期；后端不解析任何 `X-Forwarded-*`，登录限流按 `request.client.host` + 账号计数，反代之后全家所有人的来源 IP 压成反代那一台——一个人连错 5 次会把所有人锁在门外 10 分钟，要么让 uvicorn 只信任本机反代并取 XFF（`--proxy-headers --forwarded-allow-ips=127.0.0.1`），要么调 `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_MINUTES`；`CORS_ORIGINS` 精确到实际域名（带 Cookie 不能 `*`）；`data/videos.db` 现在装着口令哈希与仍然有效的会话，备份它等同于备份全家的凭据
+- **已知边界**：设备只有"浏览器"这一档粒度，同一台浏览器开两个 profile 会显示成两行一模一样的 `Chrome · Windows`（要区分只能给每行加一个短摘要前缀，这一期没做）；`user_agent` 不解析机型，平板与手机都归 `iOS`/`Android`；不做"新设备登录时通知我"，那要先让通知按人收敛（M2 就记下的那条待定设计）；角色仍然只有 owner / member 两档，没有按视频源的可见性。至此设计文档 §分期实施 的四期全部落地
+
+### 新增功能：角色网关与账号管理（M3），成员看不见也点不动管理面
+
+- **这一轮补的是 M2 留的口子**：M2 之后数据已经按人隔离，但"谁能改库"还是全员平等——任何登录账号都能删影片、改视频源、扫盘。M3 把角色落进请求路径，并给出两个界面：owner 的 `/users`（建号、改角色、停用、重置密码、踢下线）和每个人的 `/profile`（账号信息、主题、改密码）
+- **判定仍然放在中间件，两张表**：`AuthMiddleware` 里新增 `MEMBER_WRITE_PATHS`（14 条正则，成员唯一能写的路径）与 `OWNER_ONLY_READ_PATHS`（4 条）。方向和 M1 的默认拒绝一致——**成员能写什么是一份白名单，不是"哪些禁他"**，非 GET 且不在表内一律 403 `需要管理员权限`。用正则而不是 `{id}` 字面量比对，是因为中间件不参与路由解析，拿到的是原始路径
+- **少数路由再挂 `require_owner`**：需要"操作者是谁"的判断（例如不能停用自己、不能改自己的角色）没法用路径表达，就在依赖里拿 `User` 再判
+- **管理面的读也收两处**：`/api/users*` 与 `/api/settings*` 连 GET 都限 owner——账号清单、在线设备数、局域网路径对成员没有用处。这是"读接口只看登录"这条总原则的**有意例外**，写进了设计文档的偏差说明，别照抄
+- **三条护栏**：不能停用或降级自己（400 `不能停用自己的账号`），必须留下至少一个可用 owner（400 `至少要保留一个可用的管理员…`），把别人降级或停用时顺手撤销其会话。另外没有"删除账号"这一档，只有停用——历史、收藏、片单都是真数据，删号等于连带清掉一个人看过的东西
+- **`settings` 与 `user_preferences` 拆开了**：主题是账号的属性，系统配置（扫描目录、转码格式、缩略图尺寸）才是全屋共用。新增 `user_preferences(user_id, prefs JSON)` 与 `GET/PUT /api/preferences`。**JSON 列的老坑**：原地改 `prefs` 这个 dict，SQLAlchemy 察觉不到变化，必须整体赋新值并 `flag_modified`，否则接口 200、库里没动
+- **迁移两条语句，顺序即语义**：`INHERIT_THEME_IN_PREFERENCES` 先把共享 `settings.theme` 的老值复制成"每个还没有偏好行的账号"的一份，`DROP_SHARED_THEME_SETTING` 再删那个共享键——反过来执行就等于把所有人的主题都抹回默认。仍然走 `apply_schema_fixes` 的启动幂等重放，**首次执行前请先复制一份 `backend/data/videos.db`**
+- **端点变化**：`/api/users` 5 条路径 6 个操作 + `/api/preferences` 2 个操作，全是账号表与 `sessions` 上的读写，**没有新增任何能碰磁盘或提权的端点**；`/api/settings*` 收窄为纯系统配置。全库现为 63 条路径 / 82 个操作、18 张表
+- **前端角色面三层**：路由表上 `meta: { roles: ['owner'] }` + 守卫里未登录先跳登录、角色不够回首页（不是进去吃一串 403）；顶栏导航项与用户菜单按 `isOwner` 显隐；**同一判断一路带到按钮**——首页横幅的「清理丢失记录」、影片详情的「转码 / 编辑 / 删除」与标签行加号、通知弹层的「清空」与逐条删除，这些走的都是成员禁写接口，一律 `v-if="isOwner"`，`/videos/:id/transcode` 整页也标成 owner。判据只有一条：**中间件会拒绝的操作，界面上就不该留入口**
+- **一个只有真机才能发现的坑**：主题与角色用的 `el-radio-group` / `el-radio` 忘了加进 `src/main.ts` 的按需注册列表，浏览器里整块不渲染（Vue 只警告一次），而单测全绿——`tests/setup.ts` 装的是全量 Element Plus 插件。已在 `frontend/CLAUDE.md` 记成硬约束：新增 `el-*` 必须同步注册列表
+- **测试**：后端 396 → 484 passed。M3 新增 4 个文件 78 例——`tests/test_middleware/test_roles.py` 51 例（**独立列一份"成员可写"清单，和中间件的表一一对照**，放行一个新写接口必须是显式决定；其余把 openapi 里每个非白名单写端点用成员身份打一遍）、`test_api/test_users.py` 11、`test_api/test_preferences.py` 9、`test_services/test_user_admin.py` 7（护栏与降级踢会话）。M1 的匿名扫面从 71 例涨到 87 例，随端点增减自动跟随 openapi，无需手写。前端单测 219 → 257 passed（28 文件；`VideoDetail` 角色门 2 例、`Home` 成员无清理入口 1 例、`NotificationCenter` 成员无删除入口 1 例、路由守卫补 `/videos/:id/transcode`）；Playwright e2e 61 → 75 passed（`e2e/roles.spec.ts` 14 例）；`npm run build` 通过，入口 286.25 kB / gzip 93.04 kB；`npm run typecheck:test` 顺带修掉三处此前就存在的类型报错（axios 头返回类型、两个未使用的导入）
+- **e2e 替身跟着中间件走**：`e2e/fixtures.ts` 里的成员禁写不再手写路径清单，改为一条 `MEMBER_WRITE` 正则一比一抄 `MEMBER_WRITE_PATHS`——名单外的写请求一律 403。后端放行或新收一条写接口时，两张表和 `roles.spec.ts` 的期望要一起改，否则浏览器测的是替身而不是后端
+- **验证**：拿**真实库的副本**（`backend/data/walkthrough_m3.db`，M2 之前的状态）起后端 + vite，库里四个账号：两个 owner（`walkthrough`、`m3owner`）、两个成员（`m3member`、界面里新建的 `m3ui`）。老库迁移后 1 条收藏 + 3 条历史归第一个 owner，没有丢行。真实浏览器逐账号走查：owner 顶栏 8 项、成员 5 项（`首页/播放历史/观影统计/收藏/片单`）；owner 用户菜单三项（个人设置 / 用户管理 / 退出登录）、成员只有两项；成员手敲 `/users`、`/settings`、`/videos/1/transcode` 都被带回 `/`；主题按人——`m3owner` 存深色后 `data-theme=dark` 且库里是 `user_preferences = {"theme": "dark"}` 而 `settings` 仍然空，**同一台浏览器**退出后换 `m3member` 登录回到 `data-theme=light`（他一份都没存过）；同一份 50 条广播通知，成员面板里只有「全部已读」一个按钮、`.notification-remove` 0 个，管理员同一面板是「全部已读 / 清空」外加 50 个逐条 ✕；成员首页横幅只剩「查看」，影片详情页只剩 `播放 / 收藏 / 片单` 三个按钮且标签行没有加号，管理员同页 6 个按钮 + 1 个加号；`/users` 表格里本人那一行的开关与"踢下线"是禁用的，把最后一个 owner 降级会报错并弹回原样。全程无 console 报错
+- **已知边界**：角色只有 owner / member 两档，没有按视频源的可见性（`source_acl` 另说）；`notifications` 仍是全家广播，"删除通知 / 清空"是家庭级操作，这一轮按 M2 记下的那条待定设计走角色网关收敛（只归 owner 看得见），要按人收敛仍需加 `user_id`；播放器偏好（倍速、音量、字幕字号与延迟）仍按浏览器记，不跟人；"我的设备"会话列表没有做，`/api/users/{id}/sessions` 目前只会报设备数
+
 ## 2026-09-20
 
 ### 新增功能：数据按人隔离（M2 数据归属），收藏/历史/片单/统计跟着账号走

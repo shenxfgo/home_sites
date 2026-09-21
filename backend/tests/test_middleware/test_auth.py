@@ -6,7 +6,7 @@ import pytest
 
 from src.main import app
 from src.middleware.auth import CSRF_HEADER, PUBLIC_API_PATHS
-from src.models.user import UserSession
+from src.models.user import ROLE_OWNER, UserSession
 from src.services.auth_service import (
     COOKIE_NAME,
     INVALID_CREDENTIALS,
@@ -102,7 +102,11 @@ async def test_an_expired_session_is_refused_and_cleaned_up(
     assert await db_session.get(UserSession, hash_token("expired-token")) is None
 
 
-async def test_disabling_an_account_signs_its_sessions_out(client, db_session, signed_in_user):
+async def test_disabling_an_account_signs_its_sessions_out(
+    client, db_session, signed_in_user, make_user
+):
+    # 停用不能落在"最后一个管理员"头上，所以先给库里留一个后备。
+    await make_user("backup-owner", ROLE_OWNER)
     await AuthService(db_session).set_active(signed_in_user, False)
 
     assert (await client.get("/api/videos")).status_code == 401

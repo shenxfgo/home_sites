@@ -8,8 +8,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
 from src.services.source_service import SourceService
+from src.storage.base import S3_SCHEME
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
+
+
+def _check_path_shape(source_type: str, path: str) -> None:
+    """Reject a path that contradicts its own type.
+
+    The scanner picks a storage backend from ``type``, so a ``minio`` source
+    typed as a folder scans nothing and an ``s3://`` path under ``local`` walks a
+    directory named "s3:". Neither raises, they just come back empty.
+    """
+    looks_like_object_store = path.startswith(S3_SCHEME)
+    if source_type == "minio" and not looks_like_object_store:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"对象存储视频源的路径需要以 {S3_SCHEME} 开头，"
+                f"例如 {S3_SCHEME}my-videos/shows"
+            ),
+        )
+    if source_type != "minio" and looks_like_object_store:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "本地或 NAS 视频源请填写磁盘路径（如 D:\\videos 或 \\\\nas\\media）；"
+                f"对象存储地址请把类型改为 MinIO（{S3_SCHEME} 开头）"
+            ),
+        )
 
 
 # Pydantic models for request/response
@@ -79,6 +106,7 @@ async def create_source(
     service: SourceService = Depends(get_source_service),
 ) -> SourceResponse:
     """Create a new video source."""
+    _check_path_shape(data.type, data.path)
     source = await service.create(
         name=data.name,
         path=data.path,
@@ -111,6 +139,16 @@ async def update_source(
     update_data = data.model_dump(exclude_unset=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    # Half an edit is enough to break the pairing, so validate the values the
+    # source would end up with, not just the ones the request happens to carry.
+    if "type" in update_data or "path" in update_data:
+        existing = await service.get_by_id(source_id)
+        if existing:
+            _check_path_shape(
+                update_data.get("type", existing.type),
+                update_data.get("path", existing.path),
+            )
 
     try:
         source = await service.update(source_id, **update_data)

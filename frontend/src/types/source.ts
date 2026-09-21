@@ -36,7 +36,7 @@ export interface SourceUpdate {
 export const SOURCE_TYPE_LABELS: Record<SourceType, string> = {
   local: '本地',
   nas: 'NAS',
-  minio: 'MinIO',
+  minio: 'S3 / MinIO',
 }
 
 /** Icon name for each source type. */

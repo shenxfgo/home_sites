@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.subtitle import Subtitle
 from src.models.video import Video
+from src.storage import storage_for_locator
 
 
 class SubtitleService:
@@ -43,6 +44,12 @@ class SubtitleService:
         video = await self.session.get(Video, video_id)
         if not video:
             raise ValueError(f"Video with id {video_id} not found")
+
+        # 外挂字幕的前提是"视频旁边有个目录可以挂文件"，对象存储没有目录；而且
+        # 下面那道目录包含检查用的是本地路径词法，套在 s3:// 地址上会得出错误的
+        # 结论，所以先按能力挡掉，别让它退化成一句"字幕必须位于视频所在目录内"。
+        if not storage_for_locator(video.filepath).capabilities.sidecar_subtitles:
+            raise ValueError("外挂字幕只支持本地或 NAS 视频源，对象存储上的影片挂不了字幕文件")
 
         normalized = os.path.normpath(filepath)
         if not os.path.isfile(normalized):

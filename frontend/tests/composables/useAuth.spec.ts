@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getAuthStatus, getMe, login, logout } from '@/api/auth'
+import { getPreferences } from '@/api/preferences'
+import { getTheme } from '@/composables/useTheme'
 import { useAuth } from '@/composables/useAuth'
 
 vi.mock('@/api/auth', () => ({
@@ -7,6 +9,12 @@ vi.mock('@/api/auth', () => ({
   getMe: vi.fn(),
   login: vi.fn(),
   logout: vi.fn(),
+}))
+
+// 登录后会顺带拉这个人的主题；挡住请求，只关心"有没有拉、拉不到时登不登得上"。
+vi.mock('@/api/preferences', () => ({
+  getPreferences: vi.fn(),
+  updatePreferences: vi.fn(),
 }))
 
 const OWNER = { id: 1, username: 'tester', role: 'owner' as const, display_name: 'Tester' }
@@ -19,6 +27,7 @@ describe('useAuth', () => {
     vi.mocked(getMe).mockResolvedValue(OWNER)
     vi.mocked(login).mockResolvedValue(OWNER)
     vi.mocked(logout).mockResolvedValue(undefined)
+    vi.mocked(getPreferences).mockResolvedValue({ theme: 'light' })
   })
 
   it('restores the signed-in user once and caches it', async () => {
@@ -82,5 +91,31 @@ describe('useAuth', () => {
 
     expect(auth.user.value).toBeNull()
     expect(auth.loaded.value).toBe(false)
+  })
+
+  it('pulls the account theme in once a session is known', async () => {
+    vi.mocked(getPreferences).mockResolvedValue({ theme: 'dark' })
+
+    await useAuth().load(true)
+
+    await vi.waitFor(() => expect(getTheme()).toBe('dark'))
+  })
+
+  it('does not ask for preferences without a session', async () => {
+    vi.mocked(getAuthStatus).mockResolvedValue({ authenticated: false, needs_setup: false })
+
+    await useAuth().load(true)
+
+    expect(getPreferences).not.toHaveBeenCalled()
+  })
+
+  it('signs in even when the theme cannot be fetched', async () => {
+    vi.mocked(getPreferences).mockRejectedValue(new Error('网络不可用'))
+    const auth = useAuth()
+
+    expect(await auth.signIn('tester', 'secret-pass')).toEqual(OWNER)
+    // 主题那条支路失败就失败，不该把登录一起拖倒
+    await vi.waitFor(() => expect(getPreferences).toHaveBeenCalledTimes(1))
+    expect(auth.isAuthenticated.value).toBe(true)
   })
 })

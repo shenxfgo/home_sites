@@ -24,6 +24,15 @@ vi.mock('@/api/sources', () => ({ listSources: vi.fn() }))
 vi.mock('@/api/tags', () => ({ listTags: vi.fn() }))
 vi.mock('@/api/history', () => ({ getContinueList: vi.fn() }))
 
+// 首页有一处按角色显隐的入口，所以这里也得能换人。
+const signedInAs = vi.hoisted(() => ({ role: 'owner' as 'owner' | 'member' }))
+vi.mock('@/composables/useAuth', async () => {
+  const { computed } = await import('vue')
+  return {
+    useAuth: () => ({ isOwner: computed(() => signedInAs.role === 'owner') }),
+  }
+})
+
 const stub = { template: '<div />' }
 
 /** A real router on an in-memory address bar, so query sync is exercised for real. */
@@ -40,7 +49,8 @@ async function makeRouter(initial = '/'): Promise<Router> {
   return router
 }
 
-async function mountHome(initial = '/') {
+async function mountHome(initial = '/', role: 'owner' | 'member' = 'owner') {
+  signedInAs.role = role
   const router = await makeRouter(initial)
   // Attached to the document so focus() — and the "/" shortcut that relies on it — behave.
   const wrapper = mount(Home, { global: { plugins: [router] }, attachTo: document.body })
@@ -396,6 +406,18 @@ describe('Home lost records banner', () => {
     await flushPromises()
 
     expect(deleteVideo).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('leaves a member the banner without the cleanup button', async () => {
+    libraryWithLost(3)
+    const { wrapper } = await mountHome('/', 'member')
+
+    const bar = wrapper.get('.missing-bar')
+    expect(bar.text()).toContain('3 个文件已不在磁盘上')
+    // 只剩「查看」：删记录会被中间件挡成 403，就不该给成员一个按钮。
+    expect(bar.findAll('.missing-actions button')).toHaveLength(1)
+    expect(bar.text()).not.toContain('清理丢失记录')
     wrapper.unmount()
   })
 })

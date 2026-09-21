@@ -1,29 +1,33 @@
-"""认证 API：登录、登出、当前用户、首启状态。
+"""认证 API：登录、登出、当前用户、我的设备、首启状态。
 
 账号创建走 CLI（``python -m src.cli``），这里没有任何注册接口。
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database import get_session
-from src.middleware.auth import get_current_user, get_session_token
+from src.middleware.auth import get_current_user, get_current_user_id, get_session_token
 from src.models.user import User
 from src.services.auth_service import (
     COOKIE_NAME,
     INVALID_CREDENTIALS,
+    TOKEN_HASH_HEX,
     AuthService,
     hash_token,
     login_rate_limiter,
     normalize_username,
+    session_payload,
     user_payload,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+TOKEN_HASH_PATTERN = rf"^{TOKEN_HASH_HEX}$"
 
 
 class LoginRequest(BaseModel):
@@ -47,6 +51,17 @@ class UserResponse(BaseModel):
     username: str
     role: str
     display_name: str | None = None
+
+
+class DeviceResponse(BaseModel):
+    """一行"我的设备"。``token_hash`` 是摘要，不是 Cookie 值。"""
+
+    token_hash: str
+    current: bool
+    user_agent: str | None = None
+    created_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    expires_at: datetime | None = None
 
 
 async def get_auth_service(
@@ -124,6 +139,32 @@ async def auth_status(
 async def me(user: User = Depends(get_current_user)) -> UserResponse:
     """The signed-in user, for the frontend to restore its state on load."""
     return UserResponse(**user_payload(user))
+
+
+@router.get("/sessions", response_model=list[DeviceResponse])
+async def list_sessions(
+    user: User = Depends(get_current_user),
+    token: str = Depends(get_session_token),
+    service: AuthService = Depends(get_auth_service),
+) -> list[DeviceResponse]:
+    """这个账号当前登录的所有浏览器，并标出"就是这台"。"""
+    mine = hash_token(token)
+    sessions = await service.list_sessions(user.id)
+    return [session_payload(sess, current=sess.token_hash == mine) for sess in sessions]
+
+
+@router.delete("/sessions/{token_hash}", status_code=204)
+async def revoke_device(
+    token_hash: str = Path(pattern=TOKEN_HASH_PATTERN),
+    user: User = Depends(get_current_user),
+    service: AuthService = Depends(get_auth_service),
+) -> None:
+    """Sign one of this account's browsers out.
+
+    撤销的是别台设备，当前 Cookie 不动，所以在这里退出手机后本页还能继续看。
+    """
+    if not await service.revoke_session(user.id, token_hash):
+        raise HTTPException(status_code=404, detail="设备不存在或已退出")
 
 
 @router.post("/logout", status_code=204)

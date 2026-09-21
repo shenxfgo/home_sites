@@ -15,7 +15,8 @@ from src.models.video import Video
 from src.models.new_video import NewVideo
 from src.services.notification_service import NotificationService
 from src.services.subtitle_service import SubtitleService
-from src.utils.file_scanner import scan_directory, extract_video_info, generate_thumbnail
+from src.storage import MediaStorage, storage_for_source
+from src.utils.file_scanner import extract_video_info, generate_thumbnail
 from src.utils.name_parser import auto_tags, parse_video_filename
 from src.utils.subtitles import find_subtitle_files
 from src.config import settings
@@ -83,12 +84,31 @@ def _register_subtitles(
     video_id: int,
     video_filepath: str,
     known: set[str],
+    storage: MediaStorage,
 ) -> int:
-    """Register a video's sidecar subtitle files, skipping the known ones."""
+    """Register a video's sidecar subtitle files, skipping the known ones.
+
+    外挂字幕靠"列一下视频旁边的同名文件"来发现，而对象存储没有目录可列
+    （``Capabilities.sidecar_subtitles``），所以那种源扫不出字幕，不是漏扫。
+    """
+    if not storage.capabilities.sidecar_subtitles:
+        return 0
     return sum(
         service.register(video_id, subtitle_file, known)
         for subtitle_file in find_subtitle_files(video_filepath)
     )
+
+
+def _probe_info(locator: str, extension: str, storage: MediaStorage) -> dict:
+    """Read the container's duration and resolution where that is possible.
+
+    ffprobe needs something it can seek in. An object has no such handle, so
+    those rows keep the extension as their format and no duration -- which is
+    what a probe failure already produced on the local path.
+    """
+    if not storage.capabilities.local_path:
+        return {"duration": None, "resolution": None, "format": extension.lstrip(".")}
+    return extract_video_info(locator)
 
 
 async def _tag_index(session: AsyncSession) -> dict[str, Tag]:
@@ -162,14 +182,22 @@ class ScanService:
         if not source:
             raise ValueError(f"Source with id {source_id} not found")
 
+        storage = storage_for_source(source.type)
+
         files_found = 0
         new_videos = 0
         subtitles_found = 0
 
         with _tracked_scan():
             _scan_state["current_source"] = source.name
-            # Scan the directory for video files
-            video_files = scan_directory(source.path)
+            # 列文件交给存储层：本地与 NAS 走的还是那份 os.walk，对象存储是
+            # ListObjectsV2。够不着的源按"没有文件"处理，由下面的 reachable 判断
+            # 兜住，否则一次凭证错误就会被读成"整库都丢了"。
+            video_files = (
+                storage.list_videos(source.path)
+                if storage.reachable(source.path)
+                else []
+            )
             files_found = len(video_files)
             _scan_state["files_found"] += files_found
 
@@ -188,14 +216,18 @@ class ScanService:
                     logger.info("扫描已按请求停止: %s", source.name)
                     break
 
-                filepath = vf["filepath"]
+                filepath = vf.locator
                 known = existing.get(filepath)
                 if known is not None:
                     await _backfill_coordinates(
-                        self.session, known, tags_by_name, vf["filename"]
+                        self.session, known, tags_by_name, vf.filename
                     )
                     subtitles_found += _register_subtitles(
-                        subtitle_service, known.id, filepath, known_subtitles
+                        subtitle_service,
+                        known.id,
+                        filepath,
+                        known_subtitles,
+                        storage,
                     )
                     continue
 
@@ -203,11 +235,11 @@ class ScanService:
                 try:
                     async with self.session.begin_nested():
                         # Extract video info
-                        info = extract_video_info(filepath)
+                        info = _probe_info(filepath, vf.extension, storage)
 
                         # Generate thumbnail
                         thumbnail_path = ""
-                        if settings.thumbnail_path:
+                        if settings.thumbnail_path and storage.capabilities.local_path:
                             thumb_filename = (
                                 os.path.splitext(os.path.basename(filepath))[0] + ".jpg"
                             )
@@ -223,13 +255,13 @@ class ScanService:
                                 thumbnail_path = ""
 
                         # Create video record
-                        parsed = parse_video_filename(vf["filename"])
+                        parsed = parse_video_filename(vf.filename)
                         video = Video(
                             source_id=source_id,
                             filepath=filepath,
                             title=parsed.title,
                             duration=info.get("duration"),
-                            file_size=vf.get("file_size"),
+                            file_size=vf.size,
                             format=info.get("format"),
                             resolution=info.get("resolution"),
                             thumbnail_path=thumbnail_path or None,
@@ -252,7 +284,11 @@ class ScanService:
                         await self.session.flush()
 
                         subtitles_found += _register_subtitles(
-                            subtitle_service, video.id, filepath, known_subtitles
+                            subtitle_service,
+                            video.id,
+                            filepath,
+                            known_subtitles,
+                            storage,
                         )
                     new_videos += 1
                     _scan_state["new_videos"] += 1
@@ -266,8 +302,8 @@ class ScanService:
             # than deleted, but only when the source itself was reachable: an
             # unmounted share returns an empty listing and must not black out
             # the whole library.
-            if os.path.isdir(source.path):
-                found = {vf["filepath"] for vf in video_files}
+            if storage.reachable(source.path):
+                found = {vf.locator for vf in video_files}
                 for video in existing.values():
                     video.is_missing = video.filepath not in found
             await self.session.commit()

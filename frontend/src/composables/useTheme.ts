@@ -1,4 +1,5 @@
 import { ref, watch, onMounted } from 'vue'
+import { getPreferences, updatePreferences } from '@/api/preferences'
 
 export type Theme = 'light' | 'dark' | 'auto'
 
@@ -24,11 +25,28 @@ function applyTheme(newTheme: Theme) {
   }
 }
 
-/** Set theme */
-export function setTheme(newTheme: Theme) {
+/**
+ * Set the theme on this browser and, unless told otherwise, on the account.
+ *
+ * localStorage 是这台设备的即时缓存（刷新不必等请求），账号那份才是"换台设备
+ * 登录还是这个界面"。同步失败不打扰用户：界面已经切了，下次登录会拉回服务端值。
+ */
+export function setTheme(newTheme: Theme, options: { sync?: boolean } = {}) {
   theme.value = newTheme
   localStorage.setItem('theme', newTheme)
   applyTheme(newTheme)
+
+  if (options.sync !== false) {
+    void updatePreferences({ theme: newTheme }).catch(() => {
+      // 未登录（登录页）或服务端不可达：只当本机生效
+    })
+  }
+}
+
+/** Pull this person's stored preference in, after a session became known. */
+export async function loadAccountTheme(): Promise<void> {
+  const prefs = await getPreferences()
+  if (prefs.theme !== theme.value) setTheme(prefs.theme, { sync: false })
 }
 
 /** Get current theme */

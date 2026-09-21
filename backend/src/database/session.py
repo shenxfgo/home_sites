@@ -93,6 +93,26 @@ VIDEOS_SERIES_INDEX = """
 CREATE INDEX IF NOT EXISTS ix_videos_series ON videos (series)
 """
 
+# ``settings.theme`` 是全家共用一个外观：一个人切深色，其他人的界面跟着变。M3 把
+# 这个选择搬进了 ``user_preferences``，所以升级时先按老值给每个还没有偏好行的账号
+# 铺一份（保持他们此刻看到的界面不变），再删掉那个共享键。CASE 只认那三个取值，
+# 老库里写进过别的东西就落回 light，不会拼出一段解析不了的 JSON。
+INHERIT_THEME_IN_PREFERENCES = """
+INSERT OR IGNORE INTO user_preferences (user_id, prefs, updated_at)
+SELECT u.id,
+       CASE s.value WHEN 'dark' THEN '{"theme":"dark"}'
+                    WHEN 'auto' THEN '{"theme":"auto"}'
+                    ELSE '{"theme":"light"}' END,
+       CURRENT_TIMESTAMP
+  FROM users u
+  JOIN settings s ON s.key = 'theme'
+ WHERE u.id NOT IN (SELECT user_id FROM user_preferences)
+"""
+
+DROP_SHARED_THEME_SETTING = """
+DELETE FROM settings WHERE key = 'theme'
+"""
+
 # ``ALTER TABLE ADD COLUMN`` does not honour the ``index=True`` the models
 # declare, so every per-person lookup column needs its index spelled out.
 OWNERSHIP_INDEXES: tuple[str, ...] = (
@@ -146,6 +166,8 @@ async def apply_schema_fixes(conn) -> None:
     await conn.execute(text(VIDEOS_SERIES_INDEX))
     for statement in OWNERSHIP_INDEXES:
         await conn.execute(text(statement))
+    await conn.execute(text(INHERIT_THEME_IN_PREFERENCES))
+    await conn.execute(text(DROP_SHARED_THEME_SETTING))
 
 
 async def _add_missing_columns(conn) -> None:

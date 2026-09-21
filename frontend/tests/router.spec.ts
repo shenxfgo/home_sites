@@ -2,16 +2,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getAuthStatus, getMe } from '@/api/auth'
 import { useAuth } from '@/composables/useAuth'
 import router from '@/router'
+import type { AuthUser } from '@/types/auth'
 
 vi.mock('@/api/auth', () => ({
   getAuthStatus: vi.fn(),
   getMe: vi.fn(),
 }))
 
+// 会话一旦确立就会去拉主题，这里挡掉真实请求。
+vi.mock('@/api/preferences', () => ({
+  getPreferences: vi.fn().mockResolvedValue({ theme: 'light' }),
+  updatePreferences: vi.fn().mockResolvedValue({ theme: 'light' }),
+}))
+
 const OWNER = { id: 1, username: 'tester', role: 'owner' as const, display_name: 'Tester' }
+const MEMBER = { id: 2, username: 'kid', role: 'member' as const, display_name: '小明' }
 
 /** 每次导航都重新探测：模块级登录态会跨用例留着。 */
-async function signIn(user: typeof OWNER | null) {
+async function signIn(user: AuthUser | null) {
   vi.mocked(getAuthStatus).mockResolvedValue({
     authenticated: user !== null,
     needs_setup: user === null,
@@ -40,6 +48,8 @@ describe('router', () => {
         'watchlists',
         'tags',
         'settings',
+        'users',
+        'profile',
       ]),
     )
   })
@@ -83,5 +93,46 @@ describe('router', () => {
     await router.push('/login')
 
     expect(router.currentRoute.value.name).toBe('home')
+  })
+})
+
+describe('router role gate', () => {
+  beforeEach(async () => {
+    useAuth().forget()
+    await router.replace('/')
+  })
+
+  it('walks a member back out of every management page', async () => {
+    await signIn(MEMBER)
+
+    for (const path of ['/sources', '/tags', '/settings', '/users', '/videos/12/transcode']) {
+      await router.push(path)
+      expect(router.currentRoute.value.name).toBe('home')
+      await router.push('/')
+    }
+  })
+
+  it('leaves the watching pages and 个人设置 open to a member', async () => {
+    await signIn(MEMBER)
+
+    for (const [path, name] of [
+      ['/history', 'history'],
+      ['/favorites', 'favorites'],
+      ['/watchlists', 'watchlists'],
+      ['/profile', 'profile'],
+      ['/videos/21', 'video-detail'],
+    ]) {
+      await router.push(path)
+      expect(router.currentRoute.value.name).toBe(name)
+      await router.push('/')
+    }
+  })
+
+  it('lets the owner into 用户管理', async () => {
+    await signIn(OWNER)
+
+    await router.push('/users')
+
+    expect(router.currentRoute.value.name).toBe('users')
   })
 })

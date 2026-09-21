@@ -67,3 +67,33 @@ test('顶栏显示当前账号，退出后再回到登录页', async ({ page }) 
   await expect(page).toHaveURL(/\/login/)
   await expect(page.locator('.login-card')).toBeVisible()
 })
+
+test('我的设备列出这个账号开着的浏览器，并标出当前这一台', async ({ page }) => {
+  await mockApi(page)
+  await page.goto('/profile')
+
+  const rows = page.locator('.card-devices .device-item')
+  await expect(rows).toHaveCount(2)
+  await expect(rows.first().locator('.el-tag')).toHaveText('当前设备')
+  // 这一台的名字来自浏览器自己上报的 User-Agent，替身照真后端把它存下来。
+  await expect(rows.first()).not.toContainText('未知设备')
+  await expect(rows.nth(1)).toContainText('Safari · iOS')
+  // 退出别人不该影响自己，所以只有另一台有按钮。
+  await expect(rows.first().getByRole('button', { name: '退出' })).toHaveCount(0)
+  await expect(rows.nth(1).getByRole('button', { name: '退出' })).toBeVisible()
+})
+
+test('退出另一台设备只让那一行消失，本机继续是登录的', async ({ page }) => {
+  await mockApi(page)
+  await page.goto('/profile')
+
+  const phone = page.locator('.card-devices .device-item', { hasText: 'Safari · iOS' })
+  await phone.getByRole('button', { name: '退出' }).click()
+
+  await expect(page.locator('.el-message--success')).toContainText('该设备已退出')
+  await expect(page.locator('.card-devices .device-item')).toHaveCount(1)
+  // 刷新这一页还在登录态：退的是别的浏览器，不是这一台。
+  await expect(page.locator('.user-name')).toHaveText(STUB_USER.display_name)
+  await page.reload()
+  await expect(page.locator('.card-devices .device-item')).toHaveCount(1)
+})

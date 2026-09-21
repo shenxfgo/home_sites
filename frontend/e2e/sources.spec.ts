@@ -14,6 +14,21 @@ test('视频源页列出全部数据源', async ({ page }) => {
   await expect(page.locator('.source-grid')).toContainText('NAS 片库')
 })
 
+test('选择对象存储类型时会说清路径写法和能力限制', async ({ page }) => {
+  await page.goto('/sources')
+  await page.getByRole('button', { name: '添加视频源' }).click()
+
+  const dialog = page.locator('.el-dialog')
+  await expect(dialog).toBeVisible()
+  await expect(dialog.locator('.path-hint')).toHaveCount(0)
+
+  await dialog.locator('.el-select__wrapper').click()
+  await page.locator('.el-select-dropdown__item', { hasText: 'S3 / MinIO' }).click()
+
+  await expect(dialog.locator('.path-hint')).toContainText('没有缩略图、转码和字幕')
+  await expect(dialog.getByPlaceholder('例如：s3://my-videos/shows')).toBeVisible()
+})
+
 test('扫描全部会调用扫描接口并汇报结果', async ({ page }) => {
   await page.goto('/sources')
 

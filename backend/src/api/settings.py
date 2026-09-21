@@ -1,5 +1,13 @@
-"""Settings API endpoints."""
-from fastapi import APIRouter, Depends
+"""Settings API endpoints.
+
+这里只剩**系统配置**：扫描开关与间隔、默认转码格式、缩略图尺寸。界面偏好（主题）
+在 M3 搬去了 ``/api/preferences``，因为那是每个人自己的选择，写在一张全局 KV 表里
+会变成"一个人切深色，全家跟着变"。
+
+键名走白名单而不是随便往里塞：``PUT /api/settings/{key}`` 原先能写任意键，前端读
+的却是固定字段，多余的键没人清理，最后没人知道哪些还有用。
+"""
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +16,16 @@ from src.database import get_session
 from src.models.setting import Setting
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+SYSTEM_SETTING_KEYS: frozenset[str] = frozenset(
+    {
+        "auto_scan_enabled",
+        "auto_scan_interval",
+        "default_transcode_format",
+        "thumbnail_width",
+        "thumbnail_height",
+    }
+)
 
 
 class SettingResponse(BaseModel):
@@ -28,7 +46,6 @@ class AllSettingsResponse(BaseModel):
     default_transcode_format: str = "mp4"
     thumbnail_width: int = 320
     thumbnail_height: int = 180
-    theme: str = "light"
 
 
 @router.get("", response_model=AllSettingsResponse)
@@ -45,7 +62,6 @@ async def get_settings(
         default_transcode_format=settings.get("default_transcode_format", "mp4"),
         thumbnail_width=int(settings.get("thumbnail_width", "320")),
         thumbnail_height=int(settings.get("thumbnail_height", "180")),
-        theme=settings.get("theme", "light"),
     )
 
 
@@ -61,7 +77,6 @@ async def update_settings(
         "default_transcode_format": data.default_transcode_format,
         "thumbnail_width": str(data.thumbnail_width),
         "thumbnail_height": str(data.thumbnail_height),
-        "theme": data.theme,
     }
 
     for key, value in settings_dict.items():
@@ -104,6 +119,12 @@ async def update_setting(
     session: AsyncSession = Depends(get_session),
 ) -> SettingResponse:
     """Update a single setting."""
+    if key not in SYSTEM_SETTING_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未知的配置项：{key}。可写的只有 {', '.join(sorted(SYSTEM_SETTING_KEYS))}",
+        )
+
     result = await session.execute(
         select(Setting).where(Setting.key == key)
     )

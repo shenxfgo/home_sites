@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
-import { getTheme, initTheme, setTheme, useTheme } from '@/composables/useTheme'
+import { getPreferences, updatePreferences } from '@/api/preferences'
+import { getTheme, initTheme, loadAccountTheme, setTheme, useTheme } from '@/composables/useTheme'
+
+// 主题会写回账号，这一层用 mock 挡住真实请求，顺带断言"什么时候该发"。
+vi.mock('@/api/preferences', () => ({
+  getPreferences: vi.fn(),
+  updatePreferences: vi.fn(),
+}))
 
 function stubPrefersDark(prefersDark: boolean) {
   vi.stubGlobal(
@@ -21,7 +28,45 @@ function stubPrefersDark(prefersDark: boolean) {
 
 describe('useTheme', () => {
   beforeEach(() => {
+    vi.mocked(updatePreferences).mockResolvedValue({ theme: 'light' })
+    vi.mocked(getPreferences).mockResolvedValue({ theme: 'light' })
     setTheme('light')
+    vi.mocked(updatePreferences).mockClear()
+  })
+
+  it('saves the choice on the account, not just on this browser', () => {
+    setTheme('dark')
+
+    expect(updatePreferences).toHaveBeenCalledWith({ theme: 'dark' })
+  })
+
+  it('still switches the look when the server cannot be reached', () => {
+    vi.mocked(updatePreferences).mockRejectedValue(new Error('网络不可用'))
+
+    setTheme('dark')
+
+    expect(getTheme()).toBe('dark')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+  })
+
+  it('applies an account theme without writing it back', async () => {
+    vi.mocked(getPreferences).mockResolvedValue({ theme: 'dark' })
+
+    await loadAccountTheme()
+
+    expect(getTheme()).toBe('dark')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(updatePreferences).not.toHaveBeenCalled()
+  })
+
+  it('leaves this browser alone when the account has nothing stored', async () => {
+    stubPrefersDark(false)
+    setTheme('auto', { sync: false })
+    vi.mocked(getPreferences).mockResolvedValue({ theme: 'auto' })
+
+    await loadAccountTheme()
+
+    expect(updatePreferences).not.toHaveBeenCalled()
   })
 
   it('applies an explicit theme to the document root and persists it', () => {

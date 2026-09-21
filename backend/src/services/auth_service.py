@@ -41,6 +41,11 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+# sessions 的主键就是这枚摘要，所以"我的设备"拿它当地址用：它是 sha256 的十六进制
+# 输出（不是 Cookie 值，也推不回原 token），但仍只有 64 个字符这一种合法形状。
+TOKEN_HASH_HEX = r"[0-9a-f]{64}"
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -164,6 +169,34 @@ class AuthService:
         await self.session.commit()
         return result.rowcount or 0
 
+    async def list_sessions(self, user_id: int) -> list[UserSession]:
+        """This account's live sessions, newest activity first.
+
+        No pagination: a household has a handful of browsers, and the rows
+        disappear on their own when they expire or get revoked.
+        """
+        result = await self.session.execute(
+            select(UserSession)
+            .where(UserSession.user_id == user_id)
+            .order_by(UserSession.last_seen_at.desc(), UserSession.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def revoke_session(self, user_id: int, token_hash: str) -> bool:
+        """Sign out one browser of this account; False when the row is not its own.
+
+        The user_id is part of the match on purpose: the caller addresses a
+        session by its digest, and without the scope a guessed hash would sign
+        out a stranger's device.
+        """
+        result = await self.session.execute(
+            delete(UserSession).where(
+                UserSession.user_id == user_id, UserSession.token_hash == token_hash
+            )
+        )
+        await self.session.commit()
+        return (result.rowcount or 0) > 0
+
     # ---------- 账号 ----------
 
     async def create_user(
@@ -255,16 +288,53 @@ class AuthService:
     async def set_role(self, user: User, role: str) -> User:
         if role not in ROLES:
             raise ValueError(f"角色只能是 {'/'.join(ROLES)}")
+        if user.role == ROLE_OWNER and role != ROLE_OWNER:
+            await self._require_another_owner(user, "降级")
         user.role = role
         await self.session.commit()
         return user
 
     async def set_active(self, user: User, active: bool) -> User:
+        if not active:
+            await self._require_another_owner(user, "停用")
         user.is_active = active
         if not active:
             await self.revoke_sessions(user.id)
         await self.session.commit()
         return user
+
+    async def reset_password(self, user: User, new_password: str) -> User:
+        """Set a new password without the old one, then sign that account out.
+
+        Only 用户管理 calls this — an owner handing a forgotten password back —
+        so every session of that account is dropped and the person has to sign
+        in with the new one. Self-service changes go through
+        :meth:`change_password`, which keeps the caller's session alive.
+        """
+        validate_password_strength(new_password)
+        user.password_hash = hash_password(new_password)
+        await self.session.commit()
+        await self.revoke_sessions(user.id)
+        return user
+
+    async def count_owners(self, *, exclude_user_id: int | None = None) -> int:
+        """How many usable administrators there are, optionally sparing one."""
+        stmt = select(User.id).where(User.role == ROLE_OWNER, User.is_active.is_(True))
+        if exclude_user_id is not None:
+            stmt = stmt.where(User.id != exclude_user_id)
+        result = await self.session.execute(stmt)
+        return len(result.all())
+
+    async def _require_another_owner(self, user: User, action: str) -> None:
+        """Refuse to lock the household out of its own admin surface.
+
+        一个只剩管理员的库要是被降级或被停用，就再没人能改视频源、扫描、建号，
+        命令行之外的恢复途径也没了。
+        """
+        if user.role != ROLE_OWNER:
+            return
+        if await self.count_owners(exclude_user_id=user.id) == 0:
+            raise ValueError(f"至少要保留一个可用的管理员，不能{action}最后一个")
 
 
 def validate_password_strength(password: str) -> None:
@@ -340,4 +410,21 @@ def user_payload(user: User) -> dict[str, Any]:
         "username": user.username,
         "role": user.role,
         "display_name": user.display_name,
+    }
+
+
+def session_payload(sess: UserSession, *, current: bool = False) -> dict[str, Any]:
+    """One row of 我的设备: which browser still holds this session open.
+
+    ``token_hash`` is the digest rather than the cookie value, so echoing it
+    back to the browser leaks nothing and still gives the frontend an address
+    to revoke that device by.
+    """
+    return {
+        "token_hash": sess.token_hash,
+        "current": current,
+        "user_agent": sess.user_agent,
+        "created_at": sess.created_at,
+        "last_seen_at": sess.last_seen_at,
+        "expires_at": sess.expires_at,
     }

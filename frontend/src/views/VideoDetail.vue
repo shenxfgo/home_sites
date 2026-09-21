@@ -37,10 +37,14 @@ import {
 import type { Watchlist } from '@/api/watchlists'
 import type { Video, VideoUpdate } from '@/types/video'
 import type { Tag } from '@/types/video'
+import { useAuth } from '@/composables/useAuth'
 import VideoPlayer from '@/components/VideoPlayer.vue'
 
 const route = useRoute()
 const router = useRouter()
+
+// 改库、删片、贴标签、转码都是管理员的写操作；成员在这一页只看和播，不给会吃 403 的入口。
+const { isOwner } = useAuth()
 
 const video = ref<Video | null>(null)
 const loading = ref(true)
@@ -364,13 +368,13 @@ onMounted(() => {
                 <el-button :icon="Tickets" @click="openWatchlistDialog">
                   片单
                 </el-button>
-                <el-button :icon="Setting" @click="router.push({ name: 'transcode', params: { id: video.id } })">
+                <el-button v-if="isOwner" :icon="Setting" @click="router.push({ name: 'transcode', params: { id: video.id } })">
                   转码
                 </el-button>
-                <el-button :icon="Edit" @click="startEdit">
+                <el-button v-if="isOwner" :icon="Edit" @click="startEdit">
                   编辑
                 </el-button>
-                <el-button :icon="Delete" type="danger" @click="handleDelete">
+                <el-button v-if="isOwner" :icon="Delete" type="danger" @click="handleDelete">
                   删除
                 </el-button>
               </div>
@@ -408,6 +412,7 @@ onMounted(() => {
                   {{ tag.name }}
                 </el-tag>
                 <el-button
+                  v-if="isOwner"
                   :icon="Plus"
                   size="small"
                   circle

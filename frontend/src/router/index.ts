@@ -2,6 +2,17 @@ import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import { setUnauthorizedHandler } from '@/api/client'
 import { useAuth } from '@/composables/useAuth'
+import type { UserRole } from '@/types/auth'
+
+declare module 'vue-router' {
+  interface RouteMeta {
+    title?: string
+    /** 登录页这类裸页：不套顶栏，也不需要会话。 */
+    public?: boolean
+    /** 谁能进这一页；省略表示所有登录用户。 */
+    roles?: UserRole[]
+  }
+}
 
 const routes: RouteRecordRaw[] = [
   {
@@ -20,7 +31,7 @@ const routes: RouteRecordRaw[] = [
     path: '/sources',
     name: 'sources',
     component: () => import('@/views/Sources.vue'),
-    meta: { title: '视频源' },
+    meta: { title: '视频源', roles: ['owner'] },
   },
   {
     path: '/history',
@@ -50,7 +61,7 @@ const routes: RouteRecordRaw[] = [
     path: '/tags',
     name: 'tags',
     component: () => import('@/views/Tags.vue'),
-    meta: { title: '标签管理' },
+    meta: { title: '标签管理', roles: ['owner'] },
   },
   {
     path: '/videos/:id',
@@ -62,13 +73,25 @@ const routes: RouteRecordRaw[] = [
     path: '/videos/:id/transcode',
     name: 'transcode',
     component: () => import('@/views/Transcode.vue'),
-    meta: { title: '视频转码' },
+    meta: { title: '视频转码', roles: ['owner'] },
   },
   {
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/Settings.vue'),
-    meta: { title: '设置' },
+    meta: { title: '设置', roles: ['owner'] },
+  },
+  {
+    path: '/users',
+    name: 'users',
+    component: () => import('@/views/Users.vue'),
+    meta: { title: '用户管理', roles: ['owner'] },
+  },
+  {
+    path: '/profile',
+    name: 'profile',
+    component: () => import('@/views/Profile.vue'),
+    meta: { title: '个人设置' },
   },
   {
     path: '/:pathMatch(.*)*',
@@ -83,7 +106,7 @@ const router = createRouter({
   routes,
 })
 
-const { load, forget, isAuthenticated } = useAuth()
+const { load, forget, isAuthenticated, user } = useAuth()
 
 // 会话过期只在这一处处理：业务代码收到的仍然是普通报错，不需要各自判断 401。
 setUnauthorizedHandler(() => {
@@ -102,6 +125,10 @@ router.beforeEach(async (to) => {
   }
   if (!isAuthenticated.value) await load().catch(() => null)
   if (!isAuthenticated.value) return { name: 'login', query: { redirect: to.fullPath } }
+  // 管理页对成员直接送回首页：顶栏本来就不给他显示这些入口，撞上的都是手敲地址。
+  // 真正的拒绝在服务端（同一请求会拿 403），这里只是不让人看见一个空壳页面。
+  const allowed = to.meta.roles
+  if (allowed && !allowed.includes(user.value!.role)) return { path: '/' }
   return true
 })
 

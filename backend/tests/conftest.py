@@ -157,17 +157,17 @@ async def client(anon_client, signed_in_user):
 
 
 @pytest_asyncio.fixture
-async def make_signed_in_client(db_session, anon_client, make_user):
-    """Build a second signed-in client, so a test has two people to isolate.
+async def make_client_for(db_session, anon_client):
+    """Hand an existing account a browser of its own.
 
-    The extra client shares the session the middleware already resolves, which
-    is what lets A ask for a row B owns and see the answer.
+    :func:`make_signed_in_client` creates the person and the client in one step;
+    a test that already holds the ``User`` row — because it wants the id, or
+    wants to disable the account later — comes here instead.
     """
     clients: list[httpx.AsyncClient] = []
 
-    async def _make(username: str, role: str = ROLE_OWNER) -> httpx.AsyncClient:
-        user = await make_user(username, role)
-        token = f"token-{username}"
+    async def _make(user: User) -> httpx.AsyncClient:
+        token = f"token-{user.id}-{len(clients)}"
         now = datetime.now(timezone.utc)
         db_session.add(
             UserSession(
@@ -191,3 +191,43 @@ async def make_signed_in_client(db_session, anon_client, make_user):
 
     for ac in clients:
         await ac.aclose()
+
+
+@pytest_asyncio.fixture
+async def new_browser(anon_client):
+    """A separate browser: its own cookie jar, same app.
+
+    ``client`` and ``anon_client`` are the *same* object — one AsyncClient whose
+    cookie the ``client`` fixture fills in — so a test that signs a second person
+    in with a password needs a jar of their own. Depending on ``anon_client``
+    takes the middleware's patched session factory and the dependency overrides.
+    """
+    clients: list[httpx.AsyncClient] = []
+
+    async def _make() -> httpx.AsyncClient:
+        ac = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+            headers={CSRF_HEADER: CSRF_HEADER_VALUE},
+        )
+        clients.append(ac)
+        return ac
+
+    yield _make
+
+    for ac in clients:
+        await ac.aclose()
+
+
+@pytest_asyncio.fixture
+async def make_signed_in_client(make_user, make_client_for):
+    """Build a second signed-in client, so a test has two people to isolate.
+
+    The extra client shares the session the middleware already resolves, which
+    is what lets A ask for a row B owns and see the answer.
+    """
+
+    async def _make(username: str, role: str = ROLE_OWNER) -> httpx.AsyncClient:
+        return await make_client_for(await make_user(username, role))
+
+    return _make

@@ -257,3 +257,59 @@ async def test_first_owner_inherits_the_legacy_rows():
         ) == 0
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_the_shared_theme_becomes_every_account_s_own_preference():
+    """M3 把 ``settings.theme`` 拆成了个人偏好，升级时按老值铺一遍再删掉共享键。"""
+    engine = await _legacy_engine()
+    async with engine.begin() as conn:
+        await apply_schema_fixes(conn)  # 建出 users / settings / user_preferences
+        await conn.execute(text("INSERT INTO settings (key, value, updated_at) VALUES ('theme', 'dark', '2026-01-03 10:00:00')"))
+        await conn.execute(
+            text(
+                "INSERT INTO users (username, password_hash, role, is_active, created_at) "
+                "VALUES ('a', 'x', 'owner', 1, '2026-01-01 10:00:00'),"
+                "       ('b', 'y', 'member', 1, '2026-01-02 10:00:00')"
+            )
+        )
+
+    async with engine.begin() as conn:
+        await apply_schema_fixes(conn)
+
+        assert await _scalar(
+            conn, "SELECT user_id, prefs FROM user_preferences ORDER BY user_id"
+        ) == [(1, '{"theme":"dark"}'), (2, '{"theme":"dark"}')]
+        # 共享那一行已经不存在，第三次启动也就不会重复铺。
+        assert await _scalar(
+            conn, "SELECT COUNT(*) FROM settings WHERE key = 'theme'"
+        ) == [(0,)]
+
+        await apply_schema_fixes(conn)
+        assert await _scalar(conn, "SELECT COUNT(*) FROM user_preferences") == [(2,)]
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_legacy_theme_falls_back_to_light():
+    """老库里的 theme 是被 UI 写出来的，但手工改过的值不该拼坏 JSON。"""
+    engine = await _legacy_engine()
+    async with engine.begin() as conn:
+        await apply_schema_fixes(conn)
+        await conn.execute(text("INSERT INTO settings (key, value, updated_at) VALUES ('theme', 'neon', '2026-01-03 10:00:00')"))
+        await conn.execute(
+            text(
+                "INSERT INTO users (username, password_hash, role, is_active, created_at) "
+                "VALUES ('a', 'x', 'owner', 1, '2026-01-01 10:00:00')"
+            )
+        )
+
+    async with engine.begin() as conn:
+        await apply_schema_fixes(conn)
+
+        assert await _scalar(
+            conn, "SELECT prefs FROM user_preferences WHERE user_id = 1"
+        ) == [('{"theme":"light"}',)]
+
+    await engine.dispose()

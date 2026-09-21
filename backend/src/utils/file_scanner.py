@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+# 什么算视频文件由这里说了算，存储层反过来引用它：utils 不依赖 src.storage，
+# 否则 local 实现 import 本模块、本模块 import 存储层，服务一启动就绕成环。
 VIDEO_EXTENSIONS: set[str] = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
 }

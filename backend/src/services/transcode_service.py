@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database.session import async_session_maker
 from src.models.video import Video
 from src.services.notification_service import NotificationService
+from src.storage import UnsupportedStorage, storage_for_locator
 from src.utils.ffmpeg import (
     transcode_video,
     check_format_support,
@@ -62,7 +63,15 @@ class TranscodeService:
         if running and running.status == "running":
             raise ValueError("Video is already being transcoded")
 
-        input_path = video.filepath
+        # FFmpeg 只认本地路径。把对象存储的 locator 直接丢给它，得到的是一句
+        # "文件不存在"——那是假话，所以先向存储层要路径，要不到就说明是这类源
+        # 暂不支持转码，而不是文件丢了。
+        try:
+            input_path = storage_for_locator(video.filepath).local_path(
+                video.filepath
+            )
+        except UnsupportedStorage as exc:
+            raise ValueError(str(exc)) from exc
         if not Path(input_path).is_file():
             raise ValueError(f"Video file not found: {input_path}")
 

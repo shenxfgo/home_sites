@@ -1,27 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Setting } from '@element-plus/icons-vue'
 import { getSettings, updateSettings, type Settings } from '@/api/settings'
-import { useTheme, setTheme, type Theme } from '@/composables/useTheme'
 
-useTheme()
-
+// 这一页只剩系统配置（owner 可见）；主题这类个人偏好在 /profile 按人保存。
 const settings = ref<Settings>({
   auto_scan_enabled: true,
   auto_scan_interval: 3600,
   default_transcode_format: 'mp4',
   thumbnail_width: 320,
   thumbnail_height: 180,
-  theme: 'light',
 })
 const loading = ref(false)
 const saving = ref(false)
-
-// Apply theme immediately when changed
-watch(() => settings.value.theme, (newTheme) => {
-  setTheme(newTheme as Theme)
-})
 
 const transcodeFormats = [
   { label: 'MP4 (H.264)', value: 'mp4' },
@@ -29,12 +21,6 @@ const transcodeFormats = [
   { label: 'WebM (VP9)', value: 'webm' },
   { label: 'AVI', value: 'avi' },
   { label: 'MKV', value: 'mkv' },
-]
-
-const themes = [
-  { label: '浅色模式', value: 'light' },
-  { label: '深色模式', value: 'dark' },
-  { label: '跟随系统', value: 'auto' },
 ]
 
 const scanIntervals = [
@@ -155,27 +141,6 @@ onMounted(loadSettings)
             :step="10"
           />
           <span class="form-hint">像素</span>
-        </el-form-item>
-      </el-form>
-    </el-card>
-
-    <el-card class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span>界面设置</span>
-        </div>
-      </template>
-
-      <el-form label-width="140px" label-position="left">
-        <el-form-item label="主题">
-          <el-select v-model="settings.theme" style="width: 200px">
-            <el-option
-              v-for="item in themes"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </el-select>
         </el-form-item>
       </el-form>
     </el-card>

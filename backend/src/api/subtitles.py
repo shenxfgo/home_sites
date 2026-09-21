@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
+from src.models.video import Video
 from src.services.subtitle_service import SubtitleService
+from src.storage import UnsupportedStorage, storage_for_locator
 from src.utils.media_streams import (
     StreamNotFound,
     extract_subtitle_webvtt,
@@ -21,6 +23,18 @@ from src.utils.subtitles import (
 )
 
 router = APIRouter(prefix="/api/videos", tags=["subtitles"])
+
+
+def _ffmpeg_input(video: Video) -> str:
+    """本地进程真能打开的那个路径。
+
+    内嵌字幕轨要靠 ffprobe/ffmpeg 在文件里来回 seek，对象存储给不了这个把手，
+    所以这里必须挡下来，而不是让它变成一次注定失败的子进程调用。
+    """
+    try:
+        return storage_for_locator(video.filepath).local_path(video.filepath)
+    except UnsupportedStorage as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class SubtitleResponse(BaseModel):
@@ -113,7 +127,7 @@ async def list_media_streams(
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")
 
-    found = await asyncio.to_thread(probe_streams, video.filepath)
+    found = await asyncio.to_thread(probe_streams, _ffmpeg_input(video))
     return MediaStreamsResponse(**found)
 
 
@@ -130,7 +144,7 @@ async def stream_embedded_subtitle(
 
     try:
         payload = await asyncio.to_thread(
-            extract_subtitle_webvtt, video.filepath, stream_index
+            extract_subtitle_webvtt, _ffmpeg_input(video), stream_index
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="视频文件不存在")

@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AxiosResponse, InternalAxiosRequestConfig } from 'axios'
 import client from '@/api/client'
-import { changePassword, getAuthStatus, getMe, login, logout } from '@/api/auth'
+import {
+  changePassword,
+  getAuthStatus,
+  getMe,
+  listSessions,
+  login,
+  logout,
+  revokeSession,
+} from '@/api/auth'
 
 function captureRequests(): string[] {
   const seen: string[] = []
@@ -23,7 +31,7 @@ describe('auth api', () => {
     delete client.defaults.adapter
   })
 
-  it('calls the five auth routes without repeating the /api prefix', async () => {
+  it('calls the seven auth routes without repeating the /api prefix', async () => {
     const seen = captureRequests()
 
     await login('tester', 'secret-pass', true)
@@ -31,6 +39,8 @@ describe('auth api', () => {
     await getMe()
     await logout()
     await changePassword('secret-pass', 'newer-pass')
+    await listSessions()
+    await revokeSession('a'.repeat(64))
 
     expect(seen).toEqual([
       'POST /api/auth/login',
@@ -38,6 +48,8 @@ describe('auth api', () => {
       'GET /api/auth/me',
       'POST /api/auth/logout',
       'POST /api/auth/password',
+      'GET /api/auth/sessions',
+      `DELETE /api/auth/sessions/${'a'.repeat(64)}`,
     ])
   })
 
