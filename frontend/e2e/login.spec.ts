@@ -30,6 +30,22 @@ test('账号或密码错误时给出后端的原因', async ({ page }) => {
   await expect(page).toHaveURL(/\/login/)
 })
 
+test('空白表单不发请求，提示是人话', async ({ page }) => {
+  await mockApi(page, { signedIn: false })
+  await page.goto('/login')
+
+  const sent: string[] = []
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/auth/login') sent.push(request.method())
+  })
+
+  await page.locator('.submit').click()
+
+  await expect(page.locator('.error')).toHaveText('请输入账号和密码')
+  expect(sent).toHaveLength(0)
+  await expect(page).toHaveURL(/\/login/)
+})
+
 test('登录成功后回到原本要看的页面', async ({ page }) => {
   await mockApi(page, { signedIn: false })
   await page.goto('/sources')

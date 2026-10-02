@@ -556,13 +556,16 @@ client.interceptors.response.use(
     if (error.response?.status === 401 && !url.startsWith('/auth/') && onUnauthorized) {
       onUnauthorized()
     }
-    const message = error.response?.data?.detail ?? error.message ?? 'Unknown error'
+    const message = flattenDetail(error.response?.data?.detail) ?? error.message ?? 'Unknown error'
     return Promise.reject(new Error(message))
   }
 )
 ```
 
 所以调用侧拿到的一直是 `Error(后端 detail)`，`catch` 里直接 `e.message` 就是给人看的那句话。
+
+- `flattenDetail` 是为 422 存在的：pydantic 的校验错误在 `detail` 里是**对象数组**（`type` / `loc` / `msg` / `ctx`），原样当消息用浏览器就渲染成 `[object Object],[object Object]`。摊出来的格式是「字段 原因；字段 原因」，字段名取 `loc` 除第 0 项（`body`/`query`/`path` 这些 scope）之后最后一个字符串，所以 `['body','tags',0]` 报成 `tags`。原因按 `type` 查表翻译成中文，表里没有的类型退回 `msg` 原文——**宁可留一句英文，也不要再出现 `[object Object]`**。后端普遍用 `min_length=1` 表达必填，这类单独说成「不能为空」
+- 表单页仍然要自己做**空值前置校验**（见 `views/Login.vue` 的 `submit()`）：客户端拦得住的错不必绕一圈服务端。拦截器的摊平是兜底，管的是拦不住的那些（长度、范围、格式）
 
 ## 认证与路由守卫
 

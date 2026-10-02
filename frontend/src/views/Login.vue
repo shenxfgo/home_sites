@@ -27,10 +27,16 @@ onMounted(() => {
 
 async function submit() {
   if (submitting.value) return
+  const account = username.value.trim()
+  // 空表单在本地拦下：后端的 422 是字段级校验错误，摊到登录页上只会剩一串代码
+  if (!account || !password.value) {
+    errorMessage.value = !account && !password.value ? '请输入账号和密码' : account ? '请输入密码' : '请输入账号'
+    return
+  }
   submitting.value = true
   errorMessage.value = ''
   try {
-    await signIn(username.value.trim(), password.value, remember.value)
+    await signIn(account, password.value, remember.value)
     await router.replace(redirectTo.value)
   } catch (e) {
     errorMessage.value = e instanceof Error ? e.message : '登录失败'

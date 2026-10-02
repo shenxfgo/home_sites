@@ -26,6 +26,54 @@ describe('api client', () => {
     await expect(client.get('/sources', { adapter })).rejects.toThrow('Network Error')
   })
 
+  it('摊平 FastAPI 的 422 数组，而不是留下 [object Object]', async () => {
+    const detail = [
+      {
+        type: 'string_too_short',
+        loc: ['body', 'username'],
+        msg: 'String should have at least 1 character',
+        input: '',
+        ctx: { min_length: 1 },
+      },
+      {
+        type: 'string_too_short',
+        loc: ['body', 'password'],
+        msg: 'String should have at least 1 character',
+        input: '',
+        ctx: { min_length: 1 },
+      },
+    ]
+
+    await expect(
+      client.post('/auth/login', {}, { adapter: failingAdapter(422, { detail }, 'Request failed') }),
+    ).rejects.toThrow('username 不能为空；password 不能为空')
+  })
+
+  it('按校验类型说人话，认不出的类型退回后端原文', async () => {
+    const detail = [
+      { type: 'string_too_long', loc: ['body', 'name'], msg: 'String should have at most 50 characters', ctx: { max_length: 50 } },
+      { type: 'greater_than_equal', loc: ['body', 'interval_seconds'], msg: 'Input should be greater than or equal to 60', ctx: { ge: 60 } },
+      { type: 'missing', loc: ['query', 'source_id'], msg: 'Field required' },
+      { type: 'value_error', loc: ['body', 'path'], msg: '路径必须存在' },
+    ]
+
+    await expect(
+      client.post('/sources', {}, { adapter: failingAdapter(422, { detail }, 'Request failed') }),
+    ).rejects.toThrow('name 长度最多 50 个字符；interval_seconds 不能小于 60；source_id 不能为空；path 路径必须存在')
+  })
+
+  it('422 数组是空的时退回传输层的消息', async () => {
+    await expect(
+      client.get('/sources', { adapter: failingAdapter(422, { detail: [] }, 'Request failed') }),
+    ).rejects.toThrow('Request failed')
+  })
+
+  it('认不出的 422 条目形状也有一句话可看，不是 [object Object]', async () => {
+    await expect(
+      client.get('/sources', { adapter: failingAdapter(422, { detail: [{}] }, 'Request failed') }),
+    ).rejects.toThrow('输入不合法')
+  })
+
   it('leaves successful responses untouched', async () => {
     const payload = { items: [], total: 0 }
     const adapter = (config: InternalAxiosRequestConfig) =>

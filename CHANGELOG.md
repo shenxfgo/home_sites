@@ -1,5 +1,33 @@
 # 更新日志
 
+## 2026-10-02
+
+### 修复：登录时空着点登录，提示是 `[object Object],[object Object]`
+
+- **报上来的是一句乱码，根因在全站共用的那行代码**：`api/client.ts` 的响应拦截器过去写 `error.response?.data?.detail ?? error.message`。字符串型 `detail`（后端手写的中文 400/401/404）走这条路没问题，但 pydantic 的 422 把 `detail` 装成**对象数组**，两个条目拼起来就是那句 `[object Object],[object Object]`。登录接口的 `username`/`password` 都写 `min_length=1`，所以字段留空正好一次踩中两条
+- **摊平放在拦截器里，不给每个表单各写一份**：`flattenDetail()` 把数组收成「字段 原因；字段 原因」，按 `type` 查表翻中文（`missing`→不能为空、`string_too_long`→长度最多 N 个字符、`greater_than_equal`→不能小于 N、`int_parsing`→必须是整数、`string_pattern_mismatch`→格式不正确…），表里没有的类型**退回 `msg` 原文**——留着英文也比留乱码有用
+- **`min_length=1` 特判成「不能为空」**：后端用它表达"必填"，说「长度至少 1 个字符」是机器话
+- **字段名取 `loc` 里除第 0 项之后最后一个字符串**：第 0 项是 `body`/`query`/`path` 这类定位 scope，末尾的数字是列表下标。中途先写过一版"按 scope 名单过滤"的实现，`{loc:['body','path']}` 直接被过滤成空——而 `path` 恰好是视频源的字段名，用例当场把它钉住了：body 里真叫 `path` 的字段必须还能报出 `path`
+- **登录页另外加了空值前置校验**：账号或密码为空时本地给一句「请输入账号和密码」并直接返回，不发请求。登录框的两个字段服务端只要求非空，**故意没有在前端校验密码长度**——长度不够属于"这个账号密码不对"，应该由 401 那句话说，前端提前拦反而泄了口令策略
+- **不迁移、不改后端**：422 的形状是 FastAPI 的约定，全站 84 个操作共用，改后端响应格式去迁就一个显示问题不划算
+- **测试**：前端单测 263 → **271 passed**（28 文件，+8：422 数组摊平、四类 `type` 逐条说人话、空数组退回传输层消息、认不出的条目形状也有话可看，登录页三条空值分支）。Playwright e2e 79 → **80**（新增一例空白表单：断言 `.error` 文案，并挂 `page.on('request')` 断言 `/api/auth/login` 一次都没发出去）
+- **验证到什么程度**：**跑过一次真后端**——临时把 `client.defaults.baseURL` 指到 `127.0.0.1:8000`、`adapter` 换成 `http` 打真实 `/auth/login`，`{username:'',password:''}` 经拦截器得到 `username 不能为空；password 不能为空`（脚本与临时产物已删）。**真机页面也走过**：登录页只填账号提交，页面显示「请输入密码」且没有发出登录请求。`npm run build` 与 `typecheck:test` 通过，入口 286.29 kB / gzip 93.04 kB 未变。应用内浏览器的指针操作仍不可用（`NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`，视口 0×0），提交这一步是脚本触发 `form.requestSubmit()` 走原生提交流程，等价于点登录按钮
+- **一处 flake 记录在案**：全量 e2e 首跑见 `登录成功后回到原本要看的页面` 失败一次，串行（9 通过）与再并发（80 通过）各重跑一次都干净，判为 9 worker 抢冷启动 Vite 变换，未复现，也与本次改动无因果（该用例走的是 401 那条字符串分支）
+- **未修的一处同源问题**：`views/Transcode.vue:147` 与 `:168` 读的是 `error.response?.data?.detail`，而拦截器 `reject` 出去的是普通 `Error`、`response` 早就不在上面了——这两处实际永远落到 `|| '转码失败'`，后端那句中文原因一直在被丢掉。它不在本次报告范围内，改法（改读 `e.message`）会连带影响转码页的提示文案，留作单独一条
+
+## 2026-09-22
+
+### 修复：封面被同名视频互相覆盖，以及封面目录跟着启动目录跑
+
+- **两处都是"静默失效"型**，一起修是因为同源：封面文件名过去只由原片 basename 推出来。`a/01.mp4` 与 `b/01.mp4` 落在同一个视频源下时写到同一个 `1/01.jpg`，后扫的那张把前一张盖掉，两行都"有封面"、日志什么都没写。第二类同理，`THUMBNAIL_PATH=./data/thumbnails` 是相对值，而库里存的是**算出来的完整字符串**，读取端 `os.path.isfile` 按进程工作目录解析它——从仓库根目录启动服务，全库封面就变成占位图
+- **封面名改成 `{原文件名}-{sha256(locator)[:12]}.jpg`**（`scan_service._thumbnail_target`）：保留可读的文件名前缀便于排查，尾部摘要用整个 locator 算，locator 本来就是库里的唯一键，所以"同名不同目录"必然分出两个文件
+- **相对路径在配置层就锚定到 `backend/`**（`config.py` 新增 `BACKEND_ROOT` 与一个 `field_validator`），而不是在每个使用点各自 `abspath`。绝对值与空值原样放过——测试把封面目录指到 tmp，空值表示关掉封面生成。**没有取消"从 `backend/` 启动"这个约定**：`DATABASE_URL` 和 `.env` 本身仍然是 cwd 相对的，那两处才是启动目录真正的依赖
+- **不迁移、不回填**：老行的 `thumbnail_path` 指向旧文件，文件还在、照常能读；但**过去已经被盖掉过的那一张不会自愈**——重扫在 `known → continue` 那一步就跳过了，要恢复只能删掉该行重扫。家里库里有没有这种行没人知道，因为盖掉的时候什么都没留
+- **顺带修掉测试自身的污染**：`tests/test_config.py` 用 `os.environ` 写 `API_PORT=invalid` 且不清理，同进程里后面任何一个 `Settings()` 都会带着这个值炸掉。新加的两条配置用例正好排在它后面才暴露出来，改用 `monkeypatch.setenv` 后整套用例顺序无关
+- **实测而非只跑测试**：从仓库根目录 import 配置，`thumbnail_path` 得到 `D:\...\backend\data\thumbnails`（绝对）；`/library/a/01.mp4` 与 `/library/b/01.mp4` 分别得到 `01-7623c3398c9a.jpg` 与 `01-ecd7af4f3df0.jpg`
+- **测试**：后端 539 → **542 passed**（55.8s，+3：同名两子目录各留一张封面、相对值锚定、绝对值与空值放过）。前端未动
+- **未修的三处已知问题**：设置页的「缩略图宽度 / 高度」存进表但 `generate_thumbnail` 里 `scale=320:-1` 是硬编码，是摆设（已写进 `backend/CLAUDE.md` 免得下一个人去改表单）；`VIDEO_STORAGE_PATH` 全仓除定义外无人读取，是死配置；扫描里的 ffprobe 是事件循环内同步 `subprocess.run`，本机毫秒级看不出来，一旦喂网络地址就会卡住整个 API——这是对象存储取元数据的前置条件
+
 ## 2026-09-21
 
 ### 重构 + 新增功能：取文件收成一道接缝（`src/storage/`），对象存储视频源落地

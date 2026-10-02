@@ -89,6 +89,40 @@ describe('Login view', () => {
     expect(router.currentRoute.value.path).toBe('/login')
   })
 
+  it('空白表单在本地拦下，不发出登录请求', async () => {
+    const { wrapper, router } = await mountLogin()
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(login).not.toHaveBeenCalled()
+    expect(wrapper.get('.error').text()).toBe('请输入账号和密码')
+    expect(router.currentRoute.value.path).toBe('/login')
+  })
+
+  it('只填了账号就提醒补密码', async () => {
+    const { wrapper } = await mountLogin()
+    await wrapper.get('#login-username').setValue('tester')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(login).not.toHaveBeenCalled()
+    expect(wrapper.get('.error').text()).toBe('请输入密码')
+  })
+
+  it('只有账号是空格时算没填', async () => {
+    const { wrapper } = await mountLogin()
+    await wrapper.get('#login-username').setValue('   ')
+    await wrapper.get('#login-password').setValue('secret-pass')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(login).not.toHaveBeenCalled()
+    expect(wrapper.get('.error').text()).toBe('请输入账号')
+  })
+
   it('tells an empty library how to make its first account', async () => {
     vi.mocked(getAuthStatus).mockResolvedValue({ authenticated: false, needs_setup: true })
 
