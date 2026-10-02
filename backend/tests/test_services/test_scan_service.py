@@ -577,3 +577,62 @@ async def test_unmounted_source_marks_nothing(db_session):
     await db_session.refresh(video)
     assert result["files_found"] == 0
     assert video.is_missing is False
+
+
+@pytest.mark.asyncio
+async def test_same_basename_in_two_subfolders_keeps_two_covers(
+    db_session, monkeypatch, tmp_path
+):
+    """同名不同目录的片子各自留一张封面。
+
+    封面名只按 basename 推的时候，``a/01.mp4`` 和 ``b/01.mp4`` 会写到同一个
+    ``01.jpg``，后扫的那张悄悄把前一张盖掉 —— 两行都"有封面"，看不出坏过。
+    """
+    from src.config import settings
+
+    source = await _create_source(db_session, path="/library")
+    _patch_storage(
+        monkeypatch,
+        _FakeStorage(
+            files=[_found("/library/a/01.mp4"), _found("/library/b/01.mp4")]
+        ),
+    )
+    monkeypatch.setattr(settings, "thumbnail_path", str(tmp_path / "thumbs"))
+
+    written: list[str] = []
+
+    def _fake_generate(video_path: str, output_path: str) -> str:
+        # 真 ffmpeg 会落下文件，扫描靠它判断封面是否成功
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "wb"):
+            pass
+        written.append(output_path)
+        return output_path
+
+    with patch("src.services.scan_service.extract_video_info") as mock_info, patch(
+        "src.services.scan_service.generate_thumbnail", side_effect=_fake_generate
+    ):
+        mock_info.return_value = {"duration": 20, "format": "mp4"}
+        result = await ScanService(db_session).scan_source(source.id)
+
+    assert result["new_videos"] == 2
+    assert len(set(written)) == 2, "两张封面写到了同一个文件"
+
+    rows = (
+        (
+            await db_session.execute(
+                select(Video)
+                .where(Video.source_id == source.id)
+                .order_by(Video.filepath)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    names = [os.path.basename(row.thumbnail_path) for row in rows]
+    assert len(set(names)) == 2
+    assert all(name.startswith("01-") and name.endswith(".jpg") for name in names)
+    assert all(
+        row.thumbnail_path.startswith(str(tmp_path / "thumbs" / str(source.id)))
+        for row in rows
+    )

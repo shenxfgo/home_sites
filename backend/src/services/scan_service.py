@@ -1,5 +1,6 @@
 """ScanService for scanning video sources and discovering new videos."""
 import asyncio
+import hashlib
 import logging
 import os
 from contextlib import contextmanager
@@ -109,6 +110,18 @@ def _probe_info(locator: str, extension: str, storage: MediaStorage) -> dict:
     if not storage.capabilities.local_path:
         return {"duration": None, "resolution": None, "format": extension.lstrip(".")}
     return extract_video_info(locator)
+
+
+def _thumbnail_target(root: str, source_id: int, locator: str) -> str:
+    """这张片子该把封面写到哪个文件。
+
+    名字里带 locator 的摘要：只按 basename 命名的话，同一个视频源的不同子目录
+    里出现同名文件（``a/01.mp4`` 和 ``b/01.mp4``）就会写到同一个 ``01.jpg``，
+    后扫的那张把前一张的封面盖掉，而且没有任何地方会报错。
+    """
+    stem = os.path.splitext(os.path.basename(locator))[0]
+    digest = hashlib.sha256(locator.encode("utf-8")).hexdigest()[:12]
+    return os.path.join(root, str(source_id), f"{stem}-{digest}.jpg")
 
 
 async def _tag_index(session: AsyncSession) -> dict[str, Tag]:
@@ -240,11 +253,8 @@ class ScanService:
                         # Generate thumbnail
                         thumbnail_path = ""
                         if settings.thumbnail_path and storage.capabilities.local_path:
-                            thumb_filename = (
-                                os.path.splitext(os.path.basename(filepath))[0] + ".jpg"
-                            )
-                            thumbnail_path = os.path.join(
-                                settings.thumbnail_path, str(source_id), thumb_filename
+                            thumbnail_path = _thumbnail_target(
+                                settings.thumbnail_path, source_id, filepath
                             )
                             # Run thumbnail generation in a thread to avoid blocking
                             loop = asyncio.get_event_loop()

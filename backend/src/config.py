@@ -1,5 +1,13 @@
 # backend/src/config.py
+import os
+from pathlib import Path
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: 相对路径的锚点。这里用文件位置而不是 cwd，是为了让配置与 uvicorn 从哪个目录
+#: 启动无关 —— 见 ``_anchor_under_backend``。
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
 class Settings(BaseSettings):
@@ -44,6 +52,19 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool = False
     login_max_failures: int = 5
     login_lockout_minutes: int = 10
+
+    @field_validator("thumbnail_path")
+    @classmethod
+    def _anchor_under_backend(cls, value: str) -> str:
+        """把相对的封面目录按 backend/ 展开成绝对路径。
+
+        ``Video.thumbnail_path`` 存的是当时算出来的字符串，读取端
+        （``stream.py`` 的 ``os.path.isfile``）按进程的工作目录去解析它。
+        于是从仓库根目录启动服务就会让全库封面变成"无封面"。
+        """
+        if not value or os.path.isabs(value):
+            return value
+        return os.path.normpath(BACKEND_ROOT / value)
 
     def get_cors_origins_list(self) -> list[str]:
         """Parse CORS origins from comma-separated string."""
