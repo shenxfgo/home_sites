@@ -7,22 +7,16 @@ from src.services.notification_service import NotificationService
 
 logger = logging.getLogger(__name__)
 
+# 扫描完成的通知由 ScanService.scan_source 自己发（库里变了才发）。这里只负责
+# 把异常变成一条通知：任务要是也发一条，一轮定时扫描就会对同一次扫描说两遍。
+
 
 async def scan_source_task(source_id: int) -> None:
     """Task to scan a specific video source."""
     async with async_session_maker() as session:
         try:
             service = ScanService(session)
-            result = await service.scan_source(source_id)
-
-            # Create notification
-            notification_service = NotificationService(session)
-            await notification_service.create(
-                type="scheduled_scan",
-                title="定时扫描完成",
-                message=f"视频源扫描完成，发现 {result.get('new_videos', 0)} 个新视频",
-                data=result,
-            )
+            await service.scan_source(source_id)
         except Exception as e:
             logger.exception("Scheduled scan failed for source %d", source_id)
             # Log error and create error notification
@@ -43,16 +37,7 @@ async def scan_all_active_task() -> None:
     async with async_session_maker() as session:
         try:
             service = ScanService(session)
-            result = await service.scan_all_active()
-
-            # Create notification
-            notification_service = NotificationService(session)
-            await notification_service.create(
-                type="scheduled_scan",
-                title="全量扫描完成",
-                message=f"所有视频源扫描完成，共发现 {result.get('total_new_videos', 0)} 个新视频",
-                data=result,
-            )
+            await service.scan_all_active()
         except Exception as e:
             logger.exception("Full active scan failed")
             try:

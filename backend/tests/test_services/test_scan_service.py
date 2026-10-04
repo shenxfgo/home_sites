@@ -8,14 +8,17 @@ from unittest.mock import patch, MagicMock
 
 from sqlalchemy import select
 
+from src.models.notification import Notification
 from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
 from src.models.tag import Tag
 from src.models.video import Video
 from src.models.new_video import NewVideo
+from src.scheduler import tasks as task_module
 from src.services import scan_service as scan_module
 from src.services.scan_service import ScanService
 from src.storage import Capabilities, FoundFile
+from tests.conftest import _SharedSession
 
 
 class _FakeStorage:
@@ -636,3 +639,90 @@ async def test_same_basename_in_two_subfolders_keeps_two_covers(
         row.thumbnail_path.startswith(str(tmp_path / "thumbs" / str(source.id)))
         for row in rows
     )
+
+
+# ---------------------------------------------------------------------------
+# 通知投递：一轮扫描只说一遍，没变就别说
+
+
+async def _notifications(session) -> list[tuple[str, str]]:
+    """(类型, 文案) 清单，按写入顺序。"""
+    rows = (
+        await session.execute(select(Notification).order_by(Notification.id))
+    ).scalars().all()
+    return [(row.type, row.message) for row in rows]
+
+
+def _share_session(monkeypatch, session) -> None:
+    """让定时任务复用用例的连接，而不是去连真库。"""
+    monkeypatch.setattr(task_module, "async_session_maker", _SharedSession(session))
+
+
+@pytest.mark.asyncio
+async def test_scheduled_scan_announces_once(db_session, monkeypatch, tmp_path):
+    """调度任务和扫描服务不能对同一次扫描各发一条。
+
+    曾经 tasks 在 scan_source 已经写过 scan_complete 之后，又对同一个结果补一条
+    scheduled_scan —— 六个源跑一轮就是 12 条。
+    """
+    _write_video(str(tmp_path), "新片.mp4")
+    source = await _create_source(db_session, name="定时源", path=str(tmp_path))
+    _share_session(monkeypatch, db_session)
+
+    with _no_media_probe():
+        await task_module.scan_source_task(source.id)
+
+    assert await _notifications(db_session) == [
+        ("scan_complete", "视频源 定时源 扫描完成，发现 1 个新视频")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unchanged_scan_announces_nothing(db_session, monkeypatch, tmp_path):
+    """零新增的定时扫描不该把通知流刷成心跳。"""
+    _write_video(str(tmp_path), "老片.mp4")
+    source = await _create_source(db_session, name="安静源", path=str(tmp_path))
+    _share_session(monkeypatch, db_session)
+
+    with _no_media_probe():
+        await task_module.scan_source_task(source.id)
+        before = await _notifications(db_session)
+        await task_module.scan_source_task(source.id)
+        await task_module.scan_source_task(source.id)
+
+    assert len(before) == 1
+    assert await _notifications(db_session) == before
+
+
+@pytest.mark.asyncio
+async def test_vanished_file_still_announces(db_session, tmp_path):
+    """片子没了是变化，必须说 —— 否则整个源掉线只留在行标记里。"""
+    path = _write_video(str(tmp_path), "会消失.mp4")
+    source = await _create_source(db_session, name="消失源", path=str(tmp_path))
+
+    with _no_media_probe():
+        await ScanService(db_session).scan_source(source.id)
+        os.remove(path)
+        await ScanService(db_session).scan_source(source.id)
+
+    assert await _notifications(db_session) == [
+        ("scan_complete", "视频源 消失源 扫描完成，发现 1 个新视频"),
+        ("scan_complete", "视频源 消失源 扫描完成，发现 0 个新视频，1 个文件已找不到"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_new_subtitle_for_existing_video_announces(db_session, tmp_path):
+    """老片旁边多出字幕也是变化，光看 new_videos 会把它漏掉。"""
+    _write_video(str(tmp_path), "movie.mp4")
+    source = await _create_source(db_session, name="字幕源", path=str(tmp_path))
+
+    with _no_media_probe():
+        await ScanService(db_session).scan_source(source.id)
+        _write_text(os.path.join(str(tmp_path), "movie.zh.srt"))
+        await ScanService(db_session).scan_source(source.id)
+
+    assert await _notifications(db_session) == [
+        ("scan_complete", "视频源 字幕源 扫描完成，发现 1 个新视频"),
+        ("scan_complete", "视频源 字幕源 扫描完成，发现 0 个新视频、1 条字幕"),
+    ]

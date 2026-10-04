@@ -200,6 +200,7 @@ class ScanService:
         files_found = 0
         new_videos = 0
         subtitles_found = 0
+        missing_flips = 0
 
         with _tracked_scan():
             _scan_state["current_source"] = source.name
@@ -315,17 +316,33 @@ class ScanService:
             if storage.reachable(source.path):
                 found = {vf.locator for vf in video_files}
                 for video in existing.values():
-                    video.is_missing = video.filepath not in found
+                    is_missing = video.filepath not in found
+                    if video.is_missing != is_missing:
+                        video.is_missing = is_missing
+                        missing_flips += 1
             await self.session.commit()
 
-            # Create scan completion notification
-            notification_service = NotificationService(self.session)
-            await notification_service.create(
-                type="scan_complete",
-                title="扫描完成",
-                message=f"视频源 {source.name} 扫描完成，发现 {new_videos} 个新视频",
-                data={"source_id": source_id, "new_count": new_videos},
-            )
+            # 库没变就不发通知：一轮定时扫描六个源各发一条"发现 0 个新视频"，
+            # 三个小时就能把通知流刷成一堵墙。扫过没扫过本来就记在
+            # source.last_scan_at 上，不需要靠通知当心跳。
+            if new_videos or subtitles_found or missing_flips:
+                message = f"视频源 {source.name} 扫描完成，发现 {new_videos} 个新视频"
+                if subtitles_found:
+                    message += f"、{subtitles_found} 条字幕"
+                if missing_flips:
+                    message += f"，{missing_flips} 个文件已找不到"
+                notification_service = NotificationService(self.session)
+                await notification_service.create(
+                    type="scan_complete",
+                    title="扫描完成",
+                    message=message,
+                    data={
+                        "source_id": source_id,
+                        "new_count": new_videos,
+                        "subtitles_found": subtitles_found,
+                        "missing_changed": missing_flips,
+                    },
+                )
 
         return {
             "source_id": source_id,
