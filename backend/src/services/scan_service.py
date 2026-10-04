@@ -201,7 +201,10 @@ class ScanService:
         files_found = 0
         new_videos = 0
         subtitles_found = 0
-        missing_flips = 0
+        # 丢文件和找回来是两个方向，说两句话：只数"翻了几行"的话，挂载回来那一轮
+        # 界面上写的还是"已找不到"，而那恰恰是好消息。
+        files_lost = 0
+        files_found_again = 0
         foreign_paths = 0
 
         with _tracked_scan():
@@ -338,18 +341,24 @@ class ScanService:
                     is_missing = video.filepath not in found
                     if video.is_missing != is_missing:
                         video.is_missing = is_missing
-                        missing_flips += 1
+                        if is_missing:
+                            files_lost += 1
+                        else:
+                            files_found_again += 1
             await self.session.commit()
 
             # 库没变就不发通知：一轮定时扫描六个源各发一条"发现 0 个新视频"，
             # 三个小时就能把通知流刷成一堵墙。扫过没扫过本来就记在
             # source.last_scan_at 上，不需要靠通知当心跳。
-            if new_videos or subtitles_found or missing_flips:
+            missing_changed = files_lost + files_found_again
+            if new_videos or subtitles_found or missing_changed:
                 message = f"视频源 {source.name} 扫描完成，发现 {new_videos} 个新视频"
                 if subtitles_found:
                     message += f"、{subtitles_found} 条字幕"
-                if missing_flips:
-                    message += f"，{missing_flips} 个文件已找不到"
+                if files_lost:
+                    message += f"，{files_lost} 个文件已找不到"
+                if files_found_again:
+                    message += f"，{files_found_again} 个文件已找回"
                 notification_service = NotificationService(self.session)
                 await notification_service.create(
                     type="scan_complete",
@@ -359,7 +368,7 @@ class ScanService:
                         "source_id": source_id,
                         "new_count": new_videos,
                         "subtitles_found": subtitles_found,
-                        "missing_changed": missing_flips,
+                        "missing_changed": missing_changed,
                     },
                 )
 

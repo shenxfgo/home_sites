@@ -711,6 +711,31 @@ async def test_vanished_file_still_announces(db_session, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_returned_file_announces_a_return(db_session, tmp_path):
+    """文件挂载回来那一轮，通知不能再写「已找不到」。
+
+    计数只数"翻了几行"，不看朝哪个方向翻：丢了 1 行和回来 1 行说的是同一句话，而后者
+    恰恰是好消息 —— 界面上会显示「1 个文件已找不到」，同时那部片子已经能播了。
+    """
+    path = _write_video(str(tmp_path), "会回来.mp4")
+    source = await _create_source(db_session, name="回来源", path=str(tmp_path))
+
+    with _no_media_probe():
+        await ScanService(db_session).scan_source(source.id)
+        os.remove(path)
+        await ScanService(db_session).scan_source(source.id)
+        _write_video(str(tmp_path), "会回来.mp4")
+        result = await ScanService(db_session).scan_source(source.id)
+
+    assert result["files_found"] == 1
+    assert await _notifications(db_session) == [
+        ("scan_complete", "视频源 回来源 扫描完成，发现 1 个新视频"),
+        ("scan_complete", "视频源 回来源 扫描完成，发现 0 个新视频，1 个文件已找不到"),
+        ("scan_complete", "视频源 回来源 扫描完成，发现 0 个新视频，1 个文件已找回"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_new_subtitle_for_existing_video_announces(db_session, tmp_path):
     """老片旁边多出字幕也是变化，光看 new_videos 会把它漏掉。"""
     _write_video(str(tmp_path), "movie.mp4")

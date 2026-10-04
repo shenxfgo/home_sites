@@ -2,6 +2,19 @@
 
 ## 2026-10-05
 
+### 修复 + 新增：文件挂载回来那一轮，通知不能再写「已找不到」；真后端 e2e 加到 13 条（丢失标记）
+
+- **动因**：`is_missing` 那一列是这一套里唯一"扫描会改写已有行"的路径，而它从没在真库上签过字——替身夹具把 `is_missing: false` 抄在 `fixtures.ts` 里，翻不翻由前端自己说了算；`丢失` 那一个算子、首页那条横幅和「查看」按钮也全部只对着一份虚构响应渲染。加这条用例要把整条往返走一遍：搬走文件 → 扫 → 界面上读到丢失 → 搬回来 → 再扫 → 那一行原样还在。
+- **原症状**（往返走出来的，不是推测）：写用例时照着"通知按方向说两句话"读 `scan_service.py:336-370`，发现翻转计数只数"翻了几行"，不看朝哪个方向翻——`missing_flips` 一个计数器、文案一句「N 个文件已找不到」。于是**挂载回来那一轮通知写的还是「已找不到」**，而那恰恰是好消息：界面上同时显示"1 个文件已找不到"和一部马上能播的片子。
+- **红在先**：`tests/test_services/test_scan_service.py:714` 的 `test_returned_file_announces_a_return` 先跑红，实测 `At index 2 diff`——第三条通知的 message 期望「…1 个文件已找回」，收到「…1 个文件已找不到」。docstring 里写的就是这句话的原因。
+- **修复**：`ScanService.scan_source` 把那个计数器拆成 `files_lost` / `files_found_again` 两个方向，文案按方向各加一小句（「，N 个文件已找不到」/「，N 个文件已找回」），而通知 `data` 里的 `missing_changed` 仍是两者之和——前端和既有测试读的那一个键没换名字。"变了才说"那道闸门照旧：一轮纯零变化的定时扫描仍然一句不发。
+- **用例 13（丢失标记与那条横幅）**：`renameSync` 把 `data/e2e/media/e2e_sample.mp4` 搬到同级的 `hidden/`，`POST /api/sources/1/scan`，核对四件事（那一次报 `files_found=0`、库里那一行**还在**且只是 `is_missing` 翻了、`GET /api/videos?search=丢失` 读到同一条、通知新增一行且 `data` 是 `{source_id:1,new_count:0,subtitles_found:0,missing_changed:1}`）；界面上核 `.missing-bar` 那句「1 个文件已不在磁盘上」、卡片角上的「丢失」标、「查看」把 `丢失` 填进搜索框。再搬回来扫一遍，核 `id` 未变 + `thumbnails/` 下每个 `.jpg` 的「相对路径 + 内容 sha1」逐项相等 + `play_history` 那一行的 `id` 未变 + 新那条通知说的是「已找回」。`finally` 保证文件回位。
+- **五个变异，五个都红**（每个改完单独 `-g 消失` 跑，跑完 `cp` 还原，还原后再整跑一遍）：① 翻转块换成 `if False:` → 红在 `:937`（`is_missing` 期望 true 收到 false）；② 两个方向计数器合回一个 `files_lost`（= 提交前那版的行为）→ 红在 `:979`（`toContain('1 个文件已找回')`）；③ 那道闸门去掉 missing 项（`if new_videos or subtitles_found:`）→ 红在 `:942`（通知数期望 2 收到 1）；④ 摘掉「查看」的 `@click` → 红在 `:960`（搜索框期望 `丢失` 收到空）；⑤ 横幅条件从 `missingCount > 0` 改成 `> 1` → 红在 `:956`（`.missing-bar` 找不到）。没有一次"改了代码用例照样绿"。
+- **踩到的两处**：一是这台机器上经 Bash 与 Edit 落盘的反斜杠会被吃掉一半：我要写的是"两个反斜杠组成的正则字符类"，文件里只剩一个，`typecheck:test` 报回来的却是 `Unterminated string literal（TS 把斜杠当成了正则的结束符），查了三方才确认写入层和编译器之间出的问题，而不是断言写错；改用 `node:path` 的 `sep` 做归一（`split(sep).join('/')`），既不再需要正则字面量，Windows 与 POSIX 两边都成立。二是**扫描响应的形状以 HTTP 模型为准，不是服务层那个 dict**：`ScanResultResponse` 里没有 `foreign_paths`（服务层算了，但永远过不了边界），且它和"扫全部源"共用，那一侧才有的 `sources_scanned` / `total_*` 在这里全是 `null`——第一版照抄服务层，红在这两处；现在 `scanSource()` 只挑四项并在注释里写明为什么挑。
+- **文档同步**：`README.md`、`CLAUDE.md`、`frontend/CLAUDE.md` 三处计数 12 → 13；`frontend/CLAUDE.md` 逐条那段补第 13 条要签的三样东西，顺序段从"十二条"改"十三条"（链尾加 `→ 丢失标记`，`-g` 命令从五条列成六条，并写明第 10/11/12 条的"倒数第二"各自改口、第 13 条为什么必须压轴：它中途把媒体文件搬走，任何还要扫到那个文件的用例都不能排在它后面）；`CLAUDE.md` 的「库内核对」那一行补上方向与"封面/历史都保留"；`backend/CLAUDE.md` 的通知一节把 `missing_flips` 改成两个方向计数并写明"方向也要说"，钉住它的用例从四例改五例。
+- **验证**：真后端 e2e **13 passed**（单 worker 串行，53.6 秒；第 12 条 20.4 秒、第 13 条 2.0 秒；五个变异全部还原之后重跑）；`-g 消失` 单独跑 **1 passed**（8.0 秒含起跑，能自足是因为起点就是播种后的 1 行通知 + 1 部片子，中间两次扫描都由它自己发）；后端 PostgreSQL 全量 **726 passed**（3:32，725 → 726 是本单新增那条服务层用例），`--cov=src` 总覆盖 **91.89%**；`ruff check .` **0 项**、`mypy src` **34 项**（基线同数）；前端单测 **281 passed**、`typecheck:test` 绿、`npm run build` 绿、桩 e2e **82 passed**（34.5 秒，这一晚没抖）。跑完 `data/e2e/` 的磁盘状态实测回到原样（`media/` 两个文件在、`hidden/` 空）。
+- **覆盖面现状**：浏览器用例总数实测 **95** 条——打真库 **13** 条，其余 **82** 条继续对着 `e2e/fixtures.ts` 的替身。仍然零真库签字的读路径只剩：转码任务那条长流程。`storage.reachable()` 那道闸门（源整体够不着时不判定丢失）不在 e2e 范围内——它要的是一个"列不出来"的源，`tests/test_services/test_scan_service.py` 那份假存储带这个开关，服务层已经钉住。
+
 ### 修复 + 新增：越界的 `?page=` 会让首页同屏说两句反话；真后端 e2e 加到 12 条（搜索与筛选）
 
 - **动因**：搜索与筛选是这一套界面里唯一**从没在真库上签过字**的读路径，而且它有两处替身挡不住的松动。一是 `frontend/e2e/fixtures.ts` 里的 `matchesSearch` 是拿 TypeScript 把 `backend/src/utils/video_search.py` **又实现了一遍**（那份函数自己的注释就写着这件事），两份实现各自测自己那一侧，谁改了对方都不知道。二是替身的 `/videos` 处理器**根本不读 `page` / `page_size`**，永远回 `{page: 1, page_size: 20}`——所以那 82 条桩用例里"翻到第 3 页"全是虚构的，界面写进地址栏的页码从来没被服务器看过一眼。

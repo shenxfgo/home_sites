@@ -16,8 +16,11 @@
  * 一轮只 TRUNCATE 一次，所以用例之间是接力而不是各自重启——顺序即约定。
  */
 import { expect, test, type Page } from '@playwright/test'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { join, sep } from 'node:path'
 
-import { E2E_MEMBER_USERNAME, E2E_PASSWORD, E2E_USERNAME } from './env'
+import { E2E_DIR, E2E_MEMBER_USERNAME, E2E_PASSWORD, E2E_USERNAME, MEDIA_DIR, THUMBNAIL_DIR } from './env'
 
 /** 非 GET 都要带这个头，中间件先查它再查角色（顺序写在 `middleware/auth.py`）。 */
 const CSRF = { 'x-requested-with': 'fetch' }
@@ -820,4 +823,176 @@ test('搜索框那一个文本框打到真解析器上：算子、通配符和�
   await page.locator('.empty-clear').click()
   await expect(page.locator('.video-card')).toHaveCount(1)
   await expect.poll(() => new URL(page.url()).searchParams.toString()).toBe('')
+})
+
+/**
+ * 丢失标记这一整条链的现场：一行记录、一个磁盘上的文件、一张封面、一条观看历史。
+ *
+ * 三个常量都是真路径——扫描用的 locator 来自 `MEDIA_DIR`，封面写在 `THUMBNAIL_DIR/<源
+ * id>/` 下（`scan_service._thumbnail_target`），所以这条用例能同时核对库里的列、目录里
+ * 的文件和界面上的那一句话。`HIDDEN_DIR` 必须落在 `MEDIA_DIR` **之外**：本地扫描是递归的，
+ * 任何还留在源目录里、仍以 `.mp4` 结尾的东西都会被登记成一部新片子，那一验的就不是"把
+ * 标记翻回去"，而是"多出一行"。
+ */
+const MEDIA_FILE = join(MEDIA_DIR, 'e2e_sample.mp4')
+const HIDDEN_DIR = join(E2E_DIR, 'hidden')
+const HIDDEN_FILE = join(HIDDEN_DIR, 'e2e_sample.mp4')
+
+/** `GET /api/videos/{id}` 比列表多出这条用例要用到的那两列。 */
+type VideoDetail = VideoRow & { filepath: string; thumbnail_path: string | null }
+
+/** `GET /api/history` 里这一趟真正在用的那三样。 */
+async function readHistoryRows(page: Page): Promise<[number, number, string | null][]> {
+  const list = JSON.parse((await fetchInPage(page, '/api/history')).text) as {
+    items: { id: number; video_id: number; video_title: string | null }[]
+  }
+  return list.items.map((item) => [item.id, item.video_id, item.video_title])
+}
+
+/**
+ * 缩略图目录下每个 `.jpg` 的「相对路径 + 内容 sha1」，排序后逐项可比。
+ *
+ * 名字集合挡住"文件被删掉了"，也挡住"文件写到了别处"：封面路径是
+ * `<root>/<source_id>/<stem>-<locator 摘要>.jpg`，行如果被删掉重扫，新的那行拿到的是
+ * 另一个 id，于是目录名跟着变，这一份列表就多出（或少掉）一项。内容哈希只多一道保险，
+ * 承担不起"证明没重编码"这种说法——同一份输入重编码出来的字节本来就可能一致。
+ */
+function coverFingerprints(): string[] {
+  if (!existsSync(THUMBNAIL_DIR)) return []
+  return readdirSync(THUMBNAIL_DIR, { recursive: true })
+    .map((entry) => String(entry).split(sep).join('/'))
+    .filter((name) => name.toLowerCase().endsWith('.jpg'))
+    .map(
+      (name) =>
+        `${name} ${createHash('sha1').update(readFileSync(join(THUMBNAIL_DIR, name))).digest('hex')}`,
+    )
+    .sort()
+}
+
+/**
+ * 扫一个源，只取它报的四个计数。
+ *
+ * 挑字段而不是 `toEqual` 整个对象：单个源的扫描和 `/api/sources/scan`（全部源）共用同一份
+ * 响应模型，那一侧才有的 `sources_scanned` / `total_*` 在这里全是 null。照整个对象写死，断言
+ * 就成了「响应模型今天有哪几个键」，多一个键就红，而那和这条用例要验的事无关。
+ *
+ * `foreign_paths` 也不在这里：服务层那个 dict 里有，`ScanResult` 没把它带过 HTTP 边界，
+ * 所以浏览器永远读不到它（第一版照抄服务层的形状，红在这里）。
+ */
+type ScanCounters = {
+  files_found: number
+  new_videos: number
+  subtitles_found: number
+}
+
+async function scanSource(page: Page, sourceId: number): Promise<ScanCounters> {
+  const response = await fetchInPage(page, `/api/sources/${sourceId}/scan`, {
+    method: 'POST',
+    headers: CSRF,
+  })
+  expect(response.status).toBe(200)
+  const body = JSON.parse(response.text) as ScanCounters & { source_id: number }
+  expect(body.source_id).toBe(sourceId)
+  return {
+    files_found: body.files_found,
+    new_videos: body.new_videos,
+    subtitles_found: body.subtitles_found,
+  }
+}
+
+test('片子从磁盘上消失再挂回来：行只翻 is_missing，横幅、算子和那句「已找回」都跟着走', async ({ page }) => {
+  // 这一条放在最后：它会把 `notifications` 留成 3 行，还会在中间把 `videos.is_missing`
+  // 翻成 true（断言中途失败时磁盘上的文件由 finally 还回去，库里那一行却停在丢失态），
+  // 换到中间插一条就会把后面所有用例的起点改掉。
+  //
+  // 起点是播种那趟真扫描建好的那一行和它名下那张真 FFmpeg 封面。
+  const detail = JSON.parse((await fetchInPage(page, '/api/videos/1')).text) as VideoDetail
+  expect(detail.is_missing).toBe(false)
+  // 本地源存的是绝对路径，Windows 上带反斜杠——和这里拼出来的路径归一成同一种写法再比
+  expect(detail.filepath.split(sep).join('/')).toBe(MEDIA_FILE.split(sep).join('/'))
+  const coverPath = detail.thumbnail_path ?? ''
+  expect(coverPath).toBeTruthy()
+  expect(existsSync(coverPath)).toBe(true)
+  const covers = coverFingerprints()
+  expect(covers.length).toBeGreaterThan(0)
+  expect((await readNotifications(page)).total).toBe(1)
+  // 观看历史是**另一张表**：只核对影片行挡不住"删了重建"，那一脚会把历史行一起带走
+  const history = await readHistoryRows(page)
+  expect(history.length).toBe(1)
+  expect(history[0]?.[1]).toBe(1)
+
+  mkdirSync(HIDDEN_DIR, { recursive: true })
+  try {
+    renameSync(MEDIA_FILE, HIDDEN_FILE)
+
+    expect(await scanSource(page, 1)).toEqual({
+      files_found: 0,
+      new_videos: 0,
+      subtitles_found: 0,
+    })
+
+    // 扫描不删行：文件没了，那一行只是被标上丢失，界面上仍然读得到它
+    const library = await readVideos(page, '')
+    expect([library.total, library.items.length]).toEqual([1, 1])
+    expect([library.items[0]?.id, library.items[0]?.is_missing]).toEqual([1, true])
+    // 找出这批行的那一个算子，读的就是同一列（`_search_filters` 里的 `is_missing`）
+    expect((await readVideos(page, `?search=${encodeURIComponent('丢失')}`)).total).toBe(1)
+
+    const gone = await readNotifications(page)
+    expect(gone.total).toBe(2)
+    expect(gone.items[0]?.message).toContain('1 个文件已找不到')
+    expect(gone.items[0]?.data).toEqual({
+      source_id: 1,
+      new_count: 0,
+      subtitles_found: 0,
+      missing_changed: 1,
+    })
+
+    // 首页那条横幅：`丢失` 探针报的数、卡片角上的标记、横幅里那句话，三处必须同源
+    await page.goto('/')
+    await expect(page.locator('.video-card')).toHaveCount(1)
+    await expect(page.locator('.video-card .missing-badge')).toHaveText('丢失')
+    const bar = page.locator('.missing-bar')
+    await expect(bar).toBeVisible()
+    await expect(bar.locator('.missing-text strong')).toHaveText('1 个文件已不在磁盘上')
+    // 「查看」是回到这批行的唯一入口（另一个按钮是破坏性的清理）：它把算子填进搜索框
+    await bar.getByRole('button', { name: '查看' }).click()
+    await expect(page.locator('.search-input input')).toHaveValue('丢失')
+    await expect(page.locator('.video-card')).toHaveCount(1)
+
+    renameSync(HIDDEN_FILE, MEDIA_FILE)
+
+    expect(await scanSource(page, 1)).toEqual({
+      files_found: 1,
+      new_videos: 0,
+      subtitles_found: 0,
+    })
+
+    const back = await readVideos(page, '')
+    expect([back.total, back.items[0]?.id, back.items[0]?.is_missing]).toEqual([1, 1, false])
+    // 同一行、同一批封面文件：这一整趟往返只动了 `is_missing` 那一列
+    expect(coverFingerprints()).toEqual(covers)
+    expect(await readHistoryRows(page)).toEqual(history)
+
+    const announced = await readNotifications(page)
+    expect(announced.total).toBe(3)
+    expect(announced.items[0]?.message).toContain('1 个文件已找回')
+    expect(announced.items[1]?.message).toContain('1 个文件已找不到')
+    // 方向必须分开说：只数"翻了几行"的话这两句会长成同一句话，而后面那句是好消息
+    expect(announced.items[0]?.message).not.toContain('已找不到')
+    expect(announced.items[0]?.data).toEqual({
+      source_id: 1,
+      new_count: 0,
+      subtitles_found: 0,
+      missing_changed: 1,
+    })
+
+    await page.goto('/')
+    await expect(page.locator('.missing-bar')).toHaveCount(0)
+    expect((await readVideos(page, `?search=${encodeURIComponent('丢失')}`)).total).toBe(0)
+  } finally {
+    // 断言走到哪一步都得把磁盘的样子还回去：这条用例之后还有一轮运行，而媒体目录是
+    // gitignored 的一次性目录，留下一个 hidden/ 只会让下一次运行的起点说不清
+    if (existsSync(HIDDEN_FILE)) renameSync(HIDDEN_FILE, MEDIA_FILE)
+  }
 })

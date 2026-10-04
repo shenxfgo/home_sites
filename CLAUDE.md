@@ -36,7 +36,7 @@
 | 通知系统 | 扫描/转码通知，全库一份，写入方只有 service（库真变了才发一条）；已读与未读数按账号算，单条删除与一键清空影响所有人，因此只归 owner |
 | 转码服务 | 多格式转码 |
 | 自动扫描 | APScheduler 定时扫描 |
-| 库内核对 | 扫描时找不到的文件只置 `videos.is_missing`，行与历史保留；源整体够不着（挂载盘掉线、桶没配凭证或不可达）时不判定丢失；首页横幅可逐条走 `DELETE /api/videos/{id}` 清理 |
+| 库内核对 | 扫描时找不到的文件只置 `videos.is_missing`，行与历史、封面文件都保留；文件回来再扫翻回 false，通知按方向说「已找不到」/「已找回」；源整体够不着（挂载盘掉线、桶没配凭证或不可达）时不判定丢失；首页横幅可逐条走 `DELETE /api/videos/{id}` 清理 |
 | 重复文件检测 | `GET /api/videos/duplicates`（只读）按 `file_size`+`duration` 分组后再读文件首尾各 1MB 做 SHA-256 确认，给出 `keep_id`（看过优先）与可回收空间；视频源页按需检测，删除仍走既有 DELETE。摘要口径只定义在 `src/utils/file_fingerprint.py`，本地与对象存储共用，跨源比对才对得上 |
 | 观影统计 | 追加式日志 `watch_events` 记录每次进度的正增量，`GET /api/history/stats?days=N`（只读）按 UTC 日历天聚合出本月/区间时长、看过部数、最长连看与标签分布；`/stats` 页纯 CSS 画图，未引入图表库 |
 | 片单/合集 | `watchlists` + `watchlist_items` 两张表存手排队列（按加入顺序，不记位置），`/api/watchlists` 7 个普通 CRUD 端点（含进出队列与 `?video_id=` 反查）；`/watchlists` 页可新建/改名/删除，影片详情页「片单」按钮勾选归属，移出与删除只动队列行、影片留在库里 |
@@ -198,7 +198,7 @@ npm run test               # 单元测试（Vitest，tests/ 目录）
 npm run test:watch         # 单元测试 watch 模式
 npm run test:coverage      # 单元测试 + 覆盖率
 npm run test:e2e           # 端到端测试（Playwright，自动拉起 dev server）
-npm run test:e2e:real      # 端到端测试（12 条，打真后端 + PostgreSQL 测试库，见 frontend/CLAUDE.md）
+npm run test:e2e:real      # 端到端测试（13 条，打真后端 + PostgreSQL 测试库，见 frontend/CLAUDE.md）
 npm run typecheck:test     # 只检查测试代码类型
 ```
 
