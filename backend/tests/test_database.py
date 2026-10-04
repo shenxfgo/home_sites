@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.database import apply_schema_fixes
+from src.database.session import session_table_columns, table_columns
 
 # A single-user database: nothing owns a row, the history holds several rows per
 # title, watchlist names repeat, and the read flags sit on the row itself.
@@ -255,6 +256,62 @@ async def test_first_owner_inherits_the_legacy_rows():
             text("SELECT COUNT(*) FROM new_video_reads WHERE user_id = :uid"),
             {"uid": member.id},
         ) == 0
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_claiming_the_legacy_rows_twice_stays_a_no_op():
+    """同一批老行被认领第二次，既不能报错也不能多出一行读状态。
+
+    「这一对 (行, 人) 已经有了就别再插」原来写的是 ``INSERT OR IGNORE``，那是 SQLite 的
+    方言（PG 那边叫 ``ON CONFLICT DO NOTHING``），现在规则挪进了 ``WHERE NOT EXISTS``。
+    只有真的跑两遍才看得出区别：少了这条保护，PG 上会抛主键冲突而不是安静跳过。
+    """
+    from src.services.auth_service import AuthService
+
+    engine = await _legacy_engine()
+    async with engine.begin() as conn:
+        await apply_schema_fixes(conn)
+
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as session:
+        auth = AuthService(session)
+        owner = await auth.create_user("owner", PASSWORD, role="owner")
+
+        async def counts():
+            return (
+                await session.scalar(text("SELECT COUNT(*) FROM new_video_reads")),
+                await session.scalar(text("SELECT COUNT(*) FROM notification_reads")),
+            )
+
+        first = await counts()
+        await auth.claim_legacy_rows(owner.id)
+        second = await counts()
+
+    assert first == (1, 1)
+    assert second == first
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_column_reflection_answers_the_same_from_a_connection_and_a_session():
+    """反射列名有两个入口，因为 ``run_sync`` 两家递的东西不一样。
+
+    连接那家递同步连接，会话那家递同步会话；把会话直接交给 SQLAlchemy 的检查器会抛
+    ``NoInspectionAvailable``（``_column_exists`` 就踩过一次），所以两个入口都要有用例，
+    而且答案必须同形——它们替的是同一条 ``PRAGMA table_info``。
+    """
+    engine = await _legacy_engine()
+
+    async with engine.begin() as conn:
+        from_connection = await conn.run_sync(table_columns, "play_history")
+    assert from_connection == {"id", "video_id", "played_at", "progress", "completed"}
+
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as session:
+        from_session = await session.run_sync(session_table_columns, "play_history")
+    assert from_session == from_connection
 
     await engine.dispose()
 

@@ -7,7 +7,10 @@ def test_load_default_settings():
     """Test that settings load with default values"""
     from src.config import Settings
 
-    settings = Settings()
+    # `_env_file=None`：这条用例断言的是**代码里声明的默认值**，而开发者机器上的
+    # backend/.env 现在指向 PostgreSQL（真库已经切过去了）。不关掉 dotenv 读取，
+    # 任何人改自己的 .env 都会把这条用例弄红，而它想守的东西一点没变。
+    settings = Settings(_env_file=None)
 
     assert settings.api_port == 8000
     assert settings.api_host == "0.0.0.0"

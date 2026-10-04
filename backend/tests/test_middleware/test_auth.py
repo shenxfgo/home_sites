@@ -13,6 +13,7 @@ from src.services.auth_service import (
     AuthService,
     hash_token,
 )
+from src.utils.time import as_utc
 
 UNAUTHENTICATED = "未认证"
 
@@ -86,7 +87,7 @@ async def test_an_unknown_token_is_the_same_as_no_token(anon_client):
 async def test_an_expired_session_is_refused_and_cleaned_up(
     anon_client, db_session, signed_in_user
 ):
-    stale = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=1)
+    stale = datetime.now(timezone.utc) - timedelta(minutes=1)
     db_session.add(
         UserSession(
             token_hash=hash_token("expired-token"),
@@ -115,7 +116,7 @@ async def test_disabling_an_account_signs_its_sessions_out(
 async def test_an_account_used_for_a_while_gets_its_session_pushed_forward(client, db_session):
     token_hash = hash_token(client.cookies.get(COOKIE_NAME))
     row = await db_session.get(UserSession, token_hash)
-    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    now_utc = datetime.now(timezone.utc)
     row.created_at = now_utc - timedelta(hours=12)  # the sliding window is the lifetime
     row.last_seen_at = now_utc - timedelta(minutes=10)
     row.expires_at = now_utc + timedelta(minutes=1)
@@ -124,5 +125,5 @@ async def test_an_account_used_for_a_while_gets_its_session_pushed_forward(clien
     assert (await client.get("/api/videos")).status_code == 200
 
     await db_session.refresh(row)  # the values that were written, not the ones we set
-    assert row.expires_at > now_utc + timedelta(hours=11)
-    assert row.last_seen_at > now_utc - timedelta(minutes=5)
+    assert as_utc(row.expires_at) > now_utc + timedelta(hours=11)
+    assert as_utc(row.last_seen_at) > now_utc - timedelta(minutes=5)

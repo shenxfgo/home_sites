@@ -2,11 +2,13 @@
 import pytest
 
 from src.models.video import Video
+from tests.support import ensure_source
 
 async def _create_video(db_session, video_id, title, *, progress=None, user_id=None):
     """Seed one title, optionally with a position one person stopped at."""
     from src.models.history import PlayHistory
 
+    await ensure_source(db_session)
     video = Video(
         id=video_id,
         source_id=1,

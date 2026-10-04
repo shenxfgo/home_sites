@@ -8,9 +8,11 @@ import pytest
 from src.models.new_video import NewVideo
 from src.models.video import Video
 from src.services.notification_service import NotificationService
+from tests.support import ensure_source
 
 
 async def _video(db_session, video_id=1, title="暗涌"):
+    await ensure_source(db_session)
     video = Video(
         id=video_id,
         source_id=1,

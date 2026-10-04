@@ -22,6 +22,9 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./data/videos.db"
+    # 用例跑在哪个库上。留空就是原来的内存 SQLite；填了就是拿真库跑测试，
+    # conftest 与搬家脚本都读这一个出处，换库之后不用再另设环境变量。
+    test_database_url: str = ""
 
     # Video Storage
     video_storage_path: str = "./data/videos"

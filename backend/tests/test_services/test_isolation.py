@@ -17,9 +17,11 @@ from src.services.history_service import HistoryService
 from src.services.notification_service import NotificationService
 from src.services.video_service import VideoService
 from src.services.watchlist_service import WatchlistService
+from tests.support import ensure_source
 
 
 async def _video(session, video_id, title, **columns):
+    await ensure_source(session)
     video = Video(
         id=video_id,
         source_id=1,

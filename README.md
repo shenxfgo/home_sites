@@ -33,7 +33,7 @@
 |------|------|
 | 前端 | Vue 3 + TypeScript + Vite + Element Plus |
 | 后端 | Python 3.11+ + FastAPI + SQLAlchemy 2.0+ |
-| 数据库 | SQLite 3（异步驱动） |
+| 数据库 | PostgreSQL 18（asyncpg 异步驱动）；SQLite 仍可作为方言运行 |
 | 视频处理 | FFmpeg |
 | 依赖管理 | uv（Python）、npm（Node.js） |
 | 认证 | Cookie 会话（服务端存 `sha256(token)`）+ bcrypt 口令哈希 |
@@ -46,6 +46,7 @@
 - Node.js 18+
 - FFmpeg（用于视频转码）
 - uv（Python 包管理器）
+- PostgreSQL 16+（真库用；只想跑 SQLite 就不装）
 
 ### 安装步骤
 
@@ -56,8 +57,9 @@ cd home_sites
 
 # 后端 setup
 cd backend
-uv sync                                      # 只跑起来用这个
-uv sync --extra dev --extra s3               # 要跑测试、或打算接对象存储视频源
+uv sync                                      # 只跑 SQLite 用这个（asyncpg 不在核心依赖里）
+uv sync --extra postgres                     # 连 PostgreSQL 真库要加这个 extra
+uv sync --extra dev --extra postgres --extra s3   # 测试 + 对象存储视频源，一次装齐
 
 # 前端 setup
 cd ../frontend
@@ -258,7 +260,8 @@ home_sites/
 创建 `backend/.env` 文件：
 
 ```env
-DATABASE_URL=sqlite+aiosqlite:///./data/videos.db
+DATABASE_URL=postgresql+asyncpg://home_sites_app:<口令>@127.0.0.1:5432/home_sites
+TEST_DATABASE_URL=postgresql+asyncpg://home_sites_app:<口令>@127.0.0.1:5432/home_sites_test
 VIDEO_STORAGE_PATH=./data/videos
 THUMBNAIL_PATH=./data/thumbnails
 API_HOST=0.0.0.0
@@ -280,6 +283,36 @@ S3_SECRET_ACCESS_KEY=
 S3_ADDRESSING_STYLE=auto     # 自建 MinIO 用域名寻址失败时改 path
 ```
 
+## 🗄️ 数据库
+
+真库跑在 **PostgreSQL** 上（`postgresql+asyncpg://`），SQLite 作为另一种方言仍然可用。表结构的唯一出处是 Alembic（`backend/alembic/`，基线修订 `0001`）：启动流程只负责选路线——空库建基线、有表没版本号的老库补齐后认领基线、已版本化的库只补挂着的修订——不再往启动里加建表 SQL。
+
+建库要超级用户执行 `backend/data/pg-provision.sql`（在 `data/` 里，带应用角色口令，**不进版本库**）：角色 `home_sites_app` 只有 LOGIN，两个库 `home_sites`（真库）和 `home_sites_test`（测试专用），排序规则钉死 `LC_COLLATE=C`——C 就是 UTF-8 字节序，和 SQLite 一直在用的 `BINARY` 一致，换成 ICU 规则的话切换当天整个片库的 `ORDER BY title` 会静默重排一遍。
+
+### 从 SQLite 搬家
+
+三步，前两步都不写目标库：
+
+```bash
+cd backend
+uv run python -m src.db_audit                    # 只读审计，报告落到 data/，先看清老库有什么毛病
+uv run python -m src.db_transfer --from <老库> --to <新库> --dry-run   # 一路跑到对账通过，然后回滚
+uv run python -m src.db_transfer --from <老库> --to <新库>             # 正式搬迁
+```
+
+搬迁在一个事务里完成，按外键拓扑序插入，**同一次事务内**把每张表的摘要和目标库读回来的内容重算比对，对不上就整体回滚，所以不存在"搬了一半"的库。自增序列会跟着推到当前最大值，`sessions` 整张表跳过（会话是登录态，不是数据）。目标库必须已经建好表且是空的，否则直接中止。
+
+### 回滚
+
+老 SQLite 文件切换后原样留在 `backend/data/videos.db`，没有被改动过，所以退回去只要一行配置：
+
+```bash
+pg_dump -Fc home_sites > backup-before-rollback.dump   # 先备份，切换之后产生的新数据只在这里
+# 把 .env 里的 DATABASE_URL 换回 sqlite+aiosqlite:///./data/videos.db，重启后端
+```
+
+这样回到的是**切换那一刻**的状态，切换之后新增的播放记录、收藏、账号都不在那份老文件里。想把增量一起带回去，就反向再搬一次：先拿一个新文件名启动一次后端（空库会走基线把表建齐），再 `uv run python -m src.db_transfer --from <PG 连接串> --to sqlite+aiosqlite:///<新文件>`，核对摘要通过后把 `DATABASE_URL` 指过去。两个方向用的是同一套脚本，序列重置对两种方言都做了。
+
 ## 🌐 公网部署注意事项
 
 这个项目按"家里内网、可信的人用"来设计，鉴权本身没有公网假设。要把它放到能被互联网访问到的位置，下面几处必须先动：
@@ -299,6 +332,10 @@ S3_ADDRESSING_STYLE=auto     # 自建 MinIO 用域名寻址失败时改 path
 cd backend
 uv sync --extra dev --extra s3
 uv run pytest
+
+# 想让整套用例跑在 PostgreSQL 上（迁移主线用的那种方言），在 backend/.env 里填
+# TEST_DATABASE_URL=postgresql+asyncpg://...:5432/home_sites_test
+# 填了它，搬家脚本的 PG 用例也跟着启用；留空则是原来的内存 SQLite。
 
 # 前端单元测试（Vitest + jsdom）
 cd frontend

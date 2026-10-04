@@ -1,5 +1,26 @@
 # 更新日志
 
+## 2026-10-04
+
+### 迁移：真库换到 PostgreSQL，schema 交给 Alembic，数据整体搬迁后切换
+
+- **顺序是 P0 审计 → P1 清方言 → P2 空库跑通 → P3 搬数据 → P4 切换**，一步不能跳：没看清老库的毛病就改 SQL，改完也不知道是谁改坏的；方言没清干净就建表，PG 会在一半数据上拒收
+- **`src/db_audit.py`（只读）**：以 `mode=ro` 打开库，拿模型的 `Base.metadata` 和库里实际的 schema 对账，报九类问题（schema 漂移、没落实的外键、孤儿行、值类型不对、VARCHAR 超长、整数超出 PG 的 32 位 `integer`、NOT NULL 里的 NULL、解析不了的日期与 JSON），并给每张表算一个**方言无关**的内容摘要。之所以不是"迁过去看报不报错"：SQLite 的类型亲和、不查长度、不执行外键这三件事，会让一批数据在 SQLite 里存得好好的，到 PG 要么被拒要么被静改写。真库跑出来 0 个阻塞项，报告在 `data/migration-audit-2026-10-03.md`（`data/` 不进版本库），stdout 只打 ASCII——控制台是 cp936
+- **P1 清掉的四类 SQLite 专有写法**，每一类都有等价且两边同义的替身：`keep.user_id IS current.user_id` → `(= OR (两边都 IS NULL))`（归属未认领的行是 NULL，用 `=` 会让这些行从分组里掉出去、一条都去重不掉）；`INSERT OR IGNORE` → `WHERE NOT EXISTS`（PG 那边叫 `ON CONFLICT DO NOTHING`，`NOT EXISTS` 两边是同一个意思，规则只留一处）；`PRAGMA table_info` → SQLAlchemy 的 `inspect().get_columns()`，包成 `table_columns` / `session_table_columns`（`run_sync` 给连接和给会话递的东西不一样，直接把会话交给检查器会 `NoInspectionAvailable`）；按日历分桶的 SQL 挪进 Python，两边各自算自己的时区
+- **Alembic 成为 schema 的唯一出处**：基线修订 `0001` 建齐模型声明的 18 张表。`init_db()` 从此只**选路线**不建表——空库走 `upgrade_head`；有表却没有 `alembic_version` 行的老库先 `apply_schema_fixes` 补齐成基线的形状再 `stamp_head` 认领，从此和新建库站在同一架版本上；已版本化的只补挂着的修订。`apply_schema_fixes` 仍然是幂等的（年龄不明的库可能已经带了一部分），但不再是每次启动都跑，只在认领基线那一次
+- **`alembic.ini` 里 `sqlalchemy.url` 留空**，连接串从 `src.config.settings` 取（`alembic/env.py` 经 `config.attributes` 复用同一条连接）：口令只存在于 `backend/.env`，不进版本库
+- **`asyncpg` 是 `[postgres]` 可选依赖**，所以按旧文档 `uv sync` 之后把 `DATABASE_URL` 指到 PG 会连驱动都没有——README 的安装步骤、前置要求、技术栈、环境变量四处一起补上 `--extra postgres`
+- **`src/db_transfer.py`（搬家）**：一个事务内按外键拓扑序插入，**同一次事务里**把每张表读回来重算摘要比对，对不上整体回滚，所以不存在"搬了一半"的库。`--dry-run` 一路跑到对账通过再回滚，和正式搬的是同一条代码路，预演过了才算过。`sessions` 整表跳过（旧 token 到新库不该还能用），`alembic_version` 不搬，自增序列推到当前最大值，目标库必须已建表且为空否则直接中止。真库 17 张表 151 行预演通过后正式落库，提交后独立复核一遍跨库摘要：`mismatched: NONE`
+- **翻过一次的车：时间戳整体偏 8 小时**。坑在**写入侧不在读取侧**——asyncpg 读 `timestamptz` 还给的是 UTC-aware 值，但送进去一个不带 `tzinfo` 的 `datetime` 时，它按**数据库会话时区**理解（本机 `Asia/Shanghai`，+8）。而 SQLite 读回来永远是 naive，于是从老库捞出的行原样写进 PG 就集体早 8 小时，10 张带时间列的表全部对不上账。修法是 `_read()` 里对每个 `datetime` 过一遍 `as_utc()`。这条由两个用例钉住：naive 值必须被读成 UTC、搬进 PG 目标库后时刻不变
+- **审计和搬家现在报的是同一个数**：摘要的行文本从两处各自的拼接里抽成 `db_audit.row_text` 共用，`tests/test_db_transfer.py` 里有用例断言审计算出的摘要等于搬家记录的源摘要。之前两边一个是带列名的、一个是裸值，永远不可能相等，也就永远核对不上
+- **测试的方言开关收成一个出处**：`settings.test_database_url`（`backend/.env` 的 `TEST_DATABASE_URL`），`tests/conftest.py` 和搬家的 PG 用例都读它，换库不用再另设环境变量。PG 上每个用例靠 `TRUNCATE ... RESTART IDENTITY CASCADE` 隔离，`RESTART IDENTITY` 保证第一个自增 id 还是 1，用例里写死的 id 不用跟着改；schema 一次会话只建一次，走的就是 `0001` 基线。新增 `tests/support.py` 的 `ensure_source` / `ensure_video`：PG 真的执行外键，子行必须先有父行，不能手工凑 id
+- **P4 切换与真机走查**：`.env` 指到 `home_sites`，后端跑在 PG 上，浏览器走查 21 项全过（登录、首页、列表、详情、播放器、收藏、片单、历史、统计、标签、设置、用户、个人、转码页）。时序类页面重点看：历史页把库里 `03:27:46Z` 那一行显示成本地 `2026/10/4 11:27:46`，即时刻存对了、只是按浏览器时区展示；统计页的日桶落在 10月4日，连看天数正确。播放器 `duration=60 / seekable=60 / seek 到 30.0`，说明 Range 流式在这套组合下照常工作
+- **回滚预案实测过，不是纸面的**：老 SQLite 文件切换后原样在盘，退回一行配置即可（代价是切换后的新增）。想把增量带走就反向再搬一次——新建一个 SQLite 文件启动一次让基线建表，再 `db_transfer --from <PG> --to <新文件>`。这条今天真跑了一遍：153 行，`MISMATCHED: NONE`，`_reset_sequences` 两种方言都实现了
+- **顺手修掉一处文档与代码不符**：`CLAUDE.md` 写着"项目没有 Alembic，加列只能走 `init_db()` 的幂等 SQL"——这句在 P2 之后就是错的，会直接把下一个人引到已经废弃的路上，改成"改表只有一条路：写 Alembic 修订 + 约束同时声明在模型上"。`backend/CLAUDE.md` 里"PG 按会话时区给值"那句同样不准，改成上面那条写入侧的说法
+- **一条被本地配置污染的用例**：`tests/test_config.py::test_load_default_settings` 断言的是代码里声明的默认值（SQLite），但 `Settings()` 会读开发者机器上的 `backend/.env`——真库一切到 PG 它就红。改成 `Settings(_env_file=None)`，用例守的东西一点没变，但不再能被任何人的 `.env` 弄红
+- **测试**：后端 577 → **580 passed**（+3：naive 值必须按 UTC 读、搬进 PG 目标库时刻不变、审计与搬家报同一个数）。两种方言各跑一遍——PG 上 **580 passed**（6:41），`TEST_DATABASE_URL` 留空的 SQLite 上 **579 passed + 1 skipped**（47s，跳的是那条只可能在 PG 上验的搬迁用例）。前端未动
+- **仍然没有的东西，别照着旧文档以为有**：MySQL 不支持（只有 SQLite/PG 两种方言）；没有 Docker Compose；`data/pg-provision.sql` 与 `backend/.env` 不进版本库，建库要超级用户执行，口令不走聊天——本地生成凭据、把 SQL 交给人执行
+
 ## 2026-10-02
 
 ### 修复：登录时空着点登录，提示是 `[object Object],[object Object]`

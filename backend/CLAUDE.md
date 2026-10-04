@@ -4,8 +4,8 @@
 
 - Python 3.11+
 - FastAPI 0.109+
-- SQLAlchemy 2.0+（异步模式）
-- aiosqlite（SQLite 异步驱动）
+- SQLAlchemy 2.0+（异步模式）+ Alembic（schema 的唯一出处，两种方言都走它）
+- aiosqlite（SQLite 异步驱动）/ asyncpg（PostgreSQL 异步驱动，`[postgres]` 可选依赖）
 - APScheduler（定时任务）
 - FFmpeg（视频处理）
 - bcrypt（口令哈希，cost 12；不引 `python-jose` / `passlib`，前者是 JWT 才需要的，后者停更且与 bcrypt>=4 有兼容告警）
@@ -94,19 +94,30 @@ backend/
 │   │   ├── password.py    # bcrypt 哈希与校验（72 字节上限）
 │   │   ├── video_search.py # 搜索串解析（源/标签/评分/时长/观看状态/丢失）
 │   │   ├── file_fingerprint.py # 首尾 1MB 哈希，用来确认两份文件真是同一份
+│   │   ├── time.py      # 把库里读出的时刻统一收成带 UTC 时区（SQLite 读回来永远不带 tz）
 │   │   └── name_parser.py  # 文件名解析（片名、系列、季集、字幕组）
 │   ├── scheduler/         # 定时任务
 │   │   ├── scan_scheduler.py
 │   │   └── tasks.py
 │   ├── database/          # 数据库配置
 │   │   ├── base.py        # SQLAlchemy 基类
-│   │   └── session.py     # 会话管理
+│   │   ├── migrations.py  # 驱动 Alembic 的那三只函数（upgrade_head / stamp_head / current_revision）
+│   │   └── session.py     # 会话管理 + init_db 选路 + 老库的一次性补齐
 │   ├── cli.py             # 账号管理命令行（create-user / list-users / set-role / revoke-sessions）
+│   ├── db_audit.py        # 换数据库前的只读审计（`uv run python -m src.db_audit`）
+│   ├── db_transfer.py     # 搬家：一个事务内插完并对账，对不上就整体回滚（`uv run python -m src.db_transfer --from <老库> --to <新库>`）
 │   ├── config.py          # 配置管理
 │   └── main.py            # 应用入口
+├── alembic/               # schema 的出处（版本化迁移）
+│   ├── env.py             # 连接串从 settings 取；应用启动时经 config.attributes 复用同一条连接
+│   └── versions/          # 0001 是基线，此后一律新增修订
 ├── tests/                 # 测试文件
 │   ├── conftest.py        # 共享 fixtures：db_session / anon_client / client（已登录）+ make_user / user_id / make_signed_in_client
+│   ├── support.py         # ensure_source / ensure_video：PG 真执行外键，子行必须先有父行
 │   ├── test_api/          # API 测试
+│   ├── test_db_audit.py   # 审计用例：造一个每类问题各一条的脏库，证明检查还活着
+│   ├── test_db_transfer.py # 搬家用例：空库闸门、对账失败即回滚、时间戳跨方言不偏、报告与审计同一个数
+│   ├── test_migrations.py # Alembic 三条启动路线：空库、老库、已版本化
 │   ├── test_storage/      # 存储接缝用例：本地 locator 逐字节不变、S3（moto 在内存里演一个桶）、扫描走接缝
 │   ├── test_middleware/   # 鉴权中间件测试（两张全路由扫面：匿名必 401、member 打管理面必 403）
 │   ├── test_services/     # 服务测试
@@ -140,6 +151,8 @@ class Example(Base):
     def __repr__(self) -> str:
         return f"<Example(id={self.id}, name='{self.name}')>"
 ```
+
+模型写完之后补两句：在 `src/models/__init__.py` 里注册（`alembic/env.py` 靠 `import src.models` 才能看见全部表），然后给它配一个修订——`DATABASE_URL=... .venv/Scripts/alembic.exe revision --autogenerate -m add_example`。只改模型不写修订的话，新库和老库都会缺这张表，`tests/test_migrations.py` 会立刻变红。
 
 ### 2. 创建 Service
 
@@ -255,9 +268,34 @@ async def test_create_example(db_session):
 
 ### 建表与改表
 
-`init_db()` 只有 `Base.metadata.create_all`，它只补建新表、**从不修改已存在的表**。因此给已有表加约束或索引时，要把补齐用的 SQL 写成模块常量放在 `src/database/session.py`，在 `init_db` 里紧随 `create_all` 执行，并保证幂等（`IF NOT EXISTS`、先清洗再加约束）。参考 `play_history` 的"每人每片一行"：先 `DEDUPE_PLAY_HISTORY` 按 `(user_id, video_id)` 折叠老库的重复行，`DROP INDEX IF EXISTS ix_play_history_video_id` 去掉"每部视频全局一行"的旧唯一索引，再建 `ux_play_history_user_video`——顺序反了会直接建索引失败。`favorites`（`DEDUPE_FAVORITES`）与 `watchlists`（`DEDUPE_WATCHLIST_NAMES`，重名改写成 `X (2)`）同理。
+Schema 的出处只有一个：Alembic（`backend/alembic/`）。基线修订 `0001` 把模型声明的全部表、索引、约束一次建齐，**改表请写新修订，不要再往启动流程里加 SQL**：
 
-加**列**走的是同一条路的另一支：`ADDED_COLUMNS` 三元组（表名、列名、`ALTER TABLE ... ADD COLUMN`）配 `PRAGMA table_info` 探测，缺哪列补哪列，再单独建需要的索引（`VIDEOS_SERIES_INDEX`、`OWNERSHIP_INDEXES`）。SQLite 的 `ADD COLUMN` 不能带非默认值的 `NOT NULL`，所以四个归属列在库里是可空的，只有模型声明为 `nullable=False`。这类修复只在启动时跑（`apply_schema_fixes(conn)`，整体可重放），测试用的 `db_session` 直接 `create_all` 建全新库，所以新列与新索引必须同时在模型里声明。
+```bash
+# 连接串从 src/config.settings 取，alembic.ini 里不留 sqlalchemy.url
+DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --autogenerate -m "add_xxx"
+```
+
+`init_db()` 只认库、选路，三条路（权威描述在 `src/database/migrations.py` 的模块注释）：
+
+- **空库**（新装的 PG，或新开的 SQLite 文件）：`upgrade_head`，表由基线建出来。
+- **有表却没有 `alembic_version` 行**（Alembic 之前用 `create_all` 写出来的老库）：先 `apply_schema_fixes` 补齐成基线的形状，再 `stamp_head` 认领基线，从此和新建的库站在同一个版本上。
+- **已有版本行**：`upgrade_head` 只补跑待执行的修订，平时是空操作。
+
+`apply_schema_fixes`（`src/database/session.py`）因此只剩一次性用途：只在"老库认领基线"那一次启动里跑。它做的事是 `ADDED_COLUMNS` 补列、`DEDUPE_PLAY_HISTORY`/`DEDUPE_FAVORITES` 按 `(user_id, video_id)` 折叠老库的重复行、`DROP INDEX IF EXISTS ix_play_history_video_id` 换掉"每部视频全局一行"的旧唯一索引再建 `ux_play_history_user_video` 这一类 `(人, 影片)` 索引、`DEDUPE_WATCHLIST_NAMES` 把重名片单改写成 `X (2)`、`INHERIT_THEME_IN_PREFERENCES` 迁主题。顺序仍然要紧（先清洗再加唯一约束，反了建索引直接失败），语句仍然要求幂等（老库年龄未知，可能已经带了一部分）。**新功能别往这里加**——写修订。
+
+约束和索引必须同时声明在模型上：SQLite 那条测试路的 `db_session` 是 `create_all` 建的全新库，只写修订它在测试里形同不存在。改完模型若 `tests/test_migrations.py::test_the_baseline_describes_the_models_exactly` 变红，就是加了列忘了配修订。
+
+老库里 SQLite 的 `ADD COLUMN` 不能带非默认值的 `NOT NULL`，所以四个归属列在**老库**里是可空的，只有模型声明 `nullable=False`；新建的库（走基线）严格。
+
+### PostgreSQL
+
+`DATABASE_URL` 指哪就连哪，SQLite 与 PostgreSQL 两种方言都支持（PG 用 `postgresql+asyncpg://`）。建库脚本 `backend/data/pg-provision.sql`（在 `data/` 里，不进版本库，带应用角色的口令）：角色 `home_sites_app` 只有 LOGIN，两个库 `home_sites`（真库）与 `home_sites_test`（测试专用），`ENCODING=UTF8`、`LC_COLLATE`/`LC_CTYPE` 钉死 `C`。
+
+- **为什么是 C**：C 的排序就是 UTF-8 字节序，正好等于 SQLite 一直在用的 `BINARY`。换成 `en_US.UTF-8` 之类的 ICU 规则，切换当天整个片库的 `ORDER BY title` 会静默重排一遍。
+- **测试库**：`settings.test_database_url`（写在 `backend/.env` 的 `TEST_DATABASE_URL`）指定；不设就回落到 SQLite 内存库（老路子）。`tests/conftest.py` 和搬家脚本的 PG 用例读的是同一个出处。PG 上每个用例靠 `TRUNCATE ... RESTART IDENTITY CASCADE` 隔离，`RESTART IDENTITY` 保证第一个自增 id 还是 1，用例里写死的 id 不用跟着改。schema 只在第一次用例前建一次，走的就是 `0001` 基线。
+- **PG 真的执行外键**，SQLite 默认不执行（`PRAGMA foreign_keys` 是关的）。所以库里那些"没有父亲的子行"是历史遗留，PG 一律拒收；测试里也一样——用 `tests/support.py` 的 `ensure_source`/`ensure_video` 先造出真正的父行，别手工去凑 id。应用侧同样补了存在性校验（`FavoriteService.add_favorite` 对不存在的 `video_id` 抛 `ValueError` → 400，而不是 500）。
+- **时间列一律写 `DateTime(timezone=True)`**：靠推断落下来的 naive `TIMESTAMP` 遇上 aware 的默认值，asyncpg 会直接 `DataError`（`settings.updated_at` 踩过）。读出来的时刻要做比较/减法的，先过 `as_utc()`。
+- **时区的坑在写入侧，不在读取侧**：asyncpg 读 `timestamptz` 还给的是 UTC-aware 值，但送一个**不带 tzinfo** 的 `datetime` 进去时，它是按**数据库会话时区**理解的（本机 `SHOW timezone` = `Asia/Shanghai`，于是整体偏 8 小时）。SQLite 读回来却永远是 naive。所以凡是跨库读写时间（`db_transfer` 从老库捞行就是这里翻过车），先 `as_utc()` 补上时区再交给对面，别指望两边自己凑得齐。
 
 账号相关的两张表：`users`（`username` 唯一、`password_hash`、`role` 带 `CheckConstraint`、`is_active` 用停用代替删除）与 `sessions`（主键是 `token_hash`，即 Cookie 里那枚 token 的 SHA-256）。存摘要而不是 token 本身，是为了让"库被读走"不等于"人人可冒用"；删行即失效，因此退出登录和踢下线不需要等 Cookie 自然过期。会话寿命不存字段，滑动续期时按 `expires_at - created_at` 反推，"记住我"就不必单独记一档。
 
@@ -267,9 +305,23 @@ async def test_create_example(db_session):
 
 `settings` 与 `user_preferences` 是两张不同的表，别混：前者全家一份（扫描间隔、缩略图尺寸、默认转码格式），改一次所有人的播放都受影响，读写都限 owner；后者一人一份（`user_id` 主键 + `prefs` JSON），走 `/api/preferences`，成员改自己的主题不该碰着别人的屏幕。写入是按键合并（`save_prefs` 只覆盖 patch 里非空的键），响应字段由 API 层的 Pydantic 模型限定，所以加一项偏好只是加一个字段，不必改表。JSON 列的坑：原地 `row.prefs["k"]=v` SQLAlchemy 看不见，必须换一个新 dict 赋回去。
 
-从 `settings.theme` 迁到 `user_preferences` 靠 `session.py` 里两条幂等 SQL：`INHERIT_THEME_IN_PREFERENCES` 把全家共用的那个老值发给每个还没有偏好行的账号（`INSERT OR IGNORE`，重复启动不会覆盖任何人改过的值），`DROP_SHARED_THEME_SETTING` 再删掉 `settings` 里的 `theme` 行。顺序不能反，反了所有人的选择就凭空变成默认浅色。
+从 `settings.theme` 迁到 `user_preferences` 靠 `session.py` 里两条幂等 SQL：`INHERIT_THEME_IN_PREFERENCES` 把全家共用的那个老值发给每个还没有偏好行的账号（写入条件写成 `WHERE NOT EXISTS`，重复启动不会覆盖任何人改过的值），`DROP_SHARED_THEME_SETTING` 再删掉 `settings` 里的 `theme` 行。顺序不能反，反了所有人的选择就凭空变成默认浅色。
 
 老库升级后的第一次 `create-user --role owner` 会顺手认领：`AuthService.claim_legacy_rows` 把 `user_id IS NULL` 的行交给这个账号，并把旧的 `new_videos.viewed` / `notifications.read` 一次性翻译成两张 `_reads` 表的记录（列已不存在就跳过）。这一步不做，升级后收藏与历史看起来就像被清空了。
+
+**裸 SQL 的方言纪律**：`src/` 里手写的 SQL 一律按"PG 也能跑"来写，SQLite 独有的写法只允许留在 `src/db_audit.py`（它读的就是那个老的 SQLite 文件）。已清掉的几类和它们的替身：
+
+- **NULL 安全的相等**：`a IS b` 是 SQLite 的写法，PG 那边叫 `IS NOT DISTINCT FROM`，没有两家通用的拼法，所以 `DEDUPE_PLAY_HISTORY`/`DEDUPE_FAVORITES` 摊开写成 `(a = b OR (a IS NULL AND b IS NULL))`。别图省事退回 `=`：归属列在老库里全是 NULL，用 `=` 这些行压根不进分组，去重会静默变成空操作（不是删错，是一个都不删）。
+- **"有了就别插"**：`INSERT OR IGNORE`（SQLite）和 `ON CONFLICT DO NOTHING`（PG）也是两家不同。统一写成 `INSERT ... SELECT ... WHERE NOT EXISTS`，规则只有一份，还顺便说清了"哪一对键算重复"——`_inherit_read_state` 和 `INHERIT_THEME_IN_PREFERENCES` 都是这个形状。
+- **表结构反射**：`PRAGMA table_info` 换成 `session.py` 的 `table_columns()`，它内部走 `inspect().get_columns()`，问每种方言问法不同、答案同形。踩过的坑：`run_sync` 两家递进来的东西不一样——连接那家给同步连接，会话那家给同步会话，把会话直接交给检查器会抛 `NoInspectionAvailable`，所以会话一侧走 `session_table_columns()`。
+- **取日历日**：PG 没有 `date()` 函数，SQLite 的 `CAST(x AS DATE)` 又会把文本折成数字，两家没有中立形式，所以 `get_stats` 读原始事件行、在 Python 里归桶。这类"不报错、只静默给空结果"的差异比语法错误危险得多。
+- **时间戳**：SQLite 存下去的是永远不带偏移的 UTC 文本，PG 的 `TIMESTAMP WITH TIME ZONE` 则按会话时区还一个带偏移的值。跨这两家做比较、分组或展示的，一律先过 `src/utils/time.py::as_utc()`。
+
+`ilike(..., escape="\\")` 不用动：SQLAlchemy 2.0 在 SQLite 上编译成 `lower(x) LIKE lower(?) ESCAPE '\'`，在 PG 上编译成 `x ILIKE %(p)s ESCAPE '\'`，转义语义一致（实测两家各编译一遍，不是靠印象）。
+
+换数据库之前先跑 `uv run python -m src.db_audit`（`src/db_audit.py`）。它只以 `mode=ro` 打开库文件，拿模型的 `Base.metadata` 和库里的实际 schema 对账，报九类问题：schema 漂移、库里没落实的外键约束、孤儿行、值类型不对、VARCHAR 超长、整数超出 PG 的 32 位 `integer`、NOT NULL 列里的 NULL、解析不了的日期与 JSON，并给每张表算一个方言无关的内容摘要（布尔→true/false、时间→UTC ISO、JSON→键排序，整表排序后哈希），搬完在目标库上再算一遍对得上才算搬全。之所以要有这么个脚本而不是"迁过去看报不报错"：SQLite 的类型亲和、不检查长度、不执行外键这三件事会让一批数据在 SQLite 里存得很好，到 PG 那边要么被拒要么被静改写；而只存在于库里的列（如认领后剩下的 `viewed`/`read`）会不会丢数据，只有数一遍非空值才知道。报告写到 `data/migration-audit-<日期>.md`（`data/` 不进版本库），stdout 只打 ASCII——控制台是 cp936。用例在 `tests/test_db_audit.py`，那里造了一个每类问题都有一条的脏库；真库跑出来的"一切正常"证明不了检查还活着。
+
+搬家的顺序：审计（`db_audit`）→ 目标库建空（`pg-provision.sql`，schema 由 `0001` 基线建，别手工建表）→ `db_transfer --from <老库> --to <新库> --dry-run` 预演 → 去掉 `--dry-run` 正式搬。`--dry-run` 会一路跑到对账通过再整体回滚，新库不留一行，所以它和正式搬用的是同一条代码路，预演过了才算过。目标库必须已建表且为空，否则直接中止。搬的时候 `sessions` 整表跳过（旧 token 到了新库也不该还能用），`alembic_version` 也不搬；自增序列会推到当前最大值。方向是双向的：回滚到 SQLite 就把它当目标库再搬一次，`_reset_sequences` 两种方言都实现了。
 
 ### 模型定义
 
@@ -433,7 +485,9 @@ created_at: Mapped[datetime] = mapped_column(
 )
 ```
 
-SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzinfo**，和 `datetime.now(timezone.utc)` 直接比大小会抛 `can't compare offset-naive and offset-aware datetimes`。凡要拿库里读出的时间做比较或运算，先过一道 `_as_utc()`（`value if value.tzinfo else value.replace(tzinfo=timezone.utc)`），`auth_service` 里就是这么做的。
+SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzinfo**，和 `datetime.now(timezone.utc)` 直接比大小会抛 `can't compare offset-naive and offset-aware datetimes`。凡要拿库里读出的时间做比较或运算，先过一道 `as_utc()`（`src/utils/time.py`：没带 tz 就当作 UTC，带了就换算到 UTC），`auth_service` 与 `history_service` 用的都是这一份。
+
+换成 PG 后这条规则不能丢：`TIMESTAMP WITH TIME ZONE` 还回来的是**带偏移**的值，而且偏移按数据库会话时区给，不一定正好是 UTC。所以 naive/aware 的分岔要一直留着，别改成"直接信任库里给的 tzinfo"。
 
 同理，测试里改过某行的时间后要看真实结果，用 `await db_session.refresh(row)` 重新读；`expire_all()` 之后靠关系属性懒加载会抛 `MissingGreenlet`。
 

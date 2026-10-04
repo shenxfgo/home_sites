@@ -17,16 +17,19 @@ from pathlib import Path
 
 import httpx
 import pytest_asyncio
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Add parent directory to Python path so 'src' becomes importable
 backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
-# Import all models so they register with Base.metadata before create_all
+# Import all models so they register with Base.metadata before the schema is built
 import src.models  # noqa: F401, E402
+from src.config import settings  # noqa: E402
 from src.database import get_session  # noqa: E402
 from src.database.base import Base  # noqa: E402
+from src.database.migrations import business_tables, upgrade_head  # noqa: E402
 from src.main import app  # noqa: E402
 from src.middleware.auth import CSRF_HEADER, CSRF_HEADER_VALUE  # noqa: E402
 from src.models.user import ROLE_OWNER, User, UserSession  # noqa: E402
@@ -34,17 +37,49 @@ from src.services.auth_service import COOKIE_NAME, hash_token  # noqa: E402
 
 TEST_SESSION_TOKEN = "test-session-token"
 
+#: 用例跑在哪个库上：出处是 ``settings.test_database_url``（环境变量或 backend/.env）。
+#: 填了就在真库上跑（迁移主线要求的 PostgreSQL 路径），留空则退回原来的内存 SQLite。
+TEST_DATABASE_URL = settings.test_database_url
+
+# 建表只在一次 pytest 会话里做一次：Alembic 的 DDL 是启动路径，逐用例重跑既慢，
+# 又会把一个用例的循环绑住另一个用例的连接。
+_schema_ready = False
+
+
+async def _prepare_schema(engine) -> None:
+    """空测试库先走一遍启动路径上的基线。"""
+    global _schema_ready
+    if _schema_ready:
+        return
+    async with engine.begin() as conn:
+        await conn.run_sync(upgrade_head)
+    _schema_ready = True
+
 
 @pytest_asyncio.fixture
 async def db_session():
-    """Create a fresh in-memory database session for each test."""
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        echo=False,
-    )
+    """A fresh, empty database for each test.
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    SQLite gets a brand-new in-memory file, which is the cheapest possible
+    isolation. On a real server the schema is created once and every test then
+    clears the rows with ``TRUNCATE ... RESTART IDENTITY``: resetting the
+    sequences keeps the first inserted row at id 1, the same numbering a test
+    sees against an empty file, so assertions stay identical across the two.
+    """
+    if TEST_DATABASE_URL:
+        engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+        await _prepare_schema(engine)
+        async with engine.begin() as conn:
+            tables = sorted(await conn.run_sync(business_tables))
+            names = ", ".join(f'"{name}"' for name in tables)
+            await conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
+    else:
+        engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            echo=False,
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
 
     session_factory = async_sessionmaker(
         engine,
@@ -55,8 +90,10 @@ async def db_session():
     async with session_factory() as session:
         yield session
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+    if not TEST_DATABASE_URL:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
 
 
 class _SharedSession:

@@ -11,9 +11,11 @@ from src.models.video import Video
 from src.models.watchlist import Watchlist, WatchlistItem
 from src.services.video_service import delete_videos_cascade
 from src.services.watchlist_service import WatchlistService
+from tests.support import ensure_source
 
 
 async def _create_video(session, video_id, title):
+    await ensure_source(session)
     video = Video(
         id=video_id,
         source_id=1,

@@ -14,12 +14,14 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
+from src.database.session import session_table_columns
 from src.models.favorite import Favorite
 from src.models.history import PlayHistory
 from src.models.user import ROLES, ROLE_OWNER, User, UserSession
 from src.models.watch_event import WatchEvent
 from src.models.watchlist import Watchlist
 from src.utils.password import hash_password, password_too_long, verify_password
+from src.utils.time import as_utc
 
 # 浏览器原生资源请求（<video> / <img> / <track>）只能靠 Cookie 带上身份。
 COOKIE_NAME = "sid"
@@ -50,15 +52,9 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _as_utc(value: datetime) -> datetime:
-    """SQLite 的 DATETIME 读回来不带 tzinfo，而写入的一律是 UTC。"""
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-
-
 async def _column_exists(session: AsyncSession, table: str, column: str) -> bool:
     """Whether a leftover column is still in the schema (it is never added back)."""
-    rows = await session.execute(text(f"PRAGMA table_info({table})"))
-    return column in {row[1] for row in rows}
+    return column in await session.run_sync(session_table_columns, table)
 
 
 class AuthService:
@@ -136,7 +132,7 @@ class AuthService:
             return None
 
         now = _utc_now()
-        expires_at = _as_utc(sess.expires_at)
+        expires_at = as_utc(sess.expires_at)
         if expires_at <= now:
             await self.session.delete(sess)
             await self.session.commit()
@@ -146,8 +142,8 @@ class AuthService:
         if user is None or not user.is_active:
             return None
 
-        lifetime = expires_at - _as_utc(sess.created_at)
-        if (now - _as_utc(sess.last_seen_at)).total_seconds() >= 300:
+        lifetime = expires_at - as_utc(sess.created_at)
+        if (now - as_utc(sess.last_seen_at)).total_seconds() >= 300:
             sess.last_seen_at = now
             sess.expires_at = now + lifetime
             await self.session.commit()
@@ -265,10 +261,16 @@ class AuthService:
         ):
             if not await _column_exists(self.session, table, flag):
                 continue
+            # 「这一对 (行, 人) 已经有了就别再插」原来是靠 INSERT OR IGNORE 兜主键冲突
+            # 的，那是 SQLite 的写法（PG 那边叫 ON CONFLICT DO NOTHING）。同一对键在两张
+            # _reads 表里本来就是复合主键，所以把这条规则写进 WHERE 就够了：第二个 owner
+            # 认领时走的是同一句，不会撞主键，也不必换一种方言拼前缀。
             await self.session.execute(
                 text(
-                    f"INSERT OR IGNORE INTO {read_table} ({fk_column}, user_id) "
-                    f"SELECT id, :user_id FROM {table} WHERE {flag} = 1"
+                    f"INSERT INTO {read_table} ({fk_column}, user_id) "
+                    f"SELECT s.id, :user_id FROM {table} s WHERE s.{flag} = 1 "
+                    f"AND NOT EXISTS (SELECT 1 FROM {read_table} r "
+                    f"WHERE r.{fk_column} = s.id AND r.user_id = :user_id)"
                 ),
                 {"user_id": user_id},
             )

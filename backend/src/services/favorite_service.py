@@ -44,6 +44,15 @@ class FavoriteService:
 
     async def add_favorite(self, user_id: int, video_id: int) -> Favorite:
         """Add a video to the caller's favorites."""
+        # ``favorites.video_id`` 是指向影片的外键。SQLite 出厂不查外键，所以从前
+        # 收一个不存在的编号也能建行；PostgreSQL 会当场拒绝，接口就成了 500。先问
+        # 一句影片在不在，两种数据库都按同一个答案回答，措辞跟 watchlist 那边对齐。
+        video = (
+            await self.session.execute(select(Video).where(Video.id == video_id))
+        ).scalar_one_or_none()
+        if not video:
+            raise ValueError(f"Video with id {video_id} not found")
+
         existing = await self.session.execute(
             select(Favorite).where(
                 Favorite.user_id == user_id, Favorite.video_id == video_id

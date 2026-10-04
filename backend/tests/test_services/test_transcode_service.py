@@ -6,6 +6,7 @@ import pytest
 from src.models.video import Video
 from src.services import transcode_service as tc_module
 from src.services.transcode_service import TranscodeService
+from tests.support import ensure_source
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +21,7 @@ async def _create_video(session, tmp_path, filename="movie.mp4", duration=120):
     """Create a video row whose file actually exists on disk."""
     path = tmp_path / filename
     path.write_bytes(b"stub")
+    await ensure_source(session)
     video = Video(
         source_id=1,
         filepath=str(path),

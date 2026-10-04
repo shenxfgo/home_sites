@@ -9,6 +9,7 @@ from src.models.history import PlayHistory
 from src.models.tag import Tag, video_tags
 from src.models.video import Video
 from src.models.watch_event import WatchEvent
+from src.utils.time import as_utc
 
 
 def _longest_streak(days: list[date]) -> int:
@@ -87,33 +88,37 @@ class HistoryService:
         """
         today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         since = today - timedelta(days=days - 1)
-        day = func.date(WatchEvent.occurred_at)
         owned = WatchEvent.user_id == user_id
 
+        # 归桶放在 Python 里：SQL 没有一个跨方言的"取日历日"写法（PG 没有 date() 函数，
+        # 而 SQLite 的 CAST(x AS DATE) 会把文本折成数字），原来 func.date() 只在一家成立。
+        # 窗口上限 365 天、一个人一天几十条，读全原始行也不大，顺手把总时长和总影片数
+        # 一起算掉，原来那第二条汇总查询就没有存在的必要了。
         rows = await self.session.execute(
             select(
-                day.label("day"),
-                func.sum(WatchEvent.seconds),
-                func.count(func.distinct(WatchEvent.video_id)),
-            )
-            .where(WatchEvent.occurred_at >= since, owned)
-            .group_by(day)
+                WatchEvent.occurred_at, WatchEvent.video_id, WatchEvent.seconds
+            ).where(WatchEvent.occurred_at >= since, owned)
         )
-        by_day = {str(row[0]): (row[1] or 0, row[2] or 0) for row in rows.all()}
+        seconds_by_day: dict[str, int] = {}
+        videos_by_day: dict[str, set[int]] = {}
+        for occurred_at, video_id, seconds in rows.all():
+            key = as_utc(occurred_at).date().isoformat()
+            seconds_by_day[key] = seconds_by_day.get(key, 0) + seconds
+            videos_by_day.setdefault(key, set()).add(video_id)
 
         daily = []
         for offset in range(days):
             key = (since + timedelta(days=offset)).date().isoformat()
-            seconds, videos = by_day.get(key, (0, 0))
-            daily.append({"date": key, "seconds": int(seconds), "videos": videos})
+            daily.append(
+                {
+                    "date": key,
+                    "seconds": seconds_by_day.get(key, 0),
+                    "videos": len(videos_by_day.get(key, ())),
+                }
+            )
 
-        totals = await self.session.execute(
-            select(
-                func.coalesce(func.sum(WatchEvent.seconds), 0),
-                func.count(func.distinct(WatchEvent.video_id)),
-            ).where(WatchEvent.occurred_at >= since, owned)
-        )
-        window_seconds, videos_watched = totals.one()
+        window_seconds = sum(seconds_by_day.values())
+        videos_watched = len({video for group in videos_by_day.values() for video in group})
 
         month_start = today.replace(day=1)
         month_seconds = (

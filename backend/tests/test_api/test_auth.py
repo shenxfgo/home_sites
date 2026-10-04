@@ -13,6 +13,7 @@ from src.services.auth_service import (
     login_rate_limiter,
 )
 from src.utils.password import hash_password, verify_password
+from src.utils.time import as_utc
 
 PASSWORD = "a-quiet-home-lab"
 NEW_PASSWORD = "a-new-quiet-home-lab"
@@ -86,8 +87,8 @@ async def test_remember_me_lengthens_the_cookie_and_the_row(anon_client, db_sess
 
     assert "Max-Age=2592000" in response.headers["set-cookie"]  # 30 days
     (row,) = await _sessions(db_session)
-    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-    assert row.expires_at - now_utc > timedelta(days=29)
+    now_utc = datetime.now(timezone.utc)
+    assert as_utc(row.expires_at) - now_utc > timedelta(days=29)
 
 
 async def test_a_wrong_password_and_an_unknown_account_say_the_same_thing(

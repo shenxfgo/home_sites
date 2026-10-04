@@ -10,7 +10,7 @@
 |------|------|
 | 前端 | Vue 3 + TypeScript + Vite + Element Plus（播放器为手写组件，未引入 Video.js） |
 | 后端 | Python 3.11+ + FastAPI + SQLAlchemy 2.0+ + APScheduler |
-| 数据库 | SQLite 3（aiosqlite 异步驱动） |
+| 数据库 | PostgreSQL 18（asyncpg 异步驱动）；SQLite（aiosqlite）仍可作为方言运行 |
 | 认证 | Cookie 会话（服务端表存 token 摘要）+ bcrypt，不用 JWT：`<video>` / `<img>` / `<track>` 的原生请求带不了 `Authorization` |
 | 视频处理 | FFmpeg |
 | 依赖管理 | uv（Python）、npm（Node.js） |
@@ -108,6 +108,8 @@ home_sites/
 │   │   ├── scheduler/      # 定时任务
 │   │   ├── database/       # 数据库配置
 │   │   ├── cli.py          # 账号管理命令行（建号/列账号/改角色/踢下线）
+│   │   ├── db_audit.py     # 换数据库前的只读审计（schema 漂移、孤儿行、类型/长度不符）
+│   │   ├── db_transfer.py  # 搬迁：把老库整份搬进目标库，一个事务内核对摘要后才提交
 │   │   ├── config.py       # 配置管理
 │   │   └── main.py         # 应用入口
 │   ├── tests/              # 测试文件
@@ -181,6 +183,9 @@ uv run pytest              # 运行测试
 uv run python -m src.cli create-user --username admin --role owner  # 建账号（对外没有注册接口，第一个 owner 只能这样建）
 uv run python -m src.cli list-users      # 列出账号
 uv run python -m src.cli revoke-sessions # 踢下线（省略 --username 则清全部会话）
+uv run python -m src.db_audit            # 换数据库前的只读审计（报告写进 data/）
+uv run python -m src.db_transfer --from <老库> --to <新库> --dry-run  # 搬迁预演，不落一行
+uv run python -m src.db_transfer --from <老库> --to <新库>            # 正式搬迁（新库必须已建表且为空）
 ```
 
 ### 前端
@@ -206,7 +211,8 @@ npm run typecheck:test     # 只检查测试代码类型
 
 创建 `.env` 文件配置：
 ```env
-DATABASE_URL=sqlite+aiosqlite:///./data/videos.db
+DATABASE_URL=postgresql+asyncpg://home_sites_app:<口令>@127.0.0.1:5432/home_sites
+TEST_DATABASE_URL=postgresql+asyncpg://home_sites_app:<口令>@127.0.0.1:5432/home_sites_test
 VIDEO_STORAGE_PATH=./data/videos
 THUMBNAIL_PATH=./data/thumbnails
 API_HOST=0.0.0.0
@@ -233,7 +239,7 @@ LOGIN_LOCKOUT_MINUTES=10
 
 完整清单见 README 的「公网部署注意事项」。
 
-个人数据（收藏/进度/片单/统计/已读）都以 `user_id` 为键，影片库本身是共享的一份：`videos`、`tags`、`video_sources`、`subtitles` 都不加归属列，`videos.view_count`/`rating` 仍是全站热度。加归属列只能走 `init_db()` 的幂等 SQL（项目没有 Alembic），并且必须同时声明在模型上——测试用的内存库只跑 `create_all`；执行迁移前先复制一份 `data/videos.db`。
+个人数据（收藏/进度/片单/统计/已读）都以 `user_id` 为键，影片库本身是共享的一份：`videos`、`tags`、`video_sources`、`subtitles` 都不加归属列，`videos.view_count`/`rating` 仍是全站热度。改表只有一条路：写一个 Alembic 修订，并且把约束/索引同时声明在模型上（SQLite 那条测试路的库是 `create_all` 建的全新库，只写修订它在测试里形同不存在）；`init_db()` 只负责选启动路线，不再往里加 SQL。动真库结构前先备份一份：PG 上 `pg_dump`，SQLite 老文件直接复制 `data/videos.db`。
 
 界面偏好走 `user_preferences.prefs` 这个 JSON  blob（按 `user_id` 一行，写入按键合并），不再往 `settings` 里塞个人字段：`settings` 是全家一份的系统配置，改一次所有人的播放都受影响，两者混在一张表里迟早有人在成员机器上写全局值。
 
@@ -242,5 +248,5 @@ LOGIN_LOCKOUT_MINUTES=10
 1. 所有文档使用中文
 2. 代码注释使用中文
 3. Git 提交信息使用英文
-4. 数据库使用异步驱动（aiosqlite）
+4. 数据库走异步驱动：PG 用 asyncpg，SQLite 用 aiosqlite；两种方言都要能跑，裸 SQL 不许写 SQLite 专有语法（`PRAGMA`、`INSERT OR IGNORE`、`ON CONFLICT` 等），只读审计脚本 `db_audit.py` 是唯一的例外
 5. 视频文件路径使用相对路径或配置化

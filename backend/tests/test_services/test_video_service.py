@@ -9,10 +9,14 @@ from src.models.new_video import NewVideo
 from src.models.history import PlayHistory
 from src.models.tag import Tag
 from src.services.video_service import VideoService, is_completed
+from tests.support import ensure_source
 
 
 async def _create_video(session, source_id=1, title="Test Video", filepath="/test/video.mp4", duration=120, file_size=1024000):
     """Helper to create a video directly in the database."""
+    # SQLite 出厂不查外键，所以这里过去可以直接写 source_id=1；PostgreSQL 会拒绝
+    # 没有父行的影片，父行得真的建出来。
+    await ensure_source(session, source_id)
     video = Video(
         source_id=source_id,
         filepath=filepath,

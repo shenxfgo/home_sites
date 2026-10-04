@@ -7,6 +7,7 @@ from src.models.video import Video
 from src.models.history import PlayHistory
 from src.models.watch_event import WatchEvent
 from src.services.history_service import HistoryService
+from tests.support import ensure_source
 
 
 async def _watch(session, user_id, video_id, progress, completed, played_at):
@@ -26,6 +27,7 @@ async def _watch(session, user_id, video_id, progress, completed, played_at):
 
 
 async def _create_video(session, video_id, title):
+    await ensure_source(session)
     video = Video(
         id=video_id,
         source_id=1,
@@ -121,6 +123,30 @@ async def test_stats_total_the_window_and_fill_every_day(db_session, user_id):
     assert stats["active_days"] == 3
     assert stats["daily"][-1]["seconds"] == 0
     assert [entry["seconds"] for entry in stats["daily"]][-4:] == [100, 600, 300, 0]
+
+
+@pytest.mark.asyncio
+async def test_stats_fold_a_titles_whole_day_into_one_video(db_session, user_id):
+    """同一天里一部片子看两次，是 1 部、时长相加。
+
+    取日历日原来靠 ``func.date()``，那是只有 SQLite 认的写法（PG 没有 date() 函数，看盘
+    日志会静默全零），现在归桶挪到 Python。少了按天分组的那条 SQL，同一天多条事件相加、
+    同一部片子跨天只算一次这两件事就得由用例钉住。
+    """
+    await _create_video(db_session, 1, "暗涌")
+    await _create_video(db_session, 2, "长夜")
+    await _event(db_session, user_id, 1, 300, days_ago=1, hour=9)
+    await _event(db_session, user_id, 1, 400, days_ago=1, hour=21)
+    await _event(db_session, user_id, 2, 100, days_ago=1)
+    await _event(db_session, user_id, 1, 50, days_ago=3)
+
+    stats = await HistoryService(db_session).get_stats(user_id, days=7)
+
+    assert (stats["daily"][-2]["seconds"], stats["daily"][-2]["videos"]) == (800, 2)
+    assert stats["window_seconds"] == 850
+    # 视频 1 跨了两个日子也只算一部被看过的片子。
+    assert stats["videos_watched"] == 2
+    assert stats["active_days"] == 2
 
 
 @pytest.mark.asyncio
