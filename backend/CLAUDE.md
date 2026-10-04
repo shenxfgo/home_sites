@@ -531,7 +531,13 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 
 `[tool.coverage.report] fail_under = 80`（2026-10-04 挂上，当时实测 86%）。没写成 pytest 的 `addopts`，是因为那样"只跑一个文件"也会去比总量——一个文件的覆盖率天然不到 80，报回来的红和"测试坏了"长得一模一样，纯属误导。要量就明说：`pytest -q --cov=src`。
 
-薄的位置是清楚的：`utils/ffmpeg.py` 23%（转码要真 FFmpeg 和真片子才跑得动）、`services/tag_service.py` 32% 与 `api/tags.py` 59%（标签那套 API 只有几条用例过）、`scheduler/tasks.py` 71%（定时任务本体在测试里都是直接调函数）。这几处是有意的取舍，不是漏了；别为了让总数好看去造只断言"没抛异常"的用例。
+**读报告前先知道这一条：那个百分比把异步代码少算了。**coverage 默认不认 greenlet，而 SQLAlchemy 的 async 引擎每个 `await` 都要过一次 greenlet 切换，切过去之后行追踪器就丢了——于是**函数体里那些落在 `await` 之后的行会被报成"没执行"**，哪怕用例就是从那几行走出来的。两处实测：`tests/test_api/test_tags.py` 单跑，`api/tags.py` 显示 76%、`tag_service.py` 显示 37%；临时加一段 `[tool.coverage.run] concurrency = ["greenlet", "thread"]` 再跑同一套用例，变成 **100% / 97%**。全量也是同一方向：未配置时 TOTAL **86%**（4278 stmts / 589 miss），带上配置 **91.49%**（364 miss），两次都是 698 passed + 1 skipped——少算的确实是执行过的行。所以：
+
+- 别拿单文件的百分比当"这里没测"的证据去补用例，先看 `tests/` 里到底有没有走过那条路径
+- 也别为了让报告好看就抬高 `fail_under`：80 那条在未修正的读数上仍有余量，而修正后余量只会更大，闸门不必跟着动
+- 这条还没落到 `pyproject.toml` 里（上面是临时改配置量出来的），落下去时把下面的薄位置数字一起重测
+
+薄的位置（按上面那条打折读）：`utils/ffmpeg.py` 23%（转码要真 FFmpeg 和真片子才跑得动）、`scheduler/tasks.py` 71%（定时任务本体在测试里都是直接调函数）。标签那套在 2026-10-05 已经补上接口层用例（`tests/test_api/test_tags.py`，八个端点各过一遍，顺带把"重名建标签回 500"改成 409），不再是空白。这几处是有意的取舍，不是漏了；别为了让总数好看去造只断言"没抛异常"的用例。
 
 ## 依赖管理
 

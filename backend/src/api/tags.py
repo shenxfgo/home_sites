@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.videos import VideoResponse
 from src.database import get_session
-from src.services.tag_service import TagService
+from src.services.tag_service import DuplicateTagNameError, TagService
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
 
@@ -66,7 +66,10 @@ async def create_tag(
     service: TagService = Depends(get_tag_service),
 ) -> TagResponse:
     """Create a new tag."""
-    return await service.create(name=data.name, color=data.color)
+    try:
+        return await service.create(name=data.name, color=data.color)
+    except DuplicateTagNameError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.get("/{tag_id}", response_model=TagResponse)
@@ -94,6 +97,8 @@ async def update_tag(
 
     try:
         return await service.update(tag_id, **update_data)
+    except DuplicateTagNameError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

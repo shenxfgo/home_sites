@@ -1,5 +1,18 @@
 # 更新日志
 
+## 2026-10-05
+
+### 修复：重名建标签此前是 500（`IntegrityError` 顶到 ASGI 层），现在回 409 并带标签名
+
+- **动因**：给标签接口补集成测试时撞出来的。`tags.name` 上明写着唯一约束，而界面上"新建标签"和"改名"都是点得到的日常操作——重名是使用者的常态（手滑），不是异常。之前它直接把 `sqlalchemy.exc.IntegrityError` 抛穿 ASGI，真服务器上就是 500，界面弹「Operation failed: Request failed with status code 500」；更糟的是失败的那一次会把会话弄脏，同一进程里紧接着的下一条查询回 `PendingRollbackError`
+- **先红**：`tests/test_api/test_tags.py`（新增 26 条）在修复前跑出的就是这两条红——`test_a_second_tag_with_the_same_name_conflicts_instead_of_500`、`test_renaming_onto_an_existing_name_conflicts`，其余 24 条绿；报的是 `UNIQUE constraint failed: tags.name`
+- **改法按仓库已有的惯例**：`services/tag_service.py` 加 `DuplicateTagNameError(ValueError)`，`create()` 与 `update()` 在写之前先按名字查一次 id（改名时同名到自己不算冲突），抛中文详情「标签「科幻」已存在」；`api/tags.py` 的 POST 与 PUT 把它映射成 **409**，且 `except` 排在通用的 `ValueError`→404 **之前**（它是子类，顺序反了就会把重名报成"标签不存在"）。这一处与 `watchlists` 的 `DuplicateWatchlistNameError` 是同一个形状：服务层判别异常，接口层负责状态码
+- **为什么是先查而不是捕获 `IntegrityError`**：预检让失败的那一次根本不进 `commit()`，会话保持干净；捕获 `IntegrityError` 则要先弄脏再回滚，而回滚会把同一请求里已做的别的改动一起带走。竞态窗口（两个请求同时建同名）仍然由数据库唯一约束兜底，只是那种情况下会退回 500——写标签是 owner 一个人的手，这条路不去铺
+- **接口层此前完全没有测试**：八个端点都在界面上被用着（`Tags.vue` 建改删、`VideoDetail.vue` 贴与摘、`Home.vue` 读列表算片库分布），覆盖到的只有模型用例和角色扫面。这 26 条把默认色、非法色 422、空 patch 400、单取/删/改的 404、删掉在用标签只走关联不碰影片、贴标签幂等、失效 tag id 跳过不判死整次请求、以及"按标签查影片"的空结果与 404 都钉住
+- **两处我自己假设错了，改的是用例不是代码**：一是 `order_by(Tag.name)` 排的是 **UTF-8 字节序**而非拼音（SQLite 的 BINARY、PG 建库时钉死的 `C` collation 都是字节序，两种方言给同一个答案：剧 U+5267 排在 动 U+52A8 之前）；二是接口和用例共用 `db_session` 时，那条影片的 `tags` 集合在贴标签时已经加载过，删完标签不 `expire_all()` 就会读到身份映射里的旧集合——真服务每个请求一个新会话，不会有这个现象，所以用例里显式失效并写明原因
+- **验证**：`ruff check .` **0 项**、`mypy src` **34 项**（与上一单同数，`api/tags.py` 那三条"端点返回 ORM 对象"是既有基线，这一单没去动）；带覆盖率的 PostgreSQL 全量 **699 passed**（3:10）、SQLite **698 passed + 1 skipped**（59s），两套串行跑；前端单测 **279 passed**、桩 e2e **82 passed**、打真后端的 e2e **3 passed**
+- **顺带量到的一件事（这一单没改，只记下来）**：那 26 条把 `api/tags.py` 打到 100%、`tag_service.py` 打到 97%，前提是给 coverage 配上 `concurrency = ["greenlet", "thread"]`；默认配置下同样的用例只报 **76% / 37%**。原因是 SQLAlchemy 的 async 引擎每个 `await` 过一次 greenlet 切换，行追踪器在切换后丢失，于是落在 `await` 之后的真被执行过的行被报成空白——全量 TOTAL 同样被少算（86% vs 91.49%，两次通过数一致）。这条对方程式的接口层和服务层普遍成立，所以此前那些"某某文件只有 32%"的薄位置清单要打折读，已写进 `backend/CLAUDE.md`
+
 ## 2026-10-04
 
 ### 补测试：`src/cli.py` 与 `utils/file_scanner.py` 从 0% / 38% 到 100%，覆盖率闸门挂上 80

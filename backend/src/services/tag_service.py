@@ -7,14 +7,32 @@ from src.models.tag import Tag, video_tags
 from src.models.video import Video
 
 
+class DuplicateTagNameError(ValueError):
+    """A tag already carries that name.
+
+    ``tags.name`` is unique at the database level and renaming is a click away
+    in the UI, so the routes answer 409 instead of letting the IntegrityError
+    surface as a 500 — and instead of leaving the session poisoned for the
+    request that follows.
+    """
+
+
 class TagService:
     """Service for managing tags."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def _existing_tag_id(self, name: str) -> int | None:
+        """Return the id of the tag already carrying ``name``, if any."""
+        result = await self.session.execute(select(Tag.id).where(Tag.name == name))
+        return result.scalar_one_or_none()
+
     async def create(self, name: str, color: str = "#409eff") -> Tag:
         """Create a new tag."""
+        if await self._existing_tag_id(name) is not None:
+            raise DuplicateTagNameError(f"标签「{name}」已存在")
+
         tag = Tag(name=name, color=color)
         self.session.add(tag)
         await self.session.commit()
@@ -48,6 +66,11 @@ class TagService:
         tag = await self.get_by_id(tag_id)
         if not tag:
             raise ValueError(f"Tag with id {tag_id} not found")
+
+        new_name = kwargs.get("name")
+        if isinstance(new_name, str) and new_name != tag.name:
+            if await self._existing_tag_id(new_name) is not None:
+                raise DuplicateTagNameError(f"标签「{new_name}」已存在")
 
         for key, value in kwargs.items():
             if hasattr(tag, key):
