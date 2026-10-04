@@ -364,7 +364,9 @@ uv sync --extra dev --extra s3
 uv run pytest
 
 # 量覆盖率（闸门 80% 配在 backend/pyproject.toml 的 [tool.coverage.report]，
-# 只有带 --cov 的全量跑才比这一条，单独跑某个文件不会因此报红）
+# 只有带 --cov 的全量跑才比这一条，单独跑某个文件不会因此报红。
+# 读数依赖 [tool.coverage.run] concurrency = ["greenlet", "thread"]：
+# 少了它，SQLAlchemy async 里落在 await 之后的行会被报成"没执行"，总量少算约 5 个点）
 uv run pytest --cov=src
 
 # 想让整套用例跑在 PostgreSQL 上（迁移主线用的那种方言），在 backend/.env 里填

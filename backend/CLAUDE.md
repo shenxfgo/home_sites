@@ -529,15 +529,24 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 
 ### 5. 覆盖率：闸门是 80，但只在带 `--cov` 的全量跑上生效
 
-`[tool.coverage.report] fail_under = 80`（2026-10-04 挂上，当时实测 86%）。没写成 pytest 的 `addopts`，是因为那样"只跑一个文件"也会去比总量——一个文件的覆盖率天然不到 80，报回来的红和"测试坏了"长得一模一样，纯属误导。要量就明说：`pytest -q --cov=src`。
+`[tool.coverage.report] fail_under = 80`（2026-10-04 挂上，当时实测 86%——那是下面那条未修正的读数）。没写成 pytest 的 `addopts`，是因为那样"只跑一个文件"也会去比总量——一个文件的覆盖率天然不到 80，报回来的红和"测试坏了"长得一模一样，纯属误导。要量就明说：`pytest -q --cov=src`。
 
-**读报告前先知道这一条：那个百分比把异步代码少算了。**coverage 默认不认 greenlet，而 SQLAlchemy 的 async 引擎每个 `await` 都要过一次 greenlet 切换，切过去之后行追踪器就丢了——于是**函数体里那些落在 `await` 之后的行会被报成"没执行"**，哪怕用例就是从那几行走出来的。两处实测：`tests/test_api/test_tags.py` 单跑，`api/tags.py` 显示 76%、`tag_service.py` 显示 37%；临时加一段 `[tool.coverage.run] concurrency = ["greenlet", "thread"]` 再跑同一套用例，变成 **100% / 97%**。全量也是同一方向：未配置时 TOTAL **86%**（4278 stmts / 589 miss），带上配置 **91.49%**（364 miss），两次都是 698 passed + 1 skipped——少算的确实是执行过的行。所以：
+**读报告前先知道这一条：coverage 默认会把异步代码少算。**SQLAlchemy 的 async 引擎每个 `await` 都要过一次 greenlet 切换，而 coverage 不认 greenlet 时行追踪器在切换后丢失——于是**函数体里那些落在 `await` 之后的行会被报成"没执行"**，哪怕用例就是从那几行走出来的。`pyproject.toml` 里的 `[tool.coverage.run] concurrency = ["greenlet", "thread"]`（2026-10-05 挂上）就是为这一条；两边实测同一套全量：未配置 TOTAL **86%**（589 miss），配上 **91.49%**（364 miss），两次都是 698 passed + 1 skipped，所以少算的确实是执行过的行。同一套标签用例在两种配置下分别报 `api/tags.py` 76% / **100%**、`tag_service.py` 37% / **97%**。
 
-- 别拿单文件的百分比当"这里没测"的证据去补用例，先看 `tests/` 里到底有没有走过那条路径
-- 也别为了让报告好看就抬高 `fail_under`：80 那条在未修正的读数上仍有余量，而修正后余量只会更大，闸门不必跟着动
-- 这条还没落到 `pyproject.toml` 里（上面是临时改配置量出来的），落下去时把下面的薄位置数字一起重测
+所以看覆盖率只有两条戒律：
 
-薄的位置（按上面那条打折读）：`utils/ffmpeg.py` 23%（转码要真 FFmpeg 和真片子才跑得动）、`scheduler/tasks.py` 71%（定时任务本体在测试里都是直接调函数）。标签那套在 2026-10-05 已经补上接口层用例（`tests/test_api/test_tags.py`，八个端点各过一遍，顺带把"重名建标签回 500"改成 409），不再是空白。这几处是有意的取舍，不是漏了；别为了让总数好看去造只断言"没抛异常"的用例。
+- 别拿单文件百分比当"这里没测"的证据去补用例，先看 `tests/` 里到底有没有走过那条路径
+- 别为了让报告好看抬高 `fail_under`：80 在未修正的读数上就还有余量，修正后余量更大，动它只会把历史数字弄丢
+
+下面那份薄位置清单是**修正后**重测的（SQLite 全量 698 passed + 1 skipped，TOTAL 91.49%）：
+
+- `utils/ffmpeg.py` **23%**——转码要真 FFmpeg 和真片子才跑得动，桩不出真形状没有意义
+- `scheduler/tasks.py` **57%**——缺的是 `scan_source_task` / `scan_all_active_task` 两个包装的函数体（自己开会话、把异常变成一条 `scan_error` 通知）；测试和被调的定时任务都是直接走 `ScanService`，只有 `backup_database_task` 是端到端测过的
+- `src/e2e_seed.py` **57%**——一次性库的播种与重置，主要活在打真后端的 e2e 那个进程里，pytest 进程只 import 和调其中一部分
+- `api/settings.py` **71%**——批量改配置和单键读写两条端点没人调（界面走的是另一套偏好接口）
+- `api/stream.py` **72%**——整文件直读那两个分支和"封面文件不在"的兜底；`Range` 分段由打真后端的 e2e 覆盖，不在这份读数里
+
+标签那套在 2026-10-05 补上了接口层用例（`tests/test_api/test_tags.py`，八个端点各过一遍，顺带把"重名建标签回 500"改成 409），`api/tags.py` 100%、`tag_service.py` 97%，不再是空白。这几处都是有意的取舍，不是漏了；别为了让总数好看去造只断言"没抛异常"的用例。
 
 ## 依赖管理
 
@@ -562,5 +571,5 @@ uv run pytest
 .venv/Scripts/mypy.exe src        # 2026-10-04 从 95 降到 34，看单文件增量而不是总数
 
 # 覆盖率（闸门在 [tool.coverage.report] 的 fail_under=80，只有带 --cov 才生效）
-TEST_DATABASE_URL= .venv/Scripts/pytest.exe -q --cov=src   # 全量跑，2026-10-04 实测 86%
+TEST_DATABASE_URL= .venv/Scripts/pytest.exe -q --cov=src   # 全量跑，2026-10-05 实测 91%（greenlet 修正后的读数）
 ```

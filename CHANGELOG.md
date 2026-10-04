@@ -2,6 +2,16 @@
 
 ## 2026-10-05
 
+### 修正：coverage 一直在少算异步代码，配上 `concurrency = ["greenlet", "thread"]` 之后薄位置重测了一遍
+
+- **是怎么撞出来的**：上一单给标签接口补完 26 条用例，报告说 `api/tags.py` 只有 76%、`tag_service.py` 只有 37%，可这些用例明明就是从 `create()` / `update()` 的函数体走出去的。去对照 `watchlists`（74% / 45%）才发现不是标签一处的怪事——**全仓的异步代码都被少算**，缺的行整齐地都排在某个 `await` 之后
+- **根因**：SQLAlchemy 的 async 引擎是用 greenlet 把同步 API 桥到协程上的，每个 `await` 都过一次 greenlet 切换；coverage 默认不知道有 greenlet，行追踪器在切换回来之后没有重新装上，于是那一段执行不记账。修法是 `backend/pyproject.toml` 加一段 `[tool.coverage.run] concurrency = ["greenlet", "thread"]`，让 coverage 换成 greenlet 感知的追踪器并同时接管 `threading.settrace`（调度任务跑在自己的线程里）
+- **改的只有配置，`src/` 一行没动**：同一套全量在两种配置下的读数——TOTAL **86%（589 miss）→ 91.49%（364 miss）**，而两次都是 698 passed + 1 skipped。通过数一致正是这条修正该有的形状：被补回来的确实是一直在执行的行，不是新测了什么
+- **薄位置清单按修正后的读数重测**（76 个 `src/` 文件里 26 个已到 100%）：`utils/ffmpeg.py` **23%**（同步的 subprocess 调用，本来就不吃这个修正，转码要真 FFmpeg 和真片子）、`scheduler/tasks.py` **57%**（缺的是 `scan_source_task` / `scan_all_active_task` 两个包装的函数体和它们的 `scan_error` 通知分支——测试是直接调 `ScanService` 的）、`src/e2e_seed.py` **57%**（活在打真后端的 e2e 那个进程里，pytest 进程只 import 和调一部分）、`api/settings.py` **71%**（批量改配置和单键读写两条端点没人调）、`api/stream.py` **72%**（整文件直读与"封面文件不在"的兜底；`Range` 分段由真后端 e2e 覆盖，不在这份读数里）
+- **反过来纠正一句上一单的话**：`tag_service.py` 此前记的 32% 有两三成是少算，但接口层确实几乎没测——把新增那 26 条排除掉、用修正后的配置重测，是 `api/tags.py` **58%** / `tag_service.py` **39%**。补完之后 **100% / 97%**（还剩 51-52 行，是没人调用过的 `list_all()`）
+- **闸门 80 保持不动**：未修正的读数本来就过 80，动了它会把 2026-10-04 那条历史数字读歪；余量由 6 个点变成 9 个点，是同一份用例被更如实地记账而已。`backend/CLAUDE.md` 第 5 节现在把"看单文件百分比之前先确认这条配置在"写成戒律
+- **验证**：这条改的是度量而不是行为，所以没有"先红"那一步——红的是那 225 行此前一直被误报成空白。`ruff check .` **0 项**、`mypy src` **34 项**（都没碰 `src/`，与上一单同数）；带覆盖率 PostgreSQL 全量 **699 passed**，TOTAL **91.51%**（363 miss）、SQLite **698 passed + 1 skipped**，TOTAL **91.49%**（364 miss），两套串行跑，通过数与修正前一致
+
 ### 修复：重名建标签此前是 500（`IntegrityError` 顶到 ASGI 层），现在回 409 并带标签名
 
 - **动因**：给标签接口补集成测试时撞出来的。`tags.name` 上明写着唯一约束，而界面上"新建标签"和"改名"都是点得到的日常操作——重名是使用者的常态（手滑），不是异常。之前它直接把 `sqlalchemy.exc.IntegrityError` 抛穿 ASGI，真服务器上就是 500，界面弹「Operation failed: Request failed with status code 500」；更糟的是失败的那一次会把会话弄脏，同一进程里紧接着的下一条查询回 `PendingRollbackError`

@@ -164,7 +164,7 @@ chore: 构建/工具
 **后端：**
 - 所有 Service 必须有单元测试
 - 所有 API 必须有集成测试
-- 测试覆盖率 > 80%：这条由 `[tool.coverage.report] fail_under = 80` 强制，但只在 `uv run pytest --cov=src`（全量）上生效——故意不写进 `addopts`，否则"只跑一个文件"也会因总量不足报红，和"测试坏了"分不清
+- 测试覆盖率 > 80%：这条由 `[tool.coverage.report] fail_under = 80` 强制，但只在 `uv run pytest --cov=src`（全量）上生效——故意不写进 `addopts`，否则"只跑一个文件"也会因总量不足报红，和"测试坏了"分不清。读数依赖 `[tool.coverage.run] concurrency = ["greenlet", "thread"]`：少了它，SQLAlchemy async 引擎里落在 `await` 之后的行会被报成"没执行"，全量少算约 5 个点（2026-10-05 前后的 86% 与 91% 就是这个差别，用例通过数一致）
 - 新增 `/api/*` 端点不必另写鉴权用例：`tests/test_middleware/test_auth.py` 会遍历 openapi 里每个非白名单端点断言匿名 401，`test_roles.py` 同样扫面断言 member 一律 403 —— 两张表（`MEMBER_WRITE_PATHS` / `OWNER_ONLY_READ_PATHS`）漏登记时红的是测试，不是线上
 - 碰到"某个人的数据"的读写必须有隔离用例（`tests/test_services/test_isolation.py`、`tests/test_api/test_isolation.py`）：A 的列表里查不到 B 的行，A 按 B 的 id 改删要变成 404/报错；fixture 用 `make_user`/`user_id`（service 层）与 `make_signed_in_client`（再要一个登录客户端）
 

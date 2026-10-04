@@ -73,10 +73,17 @@ disallow_untyped_defs = true
 module = ["apscheduler.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
+[tool.coverage.run]
+# SQLAlchemy 的 async 引擎每个 await 都要过一次 greenlet 切换，而 coverage 默认
+# 不认 greenlet：切过去之后行追踪器丢了，落在 await 之后的行被报成"没执行"，
+# 哪怕用例就是从那几行走出来的。声明并发模型之后记账才可信。
+# 实测同一套全量：默认 86%（589 miss），带上这条 91.49%（364 miss），通过数一致。
+concurrency = ["greenlet", "thread"]
+
 [tool.coverage.report]
 # 覆盖率闸门：只在显式量的时候生效（`pytest --cov=src`），低于这条就红。
-# 2026-10-04 补完 cli.py 与 file_scanner.py 之后实测 86%，留 6 个点的余量给
-# 还没测到的分支（ffmpeg 转码 23%、tag_service 32%、调度任务 71%）。
+# 2026-10-04 挂上时按未修正的读数留了 6 个点余量；2026-10-05 配好 greenlet 后
+# 实测 91%，闸门不动——80 那条在两种读数下都过，改它只会把历史数字弄丢。
 fail_under = 80
 show_missing = true
 # 模块入口的守卫靠 import 是走不到的，留给真机跑 `python -m src.cli`。
