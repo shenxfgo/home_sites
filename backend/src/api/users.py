@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
 from src.middleware.auth import require_owner
-from src.models.user import ROLES, ROLE_MEMBER, ROLE_OWNER, User, UserSession
+from src.models.user import ROLE_MEMBER, ROLE_OWNER, User, UserSession
 from src.services.auth_service import AuthService, user_payload
 
 router = APIRouter(prefix="/api/users", tags=["users"])

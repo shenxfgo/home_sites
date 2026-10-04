@@ -10,7 +10,7 @@ from src.storage.base import (
     Capabilities,
     FoundFile,
     MediaStorage,
-    UnsupportedStorage,
+    UnsupportedStorageError,
 )
 from src.storage.local import LocalMediaStorage
 from src.storage.s3 import S3MediaStorage
@@ -29,7 +29,7 @@ def storage_for_source(source_type: str) -> MediaStorage:
     try:
         return _BY_TYPE[source_type]
     except KeyError:
-        raise UnsupportedStorage(f"未知的视频源类型：{source_type}") from None
+        raise UnsupportedStorageError(f"未知的视频源类型：{source_type}") from None
 
 
 def storage_for_locator(locator: str) -> MediaStorage:
@@ -60,7 +60,7 @@ __all__ = [
     "LocalMediaStorage",
     "MediaStorage",
     "S3MediaStorage",
-    "UnsupportedStorage",
+    "UnsupportedStorageError",
     "fingerprint",
     "storage_for_locator",
     "storage_for_source",

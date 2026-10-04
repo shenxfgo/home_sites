@@ -1,10 +1,10 @@
 """Periodic jobs inside the app process: source scans and the daily backup."""
 import logging
 
+from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.jobstores.memory import MemoryJobStore
 
 logger = logging.getLogger(__name__)
 

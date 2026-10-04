@@ -84,7 +84,7 @@ backend/
 │   ├── middleware/        # HTTP 中间件
 │   │   └── auth.py        # 默认拒绝的鉴权 + 角色网关（MEMBER_WRITE_PATHS / OWNER_ONLY_READ_PATHS）+ get_current_user / get_current_user_id / get_session_token / require_owner
 │   ├── storage/           # 取文件的接缝：上层只知道 locator 字符串，不知道文件在哪、怎么读
-│   │   ├── base.py        # MediaStorage 协议 + Capabilities + FoundFile + UnsupportedStorage + S3_SCHEME
+│   │   ├── base.py        # MediaStorage 协议 + Capabilities + FoundFile + UnsupportedStorageError + S3_SCHEME
 │   │   ├── local.py       # 本地与 NAS 共用的一份实现（NAS 就是挂载成本地路径）
 │   │   ├── s3.py          # boto3 那份，只读，Capabilities.local_path=False
 │   │   └── __init__.py    # storage_for_source(type) / storage_for_locator(路径) / fingerprint(路径)
@@ -299,7 +299,7 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 `DATABASE_URL` 指哪就连哪，SQLite 与 PostgreSQL 两种方言都支持（PG 用 `postgresql+asyncpg://`）。建库模板 `backend/deploy/pg-provision.example.sql`（进版本库，口令位置是 `__REPLACE_ME__`，用的人自己换成真口令；换好之后的那份另存到 `data/` 里，别提交）：角色 `home_sites_app` 只有 LOGIN，两个库 `home_sites`（真库）与 `home_sites_test`（测试专用），`ENCODING=UTF8`、`LC_COLLATE`/`LC_CTYPE` 钉死 `C`。表结构不在模板里建，由 `0001` 基线在首次启动时建。
 
 - **为什么是 C**：C 的排序就是 UTF-8 字节序，正好等于 SQLite 一直在用的 `BINARY`。换成 `en_US.UTF-8` 之类的 ICU 规则，切换当天整个片库的 `ORDER BY title` 会静默重排一遍。
-- **测试库**：`settings.test_database_url`（写在 `backend/.env` 的 `TEST_DATABASE_URL`）指定；不设就回落到 SQLite 内存库（老路子）。`tests/conftest.py` 和搬家脚本的 PG 用例读的是同一个出处。PG 上每个用例靠 `TRUNCATE ... RESTART IDENTITY CASCADE` 隔离，`RESTART IDENTITY` 保证第一个自增 id 还是 1，用例里写死的 id 不用跟着改。schema 只在第一次用例前建一次，走的就是 `0001` 基线。
+- **测试库**：`settings.test_database_url`（写在 `backend/.env` 的 `TEST_DATABASE_URL`）指定；不设就回落到 SQLite 内存库（老路子）。`tests/conftest.py` 和搬家脚本的 PG 用例读的是同一个出处。PG 上每个用例靠 `TRUNCATE ... RESTART IDENTITY CASCADE` 隔离，`RESTART IDENTITY` 保证第一个自增 id 还是 1，用例里写死的 id 不用跟着改。schema 只在第一次用例前建一次，走的就是 `0001` 基线。也正因为那句 TRUNCATE，**同一时间只能有一套 pytest 打 `home_sites_test`**：两套并发会在 TRUNCATE 上互等，实测报出一大片 `DeadlockDetectedError`，看着像代码坏了。
 - **PG 真的执行外键**，SQLite 默认不执行（`PRAGMA foreign_keys` 是关的）。所以库里那些"没有父亲的子行"是历史遗留，PG 一律拒收；测试里也一样——用 `tests/support.py` 的 `ensure_source`/`ensure_video` 先造出真正的父行，别手工去凑 id。应用侧同样补了存在性校验（`FavoriteService.add_favorite` 对不存在的 `video_id` 抛 `ValueError` → 400，而不是 500）。
 - **时间列一律写 `DateTime(timezone=True)`**：靠推断落下来的 naive `TIMESTAMP` 遇上 aware 的默认值，asyncpg 会直接 `DataError`（`settings.updated_at` 踩过）。读出来的时刻要做比较/减法的，先过 `as_utc()`。
 - **时区的坑在写入侧，不在读取侧**：asyncpg 读 `timestamptz` 还给的是 UTC-aware 值，但送一个**不带 tzinfo** 的 `datetime` 进去时，它是按**数据库会话时区**理解的（本机 `SHOW timezone` = `Asia/Shanghai`，于是整体偏 8 小时）。SQLite 读回来却永远是 naive。所以凡是跨库读写时间（`db_transfer` 从老库捞行就是这里翻过车），先 `as_utc()` 补上时区再交给对面，别指望两边自己凑得齐。
@@ -534,4 +534,8 @@ uv sync --extra s3            # 要读对象存储视频源（boto3）
 # 运行命令
 uv run python script.py
 uv run pytest
+
+# 静态检查（在 backend/ 目录下跑，配置在 pyproject.toml）
+.venv/Scripts/ruff.exe check .    # 2026-10-04 起为 0 项，红了就说明是新代码带来的
+.venv/Scripts/mypy.exe src        # 仍有既有欠账，看单文件增量而不是总数
 ```

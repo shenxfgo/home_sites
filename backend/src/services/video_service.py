@@ -10,14 +10,14 @@ from typing import cast
 from sqlalchemy import Table, case, delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.video import Video
 from src.models.favorite import Favorite
+from src.models.history import PlayHistory
 from src.models.new_video import NewVideo
 from src.models.read_state import NewVideoRead
-from src.models.history import PlayHistory
 from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
 from src.models.tag import Tag, video_tags
+from src.models.video import Video
 from src.models.watch_event import WatchEvent
 from src.models.watchlist import WatchlistItem
 from src.storage import fingerprint
@@ -204,7 +204,11 @@ def _tagged_with(predicate):
 
 def _term_filter(term: str):
     """Where a single keyword may be found: title, description or tag name."""
-    return or_(_like(Video.title, term), _like(Video.description, term), _tagged_with(_like(Tag.name, term)))
+    return or_(
+        _like(Video.title, term),
+        _like(Video.description, term),
+        _tagged_with(_like(Tag.name, term)),
+    )
 
 
 def _term_relevance(term: str):

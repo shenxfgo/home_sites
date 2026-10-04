@@ -21,7 +21,7 @@ def _with_videos() -> select:
     )
 
 
-class DuplicateWatchlistName(ValueError):
+class DuplicateWatchlistNameError(ValueError):
     """The owner already has a list under that name.
 
     Names only have to be distinct inside one account, and the database now
@@ -92,7 +92,7 @@ class WatchlistService:
             )
         )
         if result.scalar_one_or_none() is not None:
-            raise DuplicateWatchlistName(f"Watchlist '{name}' already exists")
+            raise DuplicateWatchlistNameError(f"Watchlist '{name}' already exists")
 
     async def update(
         self,

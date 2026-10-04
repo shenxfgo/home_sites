@@ -88,7 +88,8 @@ async def test_each_account_is_told_where_it_stopped(client, db_session, make_si
 
     assert (await client.get("/api/videos/1")).json()["progress"] == 90
     assert (await bob.get("/api/videos/1")).json()["progress"] == 10
-    assert [(v["id"], v["progress"]) for v in (await client.get("/api/history/continue")).json()] == [
+    continued = (await client.get("/api/history/continue")).json()
+    assert [(v["id"], v["progress"]) for v in continued] == [
         (1, 90)
     ]
     assert [(v["id"], v["progress"]) for v in (await bob.get("/api/history/continue")).json()] == [
@@ -134,7 +135,8 @@ async def test_the_finished_filter_answers_for_the_caller(
     bob = await make_signed_in_client("bob")
     await client.post("/api/videos/1/progress", json={"progress": 120})
 
-    assert [v["title"] for v in (await client.get("/api/videos", params={"search": "已看完"})).json()["items"]] == [
+    listed = (await client.get("/api/videos", params={"search": "已看完"})).json()["items"]
+    assert [v["title"] for v in listed] == [
         "暗涌"
     ]
     assert (await bob.get("/api/videos", params={"search": "已看完"})).json()["total"] == 0

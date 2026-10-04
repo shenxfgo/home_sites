@@ -8,8 +8,8 @@
 其余非 GET 一律 403。管理面漏登记最多是成员点了个按钮没反应，漏挂权限则是谁都能删库。
 """
 
-from typing import Awaitable, Callable
 import re
+from typing import Awaitable, Callable
 
 from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession

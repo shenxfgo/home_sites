@@ -365,7 +365,7 @@ async def test_list_videos_carries_series_coordinates(client, db_session):
 async def test_search_reports_only_rows_whose_file_is_gone(client, db_session):
     """The 丢失 keyword is how the UI reaches the lost records."""
     source = await _create_source(db_session)
-    kept = await _create_video(db_session, source_id=source.id, title="还在", filepath="/k.mp4")
+    await _create_video(db_session, source_id=source.id, title="还在", filepath="/k.mp4")
     lost = await _create_video(db_session, source_id=source.id, title="没了", filepath="/l.mp4")
     lost.is_missing = True
     await db_session.commit()

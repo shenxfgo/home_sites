@@ -3,9 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.videos import VideoResponse
 from src.database import get_session
 from src.services.tag_service import TagService
-from src.api.videos import VideoResponse
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
 

@@ -1,12 +1,12 @@
+
 import pytest
-from datetime import datetime
 
 
 @pytest.mark.asyncio
 async def test_create_video(db_session):
     """Test creating a video record"""
-    from src.models.video import Video
     from src.models.source import VideoSource
+    from src.models.video import Video
 
     # Create a source first
     source = VideoSource(name="Test Source", path="/test", type="local")
@@ -43,8 +43,8 @@ async def test_create_video(db_session):
 @pytest.mark.asyncio
 async def test_video_source_relationship(db_session):
     """Test that video has relationship to source"""
-    from src.models.video import Video
     from src.models.source import VideoSource
+    from src.models.video import Video
 
     source = VideoSource(name="Test", path="/test", type="local")
     db_session.add(source)

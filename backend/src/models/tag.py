@@ -1,8 +1,9 @@
-from sqlalchemy import String, DateTime, ForeignKey, Table, Column
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime, timezone
-from src.database.base import Base
 
+from sqlalchemy import Column, DateTime, ForeignKey, String, Table
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from src.database.base import Base
 
 # Association table for many-to-many relationship
 video_tags = Table(

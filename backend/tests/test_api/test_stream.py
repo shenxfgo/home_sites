@@ -1,6 +1,5 @@
 """Tests for the HTTP Range handling that backs video seeking."""
 import pytest
-
 from fastapi import HTTPException
 
 from src.api.stream import _handle_range_request
@@ -38,7 +37,8 @@ def test_suffix_range_returns_the_tail_of_the_file(tmp_path):
     """bytes=-N means the LAST N bytes, not the first ones."""
     response = request_range(tmp_path, "bytes=-512")
 
-    assert response.headers["Content-Range"] == f"bytes {FILE_SIZE - 512}-{FILE_SIZE - 1}/{FILE_SIZE}"
+    expected = f"bytes {FILE_SIZE - 512}-{FILE_SIZE - 1}/{FILE_SIZE}"
+    assert response.headers["Content-Range"] == expected
     assert response.headers["Content-Length"] == "512"
 
 

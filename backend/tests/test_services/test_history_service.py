@@ -1,10 +1,9 @@
 """Tests for HistoryService reads behind the history page and continue rail."""
 import pytest
-
 from sqlalchemy import select
 
-from src.models.video import Video
 from src.models.history import PlayHistory
+from src.models.video import Video
 from src.models.watch_event import WatchEvent
 from src.services.history_service import HistoryService
 from tests.support import ensure_source

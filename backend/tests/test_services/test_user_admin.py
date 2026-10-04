@@ -40,7 +40,7 @@ async def test_the_last_admin_cannot_be_demoted(auth):
 
 
 async def test_a_second_admin_unblocks_the_demotion(auth):
-    owner = await _owner(auth)
+    await _owner(auth)
     backup = await _owner(auth, "backup")
 
     await auth.set_role(backup, ROLE_MEMBER)

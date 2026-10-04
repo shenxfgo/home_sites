@@ -210,7 +210,9 @@ def _assign_comparison(
     key = (match.group("key") or "").lower()
     if require_key and key not in COMPARISON_KEYS:
         return 0
-    return _record_comparison(COMPARISON_KEYS.get(key), match.group("op"), match.group("value"), position, fields)
+    return _record_comparison(
+        COMPARISON_KEYS.get(key), match.group("op"), match.group("value"), position, fields
+    )
 
 
 def _record_comparison(

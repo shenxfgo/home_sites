@@ -162,7 +162,9 @@ async def test_legacy_unique_history_index_is_dropped():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.execute(text(LEGACY_TABLES[0]))
-        await conn.execute(text("CREATE UNIQUE INDEX ix_play_history_video_id ON play_history (video_id)"))
+        await conn.execute(
+            text("CREATE UNIQUE INDEX ix_play_history_video_id ON play_history (video_id)")
+        )
         await conn.execute(
             text("INSERT INTO play_history (video_id, played_at, progress, completed) "
                  "VALUES (1, '2026-01-01 10:00:00', 45, 0)")
@@ -322,7 +324,12 @@ async def test_the_shared_theme_becomes_every_account_s_own_preference():
     engine = await _legacy_engine()
     async with engine.begin() as conn:
         await apply_schema_fixes(conn)  # 建出 users / settings / user_preferences
-        await conn.execute(text("INSERT INTO settings (key, value, updated_at) VALUES ('theme', 'dark', '2026-01-03 10:00:00')"))
+        await conn.execute(
+            text(
+                "INSERT INTO settings (key, value, updated_at) "
+                "VALUES ('theme', 'dark', '2026-01-03 10:00:00')"
+            )
+        )
         await conn.execute(
             text(
                 "INSERT INTO users (username, password_hash, role, is_active, created_at) "
@@ -354,7 +361,12 @@ async def test_an_unreadable_legacy_theme_falls_back_to_light():
     engine = await _legacy_engine()
     async with engine.begin() as conn:
         await apply_schema_fixes(conn)
-        await conn.execute(text("INSERT INTO settings (key, value, updated_at) VALUES ('theme', 'neon', '2026-01-03 10:00:00')"))
+        await conn.execute(
+            text(
+                "INSERT INTO settings (key, value, updated_at) "
+                "VALUES ('theme', 'neon', '2026-01-03 10:00:00')"
+            )
+        )
         await conn.execute(
             text(
                 "INSERT INTO users (username, password_hash, role, is_active, created_at) "

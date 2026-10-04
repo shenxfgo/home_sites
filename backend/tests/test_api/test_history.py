@@ -1,9 +1,10 @@
 """Tests for the watch stats endpoint."""
-import pytest
 from datetime import datetime, timedelta, timezone
 
-from src.models.video import Video
+import pytest
+
 from src.models.source import VideoSource
+from src.models.video import Video
 from src.models.watch_event import WatchEvent
 
 

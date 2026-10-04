@@ -10,17 +10,17 @@ from typing import Any, Iterator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import settings
+from src.models.new_video import NewVideo
 from src.models.source import VideoSource
 from src.models.tag import Tag
 from src.models.video import Video
-from src.models.new_video import NewVideo
 from src.services.notification_service import NotificationService
 from src.services.subtitle_service import SubtitleService
 from src.storage import MediaStorage, storage_for_source
 from src.utils.file_scanner import extract_video_info, generate_thumbnail
 from src.utils.name_parser import auto_tags, parse_video_filename
 from src.utils.subtitles import find_subtitle_files
-from src.config import settings
 
 logger = logging.getLogger(__name__)
 

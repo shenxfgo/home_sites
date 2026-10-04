@@ -41,7 +41,7 @@ _LANGUAGE_NAMES = {
 }
 
 
-class StreamNotFound(Exception):
+class StreamNotFoundError(Exception):
     """Raised when a requested stream index is not in the file."""
 
 
@@ -162,7 +162,7 @@ def extract_subtitle_webvtt(filepath: str, stream_index: int) -> str:
         if stream.get("codec_type") == "subtitle"
     }
     if stream_index not in wanted:
-        raise StreamNotFound(f"文件里没有编号为 {stream_index} 的字幕轨")
+        raise StreamNotFoundError(f"文件里没有编号为 {stream_index} 的字幕轨")
 
     try:
         result = subprocess.run(

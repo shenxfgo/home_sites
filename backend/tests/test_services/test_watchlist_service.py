@@ -4,7 +4,6 @@ Every list belongs to the account that made it, so each call passes ``user_id``;
 the cross-account cases live in test_isolation.py.
 """
 import pytest
-
 from sqlalchemy import func, select
 
 from src.models.video import Video

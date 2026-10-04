@@ -1,6 +1,8 @@
-from sqlalchemy import String, Integer, BigInteger, Boolean, DateTime, ForeignKey, Index
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime, timezone
+
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from src.database.base import Base
 
 

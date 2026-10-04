@@ -14,7 +14,7 @@ from src.storage.base import (
     S3_SCHEME,
     Capabilities,
     FoundFile,
-    UnsupportedStorage,
+    UnsupportedStorageError,
 )
 from src.utils.file_fingerprint import EDGE_BYTES, hash_edges
 from src.utils.file_scanner import VIDEO_EXTENSIONS
@@ -35,7 +35,7 @@ def split_root(root: str) -> tuple[str, str]:
     body = root[len(S3_SCHEME):] if root.startswith(S3_SCHEME) else root
     bucket, _, prefix = body.partition("/")
     if not bucket:
-        raise UnsupportedStorage(f"对象存储路径缺少 bucket 名：{root}")
+        raise UnsupportedStorageError(f"对象存储路径缺少 bucket 名：{root}")
     prefix = prefix.strip("/")
     return bucket, f"{prefix}/" if prefix else ""
 
@@ -45,7 +45,7 @@ def split_locator(locator: str) -> tuple[str, str]:
     body = locator[len(S3_SCHEME):] if locator.startswith(S3_SCHEME) else locator
     bucket, _, key = body.partition("/")
     if not bucket or not key:
-        raise UnsupportedStorage(f"不是合法的对象存储地址：{locator}")
+        raise UnsupportedStorageError(f"不是合法的对象存储地址：{locator}")
     return bucket, key
 
 
@@ -86,11 +86,11 @@ class S3MediaStorage:
                 import boto3
                 from botocore.config import Config
             except ImportError as exc:
-                raise UnsupportedStorage(
+                raise UnsupportedStorageError(
                     '读取对象存储需要额外依赖，请安装后重启服务：pip install -e ".[s3]"'
                 ) from exc
             if not settings.s3_access_key_id or not settings.s3_secret_access_key:
-                raise UnsupportedStorage(
+                raise UnsupportedStorageError(
                     "尚未配置对象存储凭证，请在 backend/.env 里设置 "
                     "S3_ACCESS_KEY_ID 与 S3_SECRET_ACCESS_KEY"
                 )
@@ -123,7 +123,7 @@ class S3MediaStorage:
         """
         try:
             client = self._client()
-        except UnsupportedStorage:
+        except UnsupportedStorageError:
             return False
         try:
             client.head_bucket(Bucket=split_root(root)[0])
@@ -160,7 +160,7 @@ class S3MediaStorage:
     def size(self, locator: str) -> int | None:
         try:
             client = self._client()
-        except UnsupportedStorage:
+        except UnsupportedStorageError:
             # 凭证没配好等同于"这个文件读不到"：让播放回落到占位响应，
             # 而不是每部对象存储上的影片都抛 500。
             return None
@@ -210,6 +210,6 @@ class S3MediaStorage:
         return hash_edges(head, tail)
 
     def local_path(self, locator: str) -> str:
-        raise UnsupportedStorage(
+        raise UnsupportedStorageError(
             "对象存储里的文件没有本地路径，转码、缩略图与内嵌字幕暂不支持这类视频源"
         )

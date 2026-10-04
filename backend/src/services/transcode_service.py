@@ -11,11 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database.session import async_session_maker
 from src.models.video import Video
 from src.services.notification_service import NotificationService
-from src.storage import UnsupportedStorage, storage_for_locator
+from src.storage import UnsupportedStorageError, storage_for_locator
 from src.utils.ffmpeg import (
-    transcode_video,
     check_format_support,
     get_supported_formats,
+    transcode_video,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ class TranscodeService:
             input_path = storage_for_locator(video.filepath).local_path(
                 video.filepath
             )
-        except UnsupportedStorage as exc:
+        except UnsupportedStorageError as exc:
             raise ValueError(str(exc)) from exc
         if not Path(input_path).is_file():
             raise ValueError(f"Video file not found: {input_path}")

@@ -16,7 +16,9 @@ async def _source(session, name, path="/media/first"):
     return source
 
 
-async def _video(session, source, title, description=None, rating=0, duration=None, tags=(), filepath=None):
+async def _video(
+    session, source, title, description=None, rating=0, duration=None, tags=(), filepath=None
+):
     video = Video(
         source_id=source.id,
         filepath=filepath or f"{source.path}/{title}.mp4",
@@ -144,7 +146,7 @@ async def test_rating_and_duration_comparisons(db_session, user_id):
 @pytest.mark.asyncio
 async def test_watch_state_splits_the_library_three_ways(db_session, user_id):
     source = await _source(db_session, "剧集")
-    never = await _video(db_session, source, "没碰过")
+    await _video(db_session, source, "没碰过")
     unfinished = await _video(db_session, source, "看一半")
     finished = await _video(db_session, source, "看完了")
     await _history(db_session, user_id, unfinished, progress=30, completed=False)

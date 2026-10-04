@@ -49,10 +49,16 @@ target-version = ['py311']
 
 [tool.ruff]
 line-length = 100
-select = ["E", "F", "I", "N", "W"]
 target-version = "py311"
 # alembic 自动生成的修订文件按模板排版，凑行宽没有意义
 extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+# 这个文件必须先设好 S3 的环境变量再 import boto3/moto，导入因此天然不在最顶部
+"tests/test_storage/test_s3_storage.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.11"

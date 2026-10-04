@@ -1,11 +1,11 @@
 """Tests for ScanService operations."""
 import os
 import tempfile
-import pytest
 from contextlib import contextmanager
 from typing import Iterator
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
+import pytest
 from sqlalchemy import select
 
 from src.models.notification import Notification
@@ -13,7 +13,6 @@ from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
 from src.models.tag import Tag
 from src.models.video import Video
-from src.models.new_video import NewVideo
 from src.scheduler import tasks as task_module
 from src.services import scan_service as scan_module
 from src.services.scan_service import ScanService
@@ -214,8 +213,8 @@ async def test_scan_all_active(db_session):
     with tempfile.TemporaryDirectory() as tmpdir1, \
          tempfile.TemporaryDirectory() as tmpdir2:
 
-        source1 = await _create_source(db_session, name="Active 1", path=tmpdir1, is_active=True)
-        source2 = await _create_source(db_session, name="Active 2", path=tmpdir2, is_active=True)
+        await _create_source(db_session, name="Active 1", path=tmpdir1, is_active=True)
+        await _create_source(db_session, name="Active 2", path=tmpdir2, is_active=True)
         await _create_source(db_session, name="Inactive", path="/nonexistent", is_active=False)
 
         # Create video files in first source

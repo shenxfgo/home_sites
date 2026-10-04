@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database import get_session
-from src.middleware.auth import get_current_user, get_current_user_id, get_session_token
+from src.middleware.auth import get_current_user, get_session_token
 from src.models.user import User
 from src.services.auth_service import (
     COOKIE_NAME,

@@ -1,8 +1,9 @@
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime, timezone
+
 from src.database.base import Base
 
 if TYPE_CHECKING:
@@ -68,4 +69,7 @@ class WatchlistItem(Base):
     video: Mapped["Video"] = relationship("Video", lazy="selectin")
 
     def __repr__(self) -> str:
-        return f"<WatchlistItem(id={self.id}, watchlist_id={self.watchlist_id}, video_id={self.video_id})>"
+        return (
+            f"<WatchlistItem(id={self.id}, watchlist_id={self.watchlist_id}, "
+            f"video_id={self.video_id})>"
+        )

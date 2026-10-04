@@ -1,6 +1,8 @@
-from sqlalchemy import String, Integer, Boolean, DateTime, CheckConstraint
-from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime, timezone
+
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column
+
 from src.database.base import Base
 
 

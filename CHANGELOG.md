@@ -2,6 +2,18 @@
 
 ## 2026-10-04
 
+### 清理：ruff 的 99 项既有欠账归零，改完"lint 红了"才重新成为证据
+
+- **动因**：`ruff check .` 长期报 99 项，于是每次改动只能靠"这个文件改前改后各几条"来判断，"全绿"这个信号对本项目是废的。这一单把它清干净，之后 ruff 报红就只可能是新代码带来的
+- **按类的处理方式**：`I001` 53（导入排序）、`W292` 4（缺末行换行）、`F401` 9（未用导入）走 `--fix`；`F841` 8（绑了不用的局部变量）手改，全在测试里，都是"造数据只为副作用"的那类夹具——**保留调用、去掉赋值**，删掉调用会把被测前提一起删了；`E501` 17 折行；`N818` 4 改异常名；`E402` 4 用 per-file-ignores 放行
+- **四个异常是改名，不是豁免规则**：`_Rollback`→`_RollbackError`、`DuplicateWatchlistName`→`DuplicateWatchlistNameError`、`UnsupportedStorage`→`UnsupportedStorageError`、`StreamNotFound`→`StreamNotFoundError`。理由是这条规则总共只有 4 处违反，改名是几十处机械替换，而全局豁免会让以后所有同类命名都失明。`backend/CLAUDE.md` 的目录地图里那行同步改了
+- **`E402` 只豁免 `tests/test_storage/test_s3_storage.py` 一个文件**，理由写在配置注释里：那个文件必须先把 S3 的环境变量摆好再 import boto3/moto，导入天然不在顶部。这是四条同类项共有的、唯一正确的形状，不是"测试文件可以乱来"
+- **配置**：`select` 从 `[tool.ruff]` 顶层挪进 `[tool.ruff.lint]`（顶层形状已废弃，之前每次运行都打一行警告，噪音盖过信号），新增 `[tool.ruff.lint.per-file-ignores]`。`line-length = 100` 和 black 保持一致，没动
+- **没开 `--unsafe-fixes`**：那 8 项隐藏修复会改语义（比如把带副作用的调用整行删掉），这一单的验收标准是"行为一点没变"，不能拿它换计数
+- **`F401` 没误删转发用**：`src/models/__init__.py` 那批 `from .x import Y` 看着"没被引用"，其实是给 `from src.models import Y` 和 SQLAlchemy 注册映射用的——因为有 `__all__`，ruff 只重排不删除，diff 逐行核对过
+- **折行翻过一次车，被自家工具链抓住**：批量改写脚本里 `"1\n00:00:01,000…"` 的转义层数少了一层，`tests/test_api/test_subtitles.py` 的默认字幕串被写成真空行、文件语法坏了。是 `ruff` 的 `invalid-syntax` 和 `python -m compileall` 报出来的，不是靠"错误数变少了"——统计会掩盖这种坏，逐条看才是办法
+- **验证**：`ruff check .` **0 项**；后端 SQLite **620 passed + 1 skipped**（43s）、PG **621 passed**（2:47）；打真后端的 e2e **3 passed**（10.7s，重命名过的异常和流式路径都在那条链上跑过）；前端未触碰。中途那次 PG 假红是**自己并发跑了两套 pytest**：两套同时对 `home_sites_test` 下 `TRUNCATE`，互等出满屏 `DeadlockDetectedError`，与代码无关，已把"同一时间只能有一套"写进 `backend/CLAUDE.md`
+
 ### 新增：3 条打真后端的端到端用例，替身夹具之外的契约签字
 
 - **动因**：82 条 e2e 全部靠 `page.route` 假接口，响应该长什么样子是**写在前端测试里**的——前后端各测各的理解，中间没人对账。补一套一条 mock 都没有的用例，请求走完 Vite 代理 → uvicorn → PostgreSQL

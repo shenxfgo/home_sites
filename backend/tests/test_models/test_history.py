@@ -5,9 +5,9 @@ import pytest
 async def test_create_play_history(db_session):
     """Test creating play history record"""
     from src.models.history import PlayHistory
+    from src.models.source import VideoSource
     from src.models.user import User
     from src.models.video import Video
-    from src.models.source import VideoSource
 
     user = User(username="keeper", password_hash="not-used-in-tests", role="owner")
     db_session.add(user)

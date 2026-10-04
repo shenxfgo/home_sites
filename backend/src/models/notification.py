@@ -1,8 +1,10 @@
-from sqlalchemy import String, DateTime, JSON
-from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime, timezone
-from src.database.base import Base
 from typing import Any
+
+from sqlalchemy import JSON, DateTime, String
+from sqlalchemy.orm import Mapped, mapped_column
+
+from src.database.base import Base
 
 
 class Notification(Base):

@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_session
 from src.models.video import Video
 from src.services.subtitle_service import SubtitleService
-from src.storage import UnsupportedStorage, storage_for_locator
+from src.storage import UnsupportedStorageError, storage_for_locator
 from src.utils.media_streams import (
-    StreamNotFound,
+    StreamNotFoundError,
     extract_subtitle_webvtt,
     probe_streams,
 )
@@ -33,7 +33,7 @@ def _ffmpeg_input(video: Video) -> str:
     """
     try:
         return storage_for_locator(video.filepath).local_path(video.filepath)
-    except UnsupportedStorage as exc:
+    except UnsupportedStorageError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -148,7 +148,7 @@ async def stream_embedded_subtitle(
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="视频文件不存在")
-    except StreamNotFound as e:
+    except StreamNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except SubtitleConversionError as e:
         raise HTTPException(status_code=415, detail=str(e))

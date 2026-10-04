@@ -6,10 +6,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import Session
+
 from src.config import settings
+
 from .base import Base
 from .migrations import business_tables, current_revision, stamp_head, upgrade_head
-
 
 # Collapses the history table to one row per (person, video): the row holding
 # the most recent watch survives, the rest are dropped. Databases written before

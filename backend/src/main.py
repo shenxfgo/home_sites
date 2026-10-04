@@ -1,6 +1,6 @@
 """FastAPI main application entry point."""
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from src import backup
 from src.config import settings
-from src.database import init_db, async_session_maker
+from src.database import async_session_maker, init_db
 from src.middleware.auth import AuthMiddleware
 from src.models import *  # noqa: F401, F403 - Import all models to register them
 from src.models.source import VideoSource
@@ -72,21 +72,21 @@ async def health_check() -> dict[str, str]:
 
 # Include API routers
 from src.api.auth import router as auth_router  # noqa: E402
-from src.api.sources import router as sources_router  # noqa: E402
-from src.api.videos import router as videos_router  # noqa: E402
-from src.api.subtitles import router as subtitles_router  # noqa: E402
-from src.api.tags import router as tags_router  # noqa: E402
-from src.api.watchlists import router as watchlists_router  # noqa: E402
-from src.api.scan import router as scan_router  # noqa: E402
-from src.api.stream import router as stream_router  # noqa: E402
-from src.api.history import router as history_router  # noqa: E402
 from src.api.favorites import router as favorites_router  # noqa: E402
+from src.api.history import router as history_router  # noqa: E402
 from src.api.notifications import router as notifications_router  # noqa: E402
-from src.api.transcode import router as transcode_router  # noqa: E402
+from src.api.preferences import router as preferences_router  # noqa: E402
+from src.api.scan import router as scan_router  # noqa: E402
 from src.api.scheduler import router as scheduler_router  # noqa: E402
 from src.api.settings import router as settings_router  # noqa: E402
+from src.api.sources import router as sources_router  # noqa: E402
+from src.api.stream import router as stream_router  # noqa: E402
+from src.api.subtitles import router as subtitles_router  # noqa: E402
+from src.api.tags import router as tags_router  # noqa: E402
+from src.api.transcode import router as transcode_router  # noqa: E402
 from src.api.users import router as users_router  # noqa: E402
-from src.api.preferences import router as preferences_router  # noqa: E402
+from src.api.videos import router as videos_router  # noqa: E402
+from src.api.watchlists import router as watchlists_router  # noqa: E402
 
 app.include_router(auth_router)
 app.include_router(sources_router)

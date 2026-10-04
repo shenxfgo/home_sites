@@ -3,10 +3,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.videos import VideoResponse
 from src.database import get_session
 from src.middleware.auth import get_current_user_id
 from src.services.favorite_service import FavoriteService
-from src.api.videos import VideoResponse
 
 router = APIRouter(prefix="/api/favorites", tags=["favorites"])
 

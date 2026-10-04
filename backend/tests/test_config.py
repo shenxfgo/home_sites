@@ -1,7 +1,9 @@
 # tests/test_config.py
 import os
-from pydantic import ValidationError
+
 import pytest
+from pydantic import ValidationError
+
 
 def test_load_default_settings():
     """Test that settings load with default values"""

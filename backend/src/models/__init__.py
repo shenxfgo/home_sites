@@ -1,17 +1,17 @@
-from .source import VideoSource
-from .video import Video
-from .tag import Tag, video_tags
-from .history import PlayHistory
-from .watch_event import WatchEvent
 from .favorite import Favorite
-from .notification import Notification
+from .history import PlayHistory
 from .new_video import NewVideo
-from .watchlist import Watchlist, WatchlistItem
-from .subtitle import Subtitle
-from .setting import Setting
-from .user import User, UserSession
-from .read_state import NewVideoRead, NotificationRead
+from .notification import Notification
 from .preference import UserPreference
+from .read_state import NewVideoRead, NotificationRead
+from .setting import Setting
+from .source import VideoSource
+from .subtitle import Subtitle
+from .tag import Tag, video_tags
+from .user import User, UserSession
+from .video import Video
+from .watch_event import WatchEvent
+from .watchlist import Watchlist, WatchlistItem
 
 __all__ = [
     "VideoSource",

@@ -8,7 +8,7 @@ import pytest
 from src.storage import (
     Capabilities,
     S3MediaStorage,
-    UnsupportedStorage,
+    UnsupportedStorageError,
     storage_for_locator,
     storage_for_source,
 )
@@ -26,7 +26,7 @@ def test_minio_is_s3_storage():
 
 
 def test_an_unknown_type_fails_loudly():
-    with pytest.raises(UnsupportedStorage):
+    with pytest.raises(UnsupportedStorageError):
         storage_for_source("dropbox")
 
 
@@ -60,5 +60,5 @@ def test_object_store_streams_but_cannot_feed_a_subprocess():
 
 
 def test_object_store_has_no_local_path_to_give():
-    with pytest.raises(UnsupportedStorage, match="对象存储"):
+    with pytest.raises(UnsupportedStorageError, match="对象存储"):
         storage_for_locator("s3://bucket/01.mkv").local_path("s3://bucket/01.mkv")

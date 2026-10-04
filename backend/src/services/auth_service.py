@@ -17,7 +17,7 @@ from src.config import settings
 from src.database.session import session_table_columns
 from src.models.favorite import Favorite
 from src.models.history import PlayHistory
-from src.models.user import ROLES, ROLE_OWNER, User, UserSession
+from src.models.user import ROLE_OWNER, ROLES, User, UserSession
 from src.models.watch_event import WatchEvent
 from src.models.watchlist import Watchlist
 from src.utils.password import hash_password, password_too_long, verify_password

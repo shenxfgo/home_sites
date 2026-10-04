@@ -4,9 +4,9 @@ import pytest
 @pytest.mark.asyncio
 async def test_create_subtitle(db_session):
     """Test creating subtitle record"""
+    from src.models.source import VideoSource
     from src.models.subtitle import Subtitle
     from src.models.video import Video
-    from src.models.source import VideoSource
 
     source = VideoSource(name="Test", path="/test", type="local")
     db_session.add(source)

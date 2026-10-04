@@ -1,6 +1,7 @@
 """Tests for SourceService CRUD operations."""
-import pytest
 from datetime import datetime
+
+import pytest
 
 
 @pytest.mark.asyncio

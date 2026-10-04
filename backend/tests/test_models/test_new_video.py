@@ -5,8 +5,8 @@ import pytest
 async def test_create_new_video(db_session):
     """Test creating new video record"""
     from src.models.new_video import NewVideo
-    from src.models.video import Video
     from src.models.source import VideoSource
+    from src.models.video import Video
 
     source = VideoSource(name="Test", path="/test", type="local")
     db_session.add(source)

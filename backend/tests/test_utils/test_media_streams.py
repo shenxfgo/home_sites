@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from src.utils.media_streams import (
-    StreamNotFound,
+    StreamNotFoundError,
     extract_subtitle_webvtt,
     probe_streams,
 )
@@ -149,7 +149,7 @@ def test_extract_refuses_a_stream_that_is_not_a_subtitle(tmp_path):
 
     fake = FakeRun(_probe())
     with patch("src.utils.media_streams.subprocess.run", fake):
-        with pytest.raises(StreamNotFound):
+        with pytest.raises(StreamNotFoundError):
             extract_subtitle_webvtt(str(video), 0)
 
     # The probe rejects the index before ffmpeg is ever started.

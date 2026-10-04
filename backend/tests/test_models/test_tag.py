@@ -20,9 +20,9 @@ async def test_create_tag(db_session):
 @pytest.mark.asyncio
 async def test_video_tag_association(db_session):
     """Test many-to-many relationship between videos and tags"""
+    from src.models.source import VideoSource
     from src.models.tag import Tag
     from src.models.video import Video
-    from src.models.source import VideoSource
 
     # Create source and video
     source = VideoSource(name="Test", path="/test", type="local")

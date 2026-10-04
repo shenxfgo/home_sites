@@ -1,5 +1,5 @@
+
 import pytest
-from datetime import datetime
 
 
 @pytest.mark.asyncio
@@ -31,8 +31,9 @@ async def test_create_video_source(db_session):
 @pytest.mark.asyncio
 async def test_video_source_type_validation(db_session):
     """Test that video source type must be valid"""
-    from src.models.source import VideoSource
     from sqlalchemy.exc import IntegrityError
+
+    from src.models.source import VideoSource
 
     source = VideoSource(
         name="Invalid Source",

@@ -4,6 +4,7 @@ import pytest
 from src.models.video import Video
 from tests.support import ensure_source
 
+
 async def _create_video(db_session, video_id, title, *, progress=None, user_id=None):
     """Seed one title, optionally with a position one person stopped at."""
     from src.models.history import PlayHistory
@@ -105,8 +106,12 @@ async def test_unknown_ids_answer_404_instead_of_a_half_done_queue(client, db_se
     await _create_video(db_session, 1, "暗涌")
     list_id = await _create_list(client)
 
-    assert (await client.post(f"/api/watchlists/{list_id}/videos", json={"video_id": 999})).status_code == 404
-    assert (await client.post("/api/watchlists/999/videos", json={"video_id": 1})).status_code == 404
+    missing_list = await client.post(
+        f"/api/watchlists/{list_id}/videos", json={"video_id": 999}
+    )
+    assert missing_list.status_code == 404
+    missing_video = await client.post("/api/watchlists/999/videos", json={"video_id": 1})
+    assert missing_video.status_code == 404
     assert (await client.put("/api/watchlists/999", json={"name": "无关"})).status_code == 404
     assert (await client.delete("/api/watchlists/999")).status_code == 404
 

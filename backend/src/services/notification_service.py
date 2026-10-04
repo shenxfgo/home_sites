@@ -1,5 +1,5 @@
 """NotificationService for notification operations."""
-from sqlalchemy import delete, exists, select, desc, func
+from sqlalchemy import delete, desc, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.notification import Notification

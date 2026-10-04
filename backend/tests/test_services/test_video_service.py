@@ -1,18 +1,24 @@
 """Tests for VideoService operations."""
-import pytest
-from datetime import datetime, timezone
 
+import pytest
 from sqlalchemy import func, select
 
-from src.models.video import Video
-from src.models.new_video import NewVideo
 from src.models.history import PlayHistory
+from src.models.new_video import NewVideo
 from src.models.tag import Tag
+from src.models.video import Video
 from src.services.video_service import VideoService, is_completed
 from tests.support import ensure_source
 
 
-async def _create_video(session, source_id=1, title="Test Video", filepath="/test/video.mp4", duration=120, file_size=1024000):
+async def _create_video(
+    session,
+    source_id=1,
+    title="Test Video",
+    filepath="/test/video.mp4",
+    duration=120,
+    file_size=1024000,
+):
     """Helper to create a video directly in the database."""
     # SQLite 出厂不查外键，所以这里过去可以直接写 source_id=1；PostgreSQL 会拒绝
     # 没有父行的影片，父行得真的建出来。
@@ -125,7 +131,7 @@ async def test_get_videos_filter_by_tag(db_session, user_id):
     await db_session.refresh(tag)
 
     video1 = await _create_video(db_session, title="Action Movie", filepath="/a.mp4")
-    video2 = await _create_video(db_session, title="Comedy", filepath="/c.mp4")
+    await _create_video(db_session, title="Comedy", filepath="/c.mp4")
 
     video1.tags.append(tag)
     await db_session.commit()
@@ -262,7 +268,7 @@ async def test_get_new_videos(db_session, user_id):
     """Test getting newly discovered videos."""
     video1 = await _create_video(db_session, title="New 1", filepath="/n1.mp4")
     video2 = await _create_video(db_session, title="New 2", filepath="/n2.mp4")
-    video3 = await _create_video(db_session, title="Old", filepath="/o.mp4")
+    await _create_video(db_session, title="Old", filepath="/o.mp4")
 
     # Mark video1 and video2 as new
     nv1 = NewVideo(video_id=video1.id, source_id=1)

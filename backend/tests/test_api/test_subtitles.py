@@ -3,11 +3,13 @@ from unittest.mock import patch
 
 from src.models.source import VideoSource
 from src.models.video import Video
-from src.utils.media_streams import StreamNotFound
+from src.utils.media_streams import StreamNotFoundError
 from src.utils.subtitles import SubtitleConversionError
 
 
-async def _video_with_subtitle(db_session, tmp_path, content="1\n00:00:01,000 --> 00:00:02,000\n你好\n"):
+async def _video_with_subtitle(
+    db_session, tmp_path, content="1\n00:00:01,000 --> 00:00:02,000\n你好\n"
+):
     """Create a video plus a sidecar subtitle file on disk."""
     directory = tmp_path / "media"
     directory.mkdir(exist_ok=True)
@@ -276,7 +278,7 @@ async def test_embedded_stream_returns_404_for_a_track_that_is_not_there(
 
     with patch(
         "src.api.subtitles.extract_subtitle_webvtt",
-        side_effect=StreamNotFound("文件里没有编号为 9 的字幕轨"),
+        side_effect=StreamNotFoundError("文件里没有编号为 9 的字幕轨"),
     ):
         response = await client.get(
             f"/api/videos/{video.id}/subtitles/embedded/9/stream"

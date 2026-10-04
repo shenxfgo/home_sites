@@ -1,6 +1,7 @@
 """Tests for the notification list, read and delete endpoints."""
 import pytest
 
+
 async def _create(db_session, title, reader_id=None):
     """Seed one broadcast notification, optionally read by one person."""
     from src.models.notification import Notification

@@ -5,11 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.videos import VideoResponse
 from src.database import get_session
 from src.middleware.auth import get_current_user_id
 from src.services.video_service import attach_watch_progress
-from src.services.watchlist_service import DuplicateWatchlistName, WatchlistService
-from src.api.videos import VideoResponse
+from src.services.watchlist_service import DuplicateWatchlistNameError, WatchlistService
 
 router = APIRouter(prefix="/api/watchlists", tags=["watchlists"])
 
@@ -88,7 +88,7 @@ async def create_watchlist(
     """Create an empty watchlist."""
     try:
         watchlist = await service.create(user_id, name=data.name, description=data.description)
-    except DuplicateWatchlistName as e:
+    except DuplicateWatchlistNameError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return await _respond(session, watchlist, user_id)
 
@@ -118,7 +118,7 @@ async def update_watchlist(
     """Rename a watchlist or edit its description."""
     try:
         watchlist = await service.update(user_id, watchlist_id, **data.model_dump())
-    except DuplicateWatchlistName as e:
+    except DuplicateWatchlistNameError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

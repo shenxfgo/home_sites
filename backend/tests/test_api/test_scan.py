@@ -85,7 +85,7 @@ async def test_scan_source_with_files(client, db_session):
 async def test_scan_all(client, db_session):
     """Test scanning all active sources."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        source = await _create_source(db_session, path=tmpdir, is_active=True)
+        await _create_source(db_session, path=tmpdir, is_active=True)
         await _create_source(db_session, path="/nonexistent", is_active=False)
 
         with patch("src.services.scan_service.extract_video_info") as mock_info, \

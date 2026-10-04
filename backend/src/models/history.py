@@ -1,8 +1,9 @@
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Integer, Boolean, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime, timezone
+
 from src.database.base import Base
 
 if TYPE_CHECKING:

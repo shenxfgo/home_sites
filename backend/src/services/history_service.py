@@ -1,7 +1,7 @@
 """HistoryService for playback history operations."""
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import func, select, desc
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -139,7 +139,9 @@ class HistoryService:
             .limit(8)
         )
 
-        watched_days = sorted(date.fromisoformat(entry["date"]) for entry in daily if entry["seconds"])
+        watched_days = sorted(
+            date.fromisoformat(entry["date"]) for entry in daily if entry["seconds"]
+        )
         return {
             "days": days,
             "window_seconds": int(window_seconds),

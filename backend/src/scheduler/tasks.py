@@ -5,8 +5,8 @@ import logging
 from src import backup
 from src.config import settings
 from src.database import async_session_maker
-from src.services.scan_service import ScanService
 from src.services.notification_service import NotificationService
+from src.services.scan_service import ScanService
 
 logger = logging.getLogger(__name__)
 

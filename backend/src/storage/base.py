@@ -14,7 +14,7 @@ S3_SCHEME = "s3://"
 CHUNK_SIZE = 1024 * 1024
 
 
-class UnsupportedStorage(Exception):
+class UnsupportedStorageError(Exception):
     """Asked something this storage cannot do.
 
     Raised at the seam so routes can turn it into a readable 400 instead of
@@ -83,5 +83,5 @@ class MediaStorage(Protocol):
     def local_path(self, locator: str) -> str:
         """The locator as a path a local subprocess may open.
 
-        Raises ``UnsupportedStorage`` when ``capabilities.local_path`` is false.
+        Raises ``UnsupportedStorageError`` when ``capabilities.local_path`` is false.
         """

@@ -139,8 +139,12 @@ async def test_register_skips_known_paths_and_adds_the_rest(db_session, tmp_path
     known = {os.path.normpath(first)}
     service = SubtitleService(db_session)
 
-    assert service.register(video.id, {"filepath": first, "language": "zh", "label": "zh"}, known) is False
-    assert service.register(video.id, {"filepath": second, "language": "en", "label": "en"}, known) is True
+    assert service.register(
+        video.id, {"filepath": first, "language": "zh", "label": "zh"}, known
+    ) is False
+    assert service.register(
+        video.id, {"filepath": second, "language": "en", "label": "en"}, known
+    ) is True
     await db_session.commit()
 
     stored = await service.list_for_video(video.id)

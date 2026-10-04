@@ -5,9 +5,9 @@ import pytest
 async def test_create_favorite(db_session):
     """Test creating favorite"""
     from src.models.favorite import Favorite
+    from src.models.source import VideoSource
     from src.models.user import User
     from src.models.video import Video
-    from src.models.source import VideoSource
 
     user = User(username="keeper", password_hash="not-used-in-tests", role="owner")
     db_session.add(user)

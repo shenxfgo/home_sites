@@ -1,12 +1,12 @@
 """Scheduler management API endpoints."""
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
-from src.scheduler import scheduler
 from src.models.source import VideoSource
+from src.scheduler import scheduler
 
 router = APIRouter(prefix="/api/scheduler", tags=["scheduler"])
 

@@ -79,7 +79,7 @@ class TransferError(Exception):
     """搬不成。抛出时事务还没提交，新库回到动手前的样子。"""
 
 
-class _Rollback(Exception):
+class _RollbackError(Exception):
     """演练用：检查和对账全过了，仍然主动把事务退出去。"""
 
 
@@ -308,8 +308,8 @@ async def transfer(source_url: str, target_url: str, *, dry_run: bool = False) -
                     "这些表在新库读回来的内容和老库不一致：" + ", ".join(mismatched)
                 )
             if dry_run:
-                raise _Rollback()
-    except _Rollback:
+                raise _RollbackError()
+    except _RollbackError:
         report.rolled_back = True
     finally:
         await source_engine.dispose()

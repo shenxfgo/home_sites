@@ -16,7 +16,7 @@ import boto3  # noqa: E402
 from moto import mock_aws  # noqa: E402
 
 from src.config import settings
-from src.storage import S3MediaStorage, UnsupportedStorage, storage_for_source
+from src.storage import S3MediaStorage, UnsupportedStorageError, storage_for_source
 from src.storage.s3 import split_locator, split_root
 from src.utils.file_fingerprint import edge_fingerprint, hash_edges
 
@@ -121,7 +121,7 @@ def test_missing_credentials_are_unreachable_not_an_error():
 
     assert storage.reachable("s3://anything") is False
 
-    with pytest.raises(UnsupportedStorage, match="S3_ACCESS_KEY_ID"):
+    with pytest.raises(UnsupportedStorageError, match="S3_ACCESS_KEY_ID"):
         storage.list_videos("s3://anything")
 
 
@@ -130,10 +130,10 @@ def test_missing_credentials_are_unreachable_not_an_error():
     ["s3://", "s3:///prefix"],
 )
 def test_a_root_without_a_bucket_is_rejected(root):
-    with pytest.raises(UnsupportedStorage, match="bucket"):
+    with pytest.raises(UnsupportedStorageError, match="bucket"):
         split_root(root)
 
 
 def test_a_locator_without_a_key_is_rejected():
-    with pytest.raises(UnsupportedStorage):
+    with pytest.raises(UnsupportedStorageError):
         split_locator(f"s3://{BUCKET}")

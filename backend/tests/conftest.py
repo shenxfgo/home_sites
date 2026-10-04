@@ -10,8 +10,8 @@ to write rows as, and `make_signed_in_client` adds further signed-in clients so
 a test can ask for somebody else's data.
 """
 
-import sys
 import itertools
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
