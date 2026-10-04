@@ -363,6 +363,10 @@ cd backend
 uv sync --extra dev --extra s3
 uv run pytest
 
+# 量覆盖率（闸门 80% 配在 backend/pyproject.toml 的 [tool.coverage.report]，
+# 只有带 --cov 的全量跑才比这一条，单独跑某个文件不会因此报红）
+uv run pytest --cov=src
+
 # 想让整套用例跑在 PostgreSQL 上（迁移主线用的那种方言），在 backend/.env 里填
 # TEST_DATABASE_URL=postgresql+asyncpg://...:5432/home_sites_test
 # 填了它，搬家脚本的 PG 用例也跟着启用；留空则是原来的内存 SQLite。

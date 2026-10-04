@@ -2,6 +2,18 @@
 
 ## 2026-10-04
 
+### 补测试：`src/cli.py` 与 `utils/file_scanner.py` 从 0% / 38% 到 100%，覆盖率闸门挂上 80
+
+- **动因**：积压里那条"装了不用"——`pyproject.toml` 有 `pytest-cov` 依赖却没有任何覆盖率配置，而两个模块是彻底的空白：`src/cli.py` 0%（全仓没有一处 import 它，tests 里那些 `create_user` 匹配全是 `AuthService.create_user`），意味着**建第一个账号和老数据认领这两条路从来没被执行过**；`utils/file_scanner.py` 38%，`os.stat` 失效、ffprobe 不存在、ffmpeg 挂死那些分支一个都没碰过。这两个恰是"新装的库第一次启动"和"盘掉线/工具没装"两条最坏的现场
+- **`tests/test_cli.py`（新增，29 条）**：参数表（默认角色、`--username` 必填、角色不在清单里当场 `SystemExit`）、口令问两次的三条分支（过短、两次不一致）、四个命令的处理器逐个过真库（拿 `db_session` 上的 `AuthService`，不 mock 服务层），以及 `main` / `_run` 的分发矩阵——四条命令各测一次"解析出来的命令名走到对应的处理器"，`_run` 那条兜底的 `return await _revoke_sessions(...)` 因此不再是"拼错命令名也悄悄踢下线"的暗区。交互输入按本项目一贯做法绕过 `getpass`（Windows 上它读控制台不读管道），改成给 `getpass.getpass` 打补丁
+- **`tests/test_utils/test_file_scanner.py`（新增 23 条）**：真 `tmp_path` 下的递归（非 ASCII 目录名、大小写后缀统一小写入库、字幕/封面/说明文件不进结果）、`ffprobe` 输出的每种坏形状（回 `N/A` 的时长、只有音频流、有视频流却没尺寸、输出被截断成非 JSON、`returncode != 0`），以及 `ffmpeg` 的"回 0 但没写出文件"这一类骗人成功。探针是打补丁替换 `subprocess.run`，转真工具留给打真后端的 e2e
+- **写用例时自己踩的两处，都是我对代码的假设错了**：一是 `os.walk` 在 Windows 上**会**走进 junction（`os.path.islink()` 对 junction 回 `False`，于是它被当成普通目录递归）；二是 `generate_thumbnail` 的 `-ss` 其实排在 `-i` **之后**（解码到 1 秒处的精确取帧，不是快速 seek）。两条都没去"修"，改成把实际形状钉住并在用例里写清为什么这是想要的行为——跨盘片库正是靠 junction 扫得全，而闸门在"只有 owner 能加视频源"上，遍历阶段再拦一层只会把库扫成半套
+- **那条 junction 用例是真跑出来的**：`cmd /c mklink /J` 不需要管理员权限（`os.symlink` 才需要），所以现场造一个指向库外目录的联接点、让它被扫到，而不是 `skip` 掉假装验过
+- **护栏的形状**：`fail_under = 80` 写在 `[tool.coverage.report]` 而不是 pytest 的 `addopts`。区别是后者会让"只跑一个文件"也去比总量，一个文件天然不到 80，报回来的红和"测试坏了"长得一模一样。现在只有显式 `pytest -q --cov=src` 才闸门，实测能红：单跑那个扫描文件时报 `Required test coverage of 80.0% not reached. Total coverage: 39.20%`。同时排除 `if __name__ == .__main__.:` 那行——模块入口守卫靠 import 走不到，留给真机 `python -m src.cli`
+- **没去凑数的地方**：`utils/ffmpeg.py` 23%（要真 FFmpeg 和真片子）、`services/tag_service.py` 32% 与 `api/tags.py` 59%、`scheduler/tasks.py` 71%，位置写进 `backend/CLAUDE.md`，别用只断言"没抛异常"的用例把总数抬上去
+- **验证**：这套新用例是**给既有行为补覆盖**，不是修 bug，所以没有"先红"那一步——红的是那两个模块此前从未被执行。`ruff check src tests` **0 项**、`mypy src` **34 项**（未触碰 `src/`，两处数字都与上一单相同）；全量带覆盖率 SQLite **672 passed + 1 skipped**（56s，TOTAL 86%）、PG **673 passed**（3:03，TOTAL 86%），两套串行跑
+
+
 ### 清理：mypy 从 95 项降到 34 项，剩下的 34 项是两类边界，不是漏了注解
 
 - **动因**：和 ruff 那一单同一个理由——总数长期不为零，"报红"就没有信息量。这一单只关"注解真的缺失或写错"的那些，关不掉的按类留下并写清为什么

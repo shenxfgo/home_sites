@@ -396,6 +396,7 @@ class Video(Base):
 
 - **`utils/` 不能 import `src.storage`**：`storage/__init__.py` 会加载两份实现，实现又依赖 utils，一 import 就绕成环、服务起不来。所以"什么算视频文件"留在 `utils/file_scanner.py`，首尾各 1MB 的摘要算法留在 `utils/file_fingerprint.py`，由存储层反向引用它们
 - **locator 的字符串形状就是扫描去重的键**：`filepath` 靠全等比对，分隔符差一个就会让整库既"全部新增"又"全部丢失"。`LocalMediaStorage.list_videos()` 直接复用原来那份 `scan_directory()`（`os.walk` + `os.path.join`）就是为了这一点；要动路径拼接，先看 `tests/test_storage/test_local_storage.py` 里那几条逐字节比对
+- **Windows 的 junction 会被走进**：`os.path.islink()` 对 junction 回 `False`，`os.walk` 因此把它当普通目录递归——源目录里放一个指向第二块盘的联接点，那块盘就一起进库，这正是跨盘片库想要的形状。权限闸门不在遍历，而在"只有 owner 能加视频源"（他能加的本来就包括整块盘），所以**别在 `scan_directory` 里加 realpath 判定**：那会把跨盘的库扫成半套。这条形状由 `tests/test_utils/test_file_scanner.py::test_a_junction_is_walked_into` 用真 junction 钉住（非 Windows 自动跳过，POSIX 软链的行为相反）
 - **够不着不等于空**：只有 `reachable()` 为真才允许把记录标成丢失。凭证写错、挂载盘掉线都走 `reachable() == False`，此时列表当空处理但一行都不判定
 - **能力问 `capabilities`，别嗅探 `s3://`**：`local_path` 是真正承重的位——FFmpeg 得在文件里 seek，对象存储给不了，于是缩略图、转码、内嵌字幕一起关闭；`sidecar_subtitles` 管外挂字幕那条路。拿不到本地路径的路由返回中文 400，不是 500
 - **S3 客户端按配置缓存，不按进程缓存**：用户改完 `.env` 之后，进程里那台旧密钥签的客户端还在偷偷用
@@ -526,6 +527,12 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 
 写 SQL 表达式时记一条：`Video.title` 这类 ORM 属性在类型上是 `InstrumentedAttribute[str | None]`，它既不是 `ColumnElement[str]` 也不是 `KeyedColumnElement[str]` 的子类型。要接住它并用 `.ilike`，参数标成裸 `ColumnOperators`（见 `video_service._like`）。
 
+### 5. 覆盖率：闸门是 80，但只在带 `--cov` 的全量跑上生效
+
+`[tool.coverage.report] fail_under = 80`（2026-10-04 挂上，当时实测 86%）。没写成 pytest 的 `addopts`，是因为那样"只跑一个文件"也会去比总量——一个文件的覆盖率天然不到 80，报回来的红和"测试坏了"长得一模一样，纯属误导。要量就明说：`pytest -q --cov=src`。
+
+薄的位置是清楚的：`utils/ffmpeg.py` 23%（转码要真 FFmpeg 和真片子才跑得动）、`services/tag_service.py` 32% 与 `api/tags.py` 59%（标签那套 API 只有几条用例过）、`scheduler/tasks.py` 71%（定时任务本体在测试里都是直接调函数）。这几处是有意的取舍，不是漏了；别为了让总数好看去造只断言"没抛异常"的用例。
+
 ## 依赖管理
 
 ```bash
@@ -547,4 +554,7 @@ uv run pytest
 # 静态检查（在 backend/ 目录下跑，配置在 pyproject.toml）
 .venv/Scripts/ruff.exe check .    # 2026-10-04 起为 0 项，红了就说明是新代码带来的
 .venv/Scripts/mypy.exe src        # 2026-10-04 从 95 降到 34，看单文件增量而不是总数
+
+# 覆盖率（闸门在 [tool.coverage.report] 的 fail_under=80，只有带 --cov 才生效）
+TEST_DATABASE_URL= .venv/Scripts/pytest.exe -q --cov=src   # 全量跑，2026-10-04 实测 86%
 ```

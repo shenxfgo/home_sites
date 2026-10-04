@@ -73,6 +73,15 @@ disallow_untyped_defs = true
 module = ["apscheduler.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
+[tool.coverage.report]
+# 覆盖率闸门：只在显式量的时候生效（`pytest --cov=src`），低于这条就红。
+# 2026-10-04 补完 cli.py 与 file_scanner.py 之后实测 86%，留 6 个点的余量给
+# 还没测到的分支（ffmpeg 转码 23%、tag_service 32%、调度任务 71%）。
+fail_under = 80
+show_missing = true
+# 模块入口的守卫靠 import 是走不到的，留给真机跑 `python -m src.cli`。
+exclude_also = ["if __name__ == .__main__.:"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
