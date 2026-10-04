@@ -502,6 +502,44 @@ describe('Home filter state in the address bar', () => {
     expect(vi.mocked(listVideos).mock.calls.length).toBe(calls)
     wrapper.unmount()
   })
+
+  it('clamps an out-of-range page back to the last page that exists', async () => {
+    // 60 条 / 每页 20，所以最后一页是 3；第 4 页确实存在过，是分享出去的链接或
+    // 浏览器后退把它留在地址栏里的。
+    vi.mocked(listVideos).mockImplementation(async (params) => {
+      if (params?.search === '丢失') {
+        return { items: [], total: 0, page: 1, page_size: 1 }
+      }
+      const empty = params?.page === 4
+      return {
+        items: empty ? [] : [makeVideo({ id: 1 })],
+        total: 60,
+        page: params?.page ?? 1,
+        page_size: params?.page_size ?? 20,
+      }
+    })
+    const { wrapper, router } = await mountHome('/?page=4')
+
+    // 顺序：丢失记录数的探针（page 1）、地址栏里那一页、钳回来以后的一页。
+    expect(vi.mocked(listVideos).mock.calls.map((call) => call[0]?.page)).toEqual([1, 4, 3])
+    expect(lastQuery()).toMatchObject({ page: 3 })
+    expect(wrapper.findAllComponents(VideoCard)).toHaveLength(1)
+    // 地址栏也跟着改：否则刷新一下又回到那条已经不存在的页。
+    expect(router.currentRoute.value.query).toEqual({ page: '3' })
+    wrapper.unmount()
+  })
+
+  it('leaves an empty page alone while the whole library is empty', async () => {
+    // 库里一条都没有时「最后一页」是 1，但第 4 页不该被钳过去——那只会把
+    // 「添加视频源并扫描即可开始使用」变成一页空白。
+    vi.mocked(listVideos).mockResolvedValue({ items: [], total: 0, page: 4, page_size: 20 })
+    const { wrapper, router } = await mountHome('/?page=4')
+
+    expect(lastQuery()).toMatchObject({ page: 4 })
+    expect(vi.mocked(listVideos)).toHaveBeenCalledTimes(2) // 网格 + 丢失计数的探针
+    expect(router.currentRoute.value.query).toEqual({ page: '4' })
+    wrapper.unmount()
+  })
 })
 
 describe('Home search shortcut', () => {

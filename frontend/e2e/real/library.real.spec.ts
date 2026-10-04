@@ -681,3 +681,143 @@ test('系统配置写进真库再读回来：PUT 的回显不算数，一次坏�
   expect(poisoned.text).toContain('必须是整数')
   expect(await readSettings(page)).toEqual(saved)
 })
+
+/** `GET /api/videos` 里这条用例真正在用的那几项。 */
+type VideoRow = { id: number; title: string; is_missing: boolean }
+type VideoList = { items: VideoRow[]; total: number; page: number; page_size: number }
+
+async function readVideos(page: Page, query = ''): Promise<VideoList> {
+  return JSON.parse((await fetchInPage(page, `/api/videos${query}`)).text) as VideoList
+}
+
+/** 建一个标签，顺手挂在某部影片上，返回它的 id。 */
+async function createTag(page: Page, name: string, videoId: number | null): Promise<number> {
+  const created = await fetchInPage(page, '/api/tags', {
+    method: 'POST',
+    headers: { ...CSRF, 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  expect(created.status).toBe(201)
+  const id = (JSON.parse(created.text) as TagRow).id
+  if (videoId !== null) {
+    const linked = await fetchInPage(page, `/api/tags/video/${videoId}`, {
+      method: 'POST',
+      headers: { ...CSRF, 'content-type': 'application/json' },
+      body: JSON.stringify({ tag_ids: [id] }),
+    })
+    expect(linked.status).toBe(204)
+  }
+  return id
+}
+
+/**
+ * 在界面上搜一个词，同时核对三处：卡片数、服务器对同一个词报的 total、地址栏里那个词。
+ *
+ * 收成一个函数不是为了省字，而是因为这条用例的断言本身就是"三处得是同一件事"——分开
+ * 抄十几遍，总有一遍会只核对其中两处。替身夹具对这种松动无感：`fixtures.ts` 里那份
+ * `matchesSearch` 是拿 TypeScript 把后端的 `src/utils/video_search.py` 又实现了一遍，
+ * 两份实现各自测自己那一侧，谁改了对方都不知道。
+ */
+async function expectSearch(page: Page, text: string, expected: number): Promise<void> {
+  await page.locator('.search-input input').fill(text)
+  // 先等地址栏：它是那 400ms 防抖之后第一件事。卡片数在"结果没变"的那些探针上不会动，
+  // 拿它当同步点会当场通过而什么都没等到（第一次跑就是这么撞上的）。
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get('q'))
+    .toBe(text.trim() || null)
+  await expect(page.locator('.video-card')).toHaveCount(expected)
+  // 换一路读：服务器对**同一个字符串**报的数，和界面渲染的必须是同一件事
+  const list = await readVideos(page, `?search=${encodeURIComponent(text)}`)
+  expect([list.total, list.items.length]).toEqual([expected, expected])
+  await expect(page.locator('.hero-sub')).toContainText(`共 ${expected} 个视频`)
+}
+
+test('搜索框那一个文本框打到真解析器上：算子、通配符和越界的页码', async ({ page }) => {
+  // 首页那一个文本框后面是一整套算子（`标签:` `源:` 比较式 观看状态），界面上那个 `?`
+  // 弹层还把语法一条条写给用户看。替身那侧另有一份 TS 实现，所以两边各自自洽；这里验的
+  // 是浏览器打出来的那一串字符经过 URL 编码、FastAPI 的参数解析和一次真 ILIKE 之后仍认得，
+  // 夹具自己永远给不出"编码坏了但两边都说 0"这种情况。
+  // 夹具自己建（不借第 8 条留下的标签）：这样它能单独 `-g 搜索框` 跑，改一处后端大约
+  // 二十秒出结论，不用先把前面十一条用例的播种链走一遍。
+  const attachedTagId = await createTag(page, '深夜标签', 1)
+  const looseTagId = await createTag(page, '无人挂载', null)
+
+  await page.goto('/')
+  await expect(page.locator('.video-card')).toHaveCount(1)
+
+  // 片名命中，加上**只有真库给得出的两件事**：ILIKE 不区分大小写（替身是 toLowerCase +
+  // includes，换一种方言的 collation 又是另一套），以及 `深夜` 这个词在片名和简介里都不
+  // 存在，命中走的是一条标签名的 EXISTS。
+  await expectSearch(page, 'e2e', 1)
+  await expectSearch(page, 'E2E SAMPLE', 1)
+  await expectSearch(page, '深夜', 1)
+  // 另一个标签的名字必须是 0：它建出来了但一条挂载都没有，所以 `video_tags` 里根本没有
+  // 它的行。注意这条**挡不住**"EXISTS 忘了跟外层影片相关"那种写法（我试过：摘掉
+  // `.where(video_tags.c.video_id == Video.id)` 以后这里仍是 0，因为库上只有一部影片，
+  // 相关与不相关长得一模一样）。真要在全库层面把它钉住，得有两部片子各自挂不同的标签；
+  //  service 层那两条 `test_video_search.py` 用例已经这么做了，界面这一侧留给第 13 条。
+  await expectSearch(page, '无人挂载', 0)
+  // 两个词是"且"，而且命中位置不同（一个在片名、一个在标签名）
+  await expectSearch(page, 'e2e 深夜', 1)
+  await expectSearch(page, 'e2e 无人', 0)
+
+  // 算子写成关键词是搜不到东西的，所以"命中 1 条"本身就是解析器认了它的证据
+  await expectSearch(page, '标签:深夜', 1)
+  await expectSearch(page, '标签:无人', 0)
+  await expectSearch(page, '源:E2E', 1)
+  await expectSearch(page, '源:不存在的源', 0)
+  // 观看状态读的是**这个账号**的播放历史（`_played(user_id)`）：播种替 owner 写过一条
+  // 18 秒、没看完的历史，于是三个状态各说中一件事
+  await expectSearch(page, '未看完', 1)
+  await expectSearch(page, '没看过', 0)
+  await expectSearch(page, '已看完', 0)
+
+  // 用户手打的通配符必须是字面量。后端靠 `ilike(..., escape="\\")` 那一层转义挡住它们，
+  // 摘掉之后 `%` 和 `_` 都成了"匹配一切"，界面上会从 0 张卡变成 1 张。
+  await expectSearch(page, '%', 0)
+  await expectSearch(page, '_', 0)
+
+  // 越界的页码：`?page=` 是首页自己写进地址栏的，分享一条链接、或者前进后退回到筛选前
+  // 那一页，都可能带回来一个已经不存在的页。那一页确实是空的，但库里不空——界面不能同屏
+  // 说"共 1 个视频"和"添加视频源并扫描即可开始使用"。
+  await page.goto('/?page=2')
+  await expect(page.locator('.video-card')).toHaveCount(1)
+  await expect(page.locator('.el-empty')).toHaveCount(0)
+  await expect.poll(() => new URL(page.url()).searchParams.get('page')).toBeNull()
+  await page.goto('/?q=e2e&page=3')
+  await expect(page.locator('.video-card')).toHaveCount(1)
+  // `Object.fromEntries` 而不是 `{...searchParams}`：URLSearchParams 的条目只在迭代器上，
+  // 没有可枚举的自有属性，摊进对象字面量永远得到一个空对象（第一版就是这么"红"的——假红，
+  // 应用本身没问题）。
+  await expect
+    .poll(() => Object.fromEntries(new URL(page.url()).searchParams))
+    .toEqual({ q: 'e2e' })
+
+  // 换成员登录：他一条历史都没写过，所以同一个 `未看完` 对他就是 0 条、`没看过` 是 1 条。
+  // 同库同一片子，两个人报的数不一样——这只有真中间件加真库给得出（替身那份 `WATCH_STATE`
+  // 是按视频 id 写死的，换谁都同一个答案）。
+  await signIn(page, E2E_MEMBER_USERNAME)
+  await expectSearch(page, '未看完', 0)
+  await expectSearch(page, '没看过', 1)
+
+  // 两个下拉：选项本身就是真库读出来的，选中之后走的是 `source_id` / `tag_id` 两个参数，
+  // 而不是把名字塞进搜索框——这一层对接错成一个字符，界面就永远在"搜一个不存在的标签"。
+  await signIn(page)
+  await page.goto('/')
+  await page.locator('.source-filter').click()
+  await page.locator('.el-select-dropdown__item', { hasText: 'E2E local' }).click()
+  await expect(page.locator('.video-card')).toHaveCount(1)
+  await expect.poll(() => new URL(page.url()).searchParams.get('source')).toBe('1')
+
+  await page.locator('.tag-filter').click()
+  await page.locator('.el-select-dropdown__item', { hasText: '无人挂载' }).click()
+  await expect(page.locator('.video-card')).toHaveCount(0)
+  // 只筛不搜时是另一句文案（「当前筛选条件下没有视频」），和搜了一个词的说法分开
+  await expect(page.locator('.empty-hint')).toContainText('当前筛选条件下没有视频')
+  expect((await readVideos(page, `?tag_id=${looseTagId}`)).total).toBe(0)
+  expect((await readVideos(page, `?tag_id=${attachedTagId}`)).total).toBe(1)
+
+  await page.locator('.empty-clear').click()
+  await expect(page.locator('.video-card')).toHaveCount(1)
+  await expect.poll(() => new URL(page.url()).searchParams.toString()).toBe('')
+})

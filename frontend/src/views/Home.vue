@@ -174,6 +174,15 @@ async function loadVideos() {
       params.search = activeSearch.value
     }
     const result = await listVideos(params)
+    // 地址栏里那一页可能已经不成立了：`?page=` 是这一页自己写进去的，分享出去的链接、
+    // 浏览器前进后退都可能带回来一个越界的页码。那一页确实是空的，库里却不空，界面上就会
+    // 同屏出现「共 1 个视频」和「添加视频源并扫描即可开始使用」。钳回最后一页再读一次。
+    const lastPage = Math.max(1, Math.ceil(result.total / pageSize.value))
+    if (result.items.length === 0 && result.total > 0 && currentPage.value > lastPage) {
+      currentPage.value = lastPage // 页码一变，上面的 watch 会把地址栏一起改过来
+      await loadVideos()
+      return
+    }
     videos.value = result.items
     total.value = result.total
   } catch (err: unknown) {

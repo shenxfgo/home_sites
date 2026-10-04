@@ -2,6 +2,24 @@
 
 ## 2026-10-05
 
+### 修复 + 新增：越界的 `?page=` 会让首页同屏说两句反话；真后端 e2e 加到 12 条（搜索与筛选）
+
+- **动因**：搜索与筛选是这一套界面里唯一**从没在真库上签过字**的读路径，而且它有两处替身挡不住的松动。一是 `frontend/e2e/fixtures.ts` 里的 `matchesSearch` 是拿 TypeScript 把 `backend/src/utils/video_search.py` **又实现了一遍**（那份函数自己的注释就写着这件事），两份实现各自测自己那一侧，谁改了对方都不知道。二是替身的 `/videos` 处理器**根本不读 `page` / `page_size`**，永远回 `{page: 1, page_size: 20}`——所以那 82 条桩用例里"翻到第 3 页"全是虚构的，界面写进地址栏的页码从来没被服务器看过一眼。
+- **用例 12（搜索与筛选的分面）**：夹具自己建（不借第 8 条留下的标签），这样它能单独 `-g 搜索框` 跑，改一处后端约二十秒出结论。十五个词每个都核到**三处一致**：卡片数、服务器对同一个字符串报的 `total`、地址栏里那个词——写成 `expectSearch()` 不是为了省字，而是因为这条的断言本身就是"三处得是同一件事"，摊开抄十几遍总有一遍只核对其中两处。真库才给得出的三件事：ILIKE 不区分大小写（替身是 `toLowerCase` + `includes`，换一种 collation 又是另一套）、`标签:` 与 `源:` 这两个算子真被解析器认下（写成关键词一律 0 条，所以"命中 1 条"本身就是证据）、观看状态读的是**这个账号**的历史——换成员登录后同一个 `未看完` 必须是 0 条而 `没看过` 是 1 条，同库同一片子两个人报的数不一样，只有真中间件加真库给得出这个差别。再加上 `%` / `_` 两个手打工配符必须是字面量，以及两个下拉（源、标签）的选项本身就来自真库。
+- **原症状**（先跑出来的证据，不是推测）：`page.goto('/?page=2')` → `Expected: 1 / Received: 0` 张卡片（`library.real.spec.ts:780`），失败快照里同屏写着「共 1 个视频」和「添加视频源并扫描即可开始使用」。`?page=` 是首页自己写进地址栏的，分享一条链接、或者浏览器后退回到筛选前的那一页，都可能带回来一个已经不存在的页——那一页确实是空的，库里却不空。
+- **修复**：`views/Home.vue` 的 `loadVideos()` 读到"这一页空、库不空、而页码越界"时钳回最后一页再读一次（`Math.max(1, Math.ceil(total / page_size))`）。终止性是显然的：钳完那一页 `currentPage > lastPage` 就为假；地址栏由已有的 `watch([selectedSourceId, selectedTagId, currentPage, pageSize], pushQuery)` 顺手改过来，没有新机制。全空库不会被钳（`total > 0` 是闸门），否则"第 4 页不存在"会变成"第 1 页空白"，比原来更难懂。
+- **红在先（四次变异，三次红一次绿，那一次绿是这一单的发现）**：
+  - 摘掉 `_like` 里那三层 `replace`（`video_service.py:198`）→ 红在 `expectSearch(page, '%', 0)`（`:773`，实测 1 张卡）：`%` 和 `_` 都成了"匹配一切"。
+  - 从 `_played` 的 EXISTS 里删掉 `PlayHistory.user_id == user_id` → 红在成员那一句 `expectSearch(page, '未看完', 0)`（`:796`，实测 1 条）：owner 的历史被算到了成员头上。
+  - 从 `NAME_KEYS` 里删掉 `"标签"` → 红在 `expectSearch(page, '标签:深夜', 1)`（`:761`，实测 0 张卡）：算子退回成关键词。
+  - 删掉 `_tagged_with` 里跟外层影片相关的那一句 `.where(video_tags.c.video_id == Video.id)` → **用例照样绿**。根因很直白：库里只有一部片子，相关与不相关长得一模一样，而那个"没挂过片子"的标签在 `video_tags` 里根本没有行，走 `JOIN video_tags` 的 EXISTS 永远看不见它——所以 `无人挂载 → 0` 这条钉的是"没挂载的标签不算命中"，不是我原先以为的"标签匹配不是全库开关"。**这条注释已经改成实话**，并且写明界面这一侧要真钉住它得有第二步（两部片子各挂不同标签，正是第 13 条要造的形状）。它不是没人管：`tests/test_services/test_video_search.py` 里那两条（`test_a_keyword_also_matches_the_description_and_tag_names`、`test_tag_keyword_only_looks_at_tag_names`）实测把同一个变异判红了。
+- **踩到的两处**：一是 `expect(locator).toHaveCount(n)` 在"数量本来就不变"的那些探针上**不是同步点**，会当场通过而什么都没等到，第一次跑就是撞上那 400ms 防抖之前读到空地址栏——现在 `expectSearch` 先 `expect.poll` 地址栏，它才是防抖之后第一件事。二是 `{...new URL(u).searchParams}` **永远是 `{}`**（`URLSearchParams` 的条目只在迭代器上，没有可枚举的自有属性），害我差点以为应用没把页码擦掉；写了个一次性探针 spec 实测应用 200ms 内就稳定在 `?q=e2e`，是我的断言假红（探针与 `test-results/` 已删，一行没留）。
+- **用例（前端单测）**：`tests/views/Home.spec.ts` 补两条。一条把那个钳位钉在缝上：`total: 60` 的库、`?page=4`，断言请求序列是 `[1, 4, 3]`（`[0]` 是丢失记录数那根探针）并核到卡片渲染出来、地址栏跟着变成 `page=3`；**红在先**——把 `Home.vue` 临时换回提交前那版跑，实测 `expected [ 1, 4 ] to deeply equal [ 1, 4, 3 ]`。另一条钉住反面：空库（`total: 0`）落在 `?page=4` 上必须**不**被钳，`listVideos` 仍只有两次、地址栏仍是 `page=4`。
+- **文档同步**：`README.md`、`CLAUDE.md`、`frontend/CLAUDE.md` 三处计数 11 → 12；`frontend/CLAUDE.md` 的顺序段从"十一条"改"十二条"，补了第 12 条为什么排在最后（它往 `tags` 留两个标签、其中一个挂在播种那部片子上，而第 8 条把整张标签表当成"只有我自己那两个"并要那个空标签 `video_count` 留在 0），`-g` 命令从四条列成五条，还写明界面从此会擦掉越界页码——将来谁的用例落在"第 N 页"上再断地址栏，都得先等这一次钳位跑完。这一单没改任何后端代码（四个变异各自 `cp` 还原，还原后整跑一遍 PG 才是证据），`backend/CLAUDE.md` 的薄位置清单与搜索谓词那两句按现状不动。
+- **验证**：真后端 e2e **12 passed**（单 worker 串行，54.5 秒，第 12 条自己 21.3 秒；四次变异全部还原之后重跑）；`-g 搜索框` 单独跑 **1 passed**（约 26 秒含起跑）；后端 PostgreSQL 全量 **725 passed**（3:09，与上一单同数——本单没提交后端代码）；`ruff check .` **0 项**、`mypy src` **34 项**（基线同数）；前端单测 **281 passed**（279 → 281 是本单新增两条）、`typecheck:test` 绿、`npm run build` 绿。桩 e2e 这晚**没有一次跑到 82**：三次整跑分别是 81 / 80 / 81，抖的两次都落在 `player.spec.ts` 那两个靠计时器走的用例（`:119`、`:189`），单独重跑这两条 **2 passed（4.2 秒，1.7s 与 2.1s）**，而整套里它们要 5.4s 与 7.0s。原因查到了机器上：那个 `ShadowBot\xbot_interpreter` 一直在后台活着，还另起了一份 `npm run dev`（Vite 4173）和第二个 uvicorn 8001，与测试抢 CPU。按既有结论处理：**重跑一遍再判是不是回归**，且 `test:e2e:real` 与 `pytest` 永远不并行（两套都 TRUNCATE `home_sites_test`）。
+- **覆盖面现状**：浏览器用例总数实测 **94** 条——打真库 **12** 条，其余 **82** 条继续对着 `e2e/fixtures.ts` 的替身。仍然零真库签字的读路径：丢失标记与那条横幅（`is_missing` 的翻转、`丢失` 算子、清理按钮）、转码任务那条长流程。
+
+
 ### 修复 + 新增：单键写系统配置能把设置页打成 500；真后端 e2e 加到 11 条
 
 - **动因**：`PUT /api/settings/{key}` 认键名（白名单，M3 加的），**不认值**——它收的是裸 `value: str`，写什么进库什么。而 `GET /api/settings` 读回来的时候对 `auto_scan_interval` / `thumbnail_width` / `thumbnail_height` 三个键做 `int(...)`。于是一次写入就把整个设置页永久打成 500，直到有人手工去改库里那一行。整份的 `PUT /api/settings` 不会有这个问题：它走 `AllSettingsResponse`，Pydantic 替它挡了。
