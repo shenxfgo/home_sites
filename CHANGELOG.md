@@ -2,6 +2,20 @@
 
 ## 2026-10-04
 
+### 新增：3 条打真后端的端到端用例，替身夹具之外的契约签字
+
+- **动因**：82 条 e2e 全部靠 `page.route` 假接口，响应该长什么样子是**写在前端测试里**的——前后端各测各的理解，中间没人对账。补一套一条 mock 都没有的用例，请求走完 Vite 代理 → uvicorn → PostgreSQL
+- **覆盖面（按选定的 3 条）**：真表单登录换来真 cookie、首页渲染的是真扫描写出来的那一行（含真 FFmpeg 抽的 320×180 封面）；详情页字幕轨 + 流式接口（`/subtitles/1/stream` 回的是 sidecar 真转换出的 WebVTT，`/stream` 带 `Range` 回 `206` 且 `Content-Range` 的总长对得上，还测了贴着片尾的最后 8 字节）；点收藏 → 刷新仍是"已收藏" → `/favorites` 读得到同一行，并向后端核对 `total`
+- **`backend/src/e2e_seed.py`（新增）**：账号走 `AuthService.create_user`、影片行走 `ScanService.scan_source`，**不手写 INSERT**——手搓种子行会跟着扫描规则的漂移一起过时。收尾核对 1 部片 / 1 条字幕 / 1 张封面，对不上就在起步时失败，而不是让三条用例各炸一次；封面单列一项是因为 FFmpeg 不在 PATH 上时现象是"图片加载失败的谜"，报错要点名 ffmpeg
+- **两道闸门**：库名必须以 `_test` 结尾才允许 TRUNCATE，非 PG 方言一律拒收（这套用例的意义就是验生产那个方言）；整目录删除只允许发生在 `backend/data/e2e` 之下，判据不满足时拒绝发生在任何删除之前。前端 `env.ts` 里另有一道同样的检查，让它在起服务器之前就失败；实测把 `E2E_DATABASE_URL` 指向 `home_sites` 时报 `refusing to run e2e against home_sites`，一台服务器都没起
+- **踩到的坑，也是这套接线的头号规矩**：Playwright 的**配置文件会被执行好几遍**（主进程一次 + 每个 worker 一次，本机实测三个进程）。媒体夹具原先就在配置求值期写盘，于是播种之后 `data/e2e` 又被清一次——库里的封面路径指向一个已不存在的文件，表现为 `naturalWidth=0` 反复重试 14 次。媒体准备整个移进 `e2e_seed.py`（和扫描同进程同顺序），配置里只留只读的 `testDatabaseUrl()`
+- **顺带被自家新用例抓到一条**：`Path.write_text` 在 Windows 文本模式会把 `\n` 再翻成 `\r\n`，sidecar 成了 `\r\r\n`。改成按字节写，用例比对的是字节
+- **接线**：`playwright.real.config.ts` 两条 `webServer` 串成一条 `&&`（`python -m src.e2e_seed && uvicorn`），一次性后端打 127.0.0.1:8099、Vite 打 4174，两边 `reuseExistingServer: false`——**绝不复用开发者手动起着的 :8000**，否则测试数据写进真库。`vite.config.ts` 的代理目标参数化为 `process.env.E2E_API_TARGET ?? 'http://localhost:8000'`（默认不变）；`THUMBNAIL_PATH` 指进一次性目录、`BACKUP_ENABLED=false`（连的是测试方言，不该挂夜间转储）、`E2E_PASSWORD` 只走环境变量不进 argv
+- **默认 e2e 配置 `testIgnore` 掉 `e2e/real`**，否则那 82 条会连真库一起跑；`package.json` 加 `test:e2e:real`，`tsconfig.vitest.json` 纳入新配置文件（`typecheck:test` 因此覆盖它）
+- **测试**：后端 SQLite **620 passed + 1 skipped**、PG **621 passed**（+8 例 `tests/test_e2e_seed.py`）；前端单测 **279** 与替身 e2e **82** 均未受影响；真后端 e2e **3 passed（15s）**
+- **红在先**：四次变异各恰好 1 例红——`Content-Range` 去掉 `/总长` → 流式那条；`FavoriteStatusResponse(is_favorite=False)` → 收藏那条（替身永远测不出这种错，因为两侧是同一份理解）；封面路由改成永不回文件 → 首页那条；播种闸门去掉 `_test` 规则 → 2 例拒绝用例红。逐项 `git checkout` 还原后用 `sha256sum -c` 复核原样
+- **没做**：历史、片单、用户管理这些页面仍只有替身覆盖；这套用例不进 CI（要一个能连的 PG 和 PATH 上的 ffmpeg），先当本地合同测试用
+
 ### 新增：PostgreSQL 每日自动备份，外加一份不含口令的建库模板
 
 - **动因**：真库切到 PG 之后，片库、账号、收藏、历史只有一个出处——`home_sites` 那个库，盘掉了就全没。此前唯一的备份是搬家当天手工敲的那两次 `pg_dump`

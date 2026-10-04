@@ -649,6 +649,17 @@ tests/
 
 角色面在这份替身里是照抄中间件的：`role: 'member'` 之后，`/users`、`/settings` 连读都 403；写接口反过来按 `MEMBER_WRITE` 这条正则放行，它是 `backend/src/middleware/auth.py` 里 `MEMBER_WRITE_PATHS` 的一比一抄写，名单之外的写请求一律 403。账号表（owner / member / 一个停用号）与 `themes`（按账号存的主题）是跨请求的可变状态，所以"退出后换账号登录、主题跟着人走"这种用例能真跑。后端放行或新收一条写接口时，**`MEMBER_WRITE`、后端名单和 `e2e/roles.spec.ts` 的期望要一起改**，否则浏览器测的是替身，不是后端。
 
+### 打真后端的端到端测试（`e2e/real/`）
+
+上面那句"浏览器测的是替身"就是这套用例存在的理由：替身把响应该长什么样写在前端测试里，前后端各自对着自己那份理解测试，中间没有签字的人。`npm run test:e2e:real` 跑 3 条，一条 `page.route` 都没有，请求走完 Vite 代理 → uvicorn → PostgreSQL：真表单登录换来真 cookie、首页渲染的是真扫描写出来的那一行、字幕轨是 sidecar 真转成 WebVTT 的、`Range` 分段回的是 `206 + Content-Range`、点下去的收藏在刷新后还在库里。
+
+接线方式（`playwright.real.config.ts`）：
+
+- 两条 `webServer` 串成一条 `&&`：`python -m src.e2e_seed` 成功后才起 uvicorn（8099），再另起一个 Vite（4174，`E2E_API_TARGET` 指向 8099）。端口和 8000/4173 都隔开，且 `reuseExistingServer: false`——绝不复用开发者手动起着的那个后端，否则测试数据写进真库。
+- **配置文件里的顶层代码会被执行好几遍**（主进程一次、每个 worker 一次，本机实测三个进程），所以这里只允许只读的 `testDatabaseUrl()`。媒体夹具的准备全部由 `backend/src/e2e_seed.py` 自己做；把它放在配置里写文件的后果是播种之后目录又被清一次，库里的封面路径指向一个已经不存在的文件，表现为 `naturalWidth=0`。
+- 一次性库只认 PostgreSQL，且库名必须以 `_test` 结尾：`env.ts` 和 `e2e_seed.py` 各有一道同样的闸门，前者让它在起服务器之前就失败，后者让它在下任何 TRUNCATE 语句之前就失败。口令走环境变量（`E2E_PASSWORD`），不进 argv、不进任何输出。
+- 用例共用一次播种、`workers: 1` 顺序跑，所以三条的顺序就是约定：登录页 → 详情页/流式 → 收藏。真库实测的行是 `id=1`、片名 `e2e sample`、30 秒、320×180 封面、一条 `lang=zh` 字幕。
+
 ## 常见问题
 
 ### 1. 路径别名
@@ -716,6 +727,9 @@ npm run test:coverage
 
 # 端到端测试（Playwright，自动启动 4173 端口的 dev server）
 npm run test:e2e
+
+# 端到端测试（3 条打真后端：自己起 8099 的一次性后端，需要一个 _test 结尾的 PG 库）
+npm run test:e2e:real
 
 # 类型检查（含测试代码）
 npm run build

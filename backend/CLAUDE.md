@@ -107,6 +107,7 @@ backend/
 │   ├── cli.py             # 账号管理命令行（create-user / list-users / set-role / revoke-sessions）
 │   ├── db_audit.py        # 换数据库前的只读审计（`uv run python -m src.db_audit`）
 │   ├── db_transfer.py     # 搬家：一个事务内插完并对账，对不上就整体回滚（`uv run python -m src.db_transfer --from <老库> --to <新库>`）
+│   ├── e2e_seed.py        # 真后端 e2e 的一次性现场：造媒体 → TRUNCATE → 建 owner → 走真扫描（`python -m src.e2e_seed`，由前端的 test:e2e:real 调用）
 │   ├── config.py          # 配置管理
 │   └── main.py            # 应用入口
 ├── alembic/               # schema 的出处（版本化迁移）
@@ -122,6 +123,7 @@ backend/
 │   ├── test_scheduler_backup.py # 挂载与通知：重新挂载只留一条任务；失败写 backup_error，成功一条都不写
 │   ├── test_db_audit.py   # 审计用例：造一个每类问题各一条的脏库，证明检查还活着
 │   ├── test_db_transfer.py # 搬家用例：空库闸门、对账失败即回滚、时间戳跨方言不偏、报告与审计同一个数
+│   ├── test_e2e_seed.py  # 播种闸门：库名不带 _test 就拒绝、整目录删除只允许发生在 backend/data/e2e 之下、媒体字节没被搬坏
 │   ├── test_migrations.py # Alembic 三条启动路线：空库、老库、已版本化
 │   ├── test_storage/      # 存储接缝用例：本地 locator 逐字节不变、S3（moto 在内存里演一个桶）、扫描走接缝
 │   ├── test_middleware/   # 鉴权中间件测试（两张全路由扫面：匿名必 401、member 打管理面必 403）
@@ -335,6 +337,8 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 换数据库之前先跑 `uv run python -m src.db_audit`（`src/db_audit.py`）。它只以 `mode=ro` 打开库文件，拿模型的 `Base.metadata` 和库里的实际 schema 对账，报九类问题：schema 漂移、库里没落实的外键约束、孤儿行、值类型不对、VARCHAR 超长、整数超出 PG 的 32 位 `integer`、NOT NULL 列里的 NULL、解析不了的日期与 JSON，并给每张表算一个方言无关的内容摘要（布尔→true/false、时间→UTC ISO、JSON→键排序，整表排序后哈希），搬完在目标库上再算一遍对得上才算搬全。之所以要有这么个脚本而不是"迁过去看报不报错"：SQLite 的类型亲和、不检查长度、不执行外键这三件事会让一批数据在 SQLite 里存得很好，到 PG 那边要么被拒要么被静改写；而只存在于库里的列（如认领后剩下的 `viewed`/`read`）会不会丢数据，只有数一遍非空值才知道。报告写到 `data/migration-audit-<日期>.md`（`data/` 不进版本库），stdout 只打 ASCII——控制台是 cp936。用例在 `tests/test_db_audit.py`，那里造了一个每类问题都有一条的脏库；真库跑出来的"一切正常"证明不了检查还活着。
 
 搬家的顺序：审计（`db_audit`）→ 目标库建空（`deploy/pg-provision.example.sql`，schema 由 `0001` 基线建，别手工建表）→ `db_transfer --from <老库> --to <新库> --dry-run` 预演 → 去掉 `--dry-run` 正式搬。`--dry-run` 会一路跑到对账通过再整体回滚，新库不留一行，所以它和正式搬用的是同一条代码路，预演过了才算过。目标库必须已建表且为空，否则直接中止。搬的时候 `sessions` 整表跳过（旧 token 到了新库也不该还能用），`alembic_version` 也不搬；自增序列会推到当前最大值。方向是双向的：回滚到 SQLite 就把它当目标库再搬一次，`_reset_sequences` 两种方言都实现了。
+
+真后端 e2e 的现场由 `src/e2e_seed.py` 一手准备，前端只负责把它串在 uvicorn 之前起（`frontend/CLAUDE.md` 的「打真后端的端到端测试」）。这里有两道闸门，理由和 `db_transfer` 一样——"连哪个库""清哪个目录"都只看一条环境变量，所以判据不能靠调用方自觉：库名必须以 `_test` 结尾才允许 TRUNCATE，非 PostgreSQL 方言直接拒收（这套用例要证明的就是和生产同一个方言）；媒体目录必须落在 `backend/data/e2e` 之下才允许整目录删除，否则报错发生在任何删除之前。**媒体夹具在这个进程里写，不放在前端的 Playwright 配置里写**：那个配置文件会被执行好几遍（主进程 + 每个 worker），写在配置里的副作用会在播种之后把 `data/e2e` 再清一次，留下的现象是库里的封面路径指向一个不存在的文件。扫描产物同样只核对不解释：1 部片子、1 条字幕、1 张封面，对不上就在起步时失败，而不是让三条用例各炸一次——封面这一项是为了 FFmpeg 不在 PATH 上时报"ffmpeg 抽不出封面"，而不是报一个看不出根因的图片加载失败。
 
 每日备份在 `src/backup.py`，挂载在 `main.py` 的 lifespan 里，走的是应用自己的 APScheduler（`add_backup_job`，和扫描同一个调度器——两个调度器会让每个任务各跑一遍）。核心是 `run_backup()`：从 `settings.database_url` 拆出连接参数，起 `pg_dump -Fc --no-owner`，然后 `pg_restore -l` 把清单读回来，读不回的文件**当场删掉**。三个约束是这块的意义所在，改之前先看用例：
 

@@ -14,7 +14,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        // 真后端 e2e 会把它指到自己起的一次性服务上；默认仍是开发中的 :8000。
+        target: process.env.E2E_API_TARGET ?? 'http://localhost:8000',
         changeOrigin: true,
       },
     },

@@ -12,6 +12,7 @@
     "src/**/*.tsx",
     "src/**/*.vue",
     "vitest.config.ts",
-    "playwright.config.ts"
+    "playwright.config.ts",
+    "playwright.real.config.ts"
   ]
 }

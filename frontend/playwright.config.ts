@@ -6,6 +6,8 @@ const APP_URL = `http://localhost:${PORT}`
 
 export default defineConfig({
   testDir: './e2e',
+  // e2e/real 打真后端，需要自己的两条 webServer，见 playwright.real.config.ts。
+  testIgnore: /[\\/]e2e[\\/]real[\\/]/,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
