@@ -22,7 +22,12 @@ async def scan_source_task(source_id: int) -> None:
             await service.scan_source(source_id)
         except Exception as e:
             logger.exception("Scheduled scan failed for source %d", source_id)
-            # Log error and create error notification
+            # 先把会话倒干净再写通知：扫描要是死在 flush 上（撞唯一约束就是这样），
+            # 会话就带着 PendingRollback 状态到了这里，紧接着的 INSERT 只会再抛一次，
+            # 被下面那个 `except` 吞掉——于是"失败一定发通知"这条路径在最需要它的
+            # 那种失败上是死的。真机上的现场就是 0 条 scan_error 配上一整日志的
+            # IntegrityError 回溯。
+            await session.rollback()
             try:
                 notification_service = NotificationService(session)
                 await notification_service.create(
@@ -43,6 +48,7 @@ async def scan_all_active_task() -> None:
             await service.scan_all_active()
         except Exception as e:
             logger.exception("Full active scan failed")
+            await session.rollback()  # 同上：脏会话写不进通知
             try:
                 notification_service = NotificationService(session)
                 await notification_service.create(

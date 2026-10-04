@@ -725,3 +725,50 @@ async def test_new_subtitle_for_existing_video_announces(db_session, tmp_path):
         ("scan_complete", "视频源 字幕源 扫描完成，发现 1 个新视频"),
         ("scan_complete", "视频源 字幕源 扫描完成，发现 0 个新视频、1 条字幕"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_two_sources_over_one_directory_do_not_collide(db_session, tmp_path):
+    """同一个目录被两个源指着是配置失误，不是每轮都去撞一次数据库约束的理由。
+
+    `videos.filepath` 上有唯一约束，而"这文件我认识"的判定只看**本源的**行，所以
+    别源已经建过的路径会被当成新文件重插一次：真机上 source 5 和 source 6 都指向
+    `backend/data/test_videos`，每轮定时扫描对每个撞车的文件都留下一次
+    `duplicate key value violates unique constraint "videos_filepath_key"`。每个文件
+    外面确实有一层 SAVEPOINT 兜着（所以整轮没炸），但这条路径本该在插之前说清楚。
+    """
+    _write_video(str(tmp_path), "共享的一部.mp4")
+    first = await _create_source(db_session, name="先建的源", path=str(tmp_path))
+    second = await _create_source(db_session, name="后来那个源", path=str(tmp_path))
+
+    with _no_media_probe():
+        await ScanService(db_session).scan_source(first.id)
+        result = await ScanService(db_session).scan_source(second.id)
+
+    assert result["new_videos"] == 0
+    assert result["foreign_paths"] == 1
+    rows = (await db_session.execute(select(Video).order_by(Video.id))).scalars().all()
+    assert [row.source_id for row in rows] == [first.id]
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_path_does_not_take_the_rest_of_the_listing_down(
+    db_session, monkeypatch
+):
+    """撞车只该影响它自己那一个文件：同一份清单里真正的新片仍然要建得出来。"""
+    store = _FakeStorage(files=[_found("/lib/a.mp4")])
+    _patch_storage(monkeypatch, store)
+    first = await _create_source(db_session, name="已有影片库", path="/lib")
+    second = await _create_source(db_session, name="重叠的第二个源", path="/lib")
+
+    with _no_media_probe():
+        await ScanService(db_session).scan_source(first.id)
+        store.files = [_found("/lib/a.mp4"), _found("/lib/只有这轮才出现.mp4")]
+        result = await ScanService(db_session).scan_source(second.id)
+
+    assert result["new_videos"] == 1
+    assert result["foreign_paths"] == 1
+    owned = (
+        await db_session.execute(select(Video.filepath).where(Video.source_id == second.id))
+    ).scalars().all()
+    assert list(owned) == ["/lib/只有这轮才出现.mp4"]

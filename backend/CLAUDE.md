@@ -396,6 +396,7 @@ class Video(Base):
 
 - **`utils/` 不能 import `src.storage`**：`storage/__init__.py` 会加载两份实现，实现又依赖 utils，一 import 就绕成环、服务起不来。所以"什么算视频文件"留在 `utils/file_scanner.py`，首尾各 1MB 的摘要算法留在 `utils/file_fingerprint.py`，由存储层反向引用它们
 - **locator 的字符串形状就是扫描去重的键**：`filepath` 靠全等比对，分隔符差一个就会让整库既"全部新增"又"全部丢失"。`LocalMediaStorage.list_videos()` 直接复用原来那份 `scan_directory()`（`os.walk` + `os.path.join`）就是为了这一点；要动路径拼接，先看 `tests/test_storage/test_local_storage.py` 里那几条逐字节比对
+- **`videos.filepath` 的唯一约束是全库的，而扫描的"认识哪些文件"只按本源查**：`scan_service` 里那句 `existing` 过滤带 `source_id`，所以两个源指向同一个目录（或一个目录被挂两次）时，别源建过的路径会看着像新片。每文件外面那层 `begin_nested()`（SAVEPOINT）确实兜得住，整轮不会炸——代价是每个撞车文件每轮撞一次唯一约束、日志刷一整段回溯，而界面上永远看不到"这片子是别的源建的"。所以插之前先 `select(Video.source_id).where(Video.filepath == filepath)` 问一次归属，有主就跳过并计入 `foreign_paths`（`tests/test_services/test_scan_service.py`）
 - **Windows 的 junction 会被走进**：`os.path.islink()` 对 junction 回 `False`，`os.walk` 因此把它当普通目录递归——源目录里放一个指向第二块盘的联接点，那块盘就一起进库，这正是跨盘片库想要的形状。权限闸门不在遍历，而在"只有 owner 能加视频源"（他能加的本来就包括整块盘），所以**别在 `scan_directory` 里加 realpath 判定**：那会把跨盘的库扫成半套。这条形状由 `tests/test_utils/test_file_scanner.py::test_a_junction_is_walked_into` 用真 junction 钉住（非 Windows 自动跳过，POSIX 软链的行为相反）
 - **够不着不等于空**：只有 `reachable()` 为真才允许把记录标成丢失。凭证写错、挂载盘掉线都走 `reachable() == False`，此时列表当空处理但一行都不判定
 - **能力问 `capabilities`，别嗅探 `s3://`**：`local_path` 是真正承重的位——FFmpeg 得在文件里 seek，对象存储给不了，于是缩略图、转码、内嵌字幕一起关闭；`sidecar_subtitles` 管外挂字幕那条路。拿不到本地路径的路由返回中文 400，不是 500
@@ -490,6 +491,7 @@ async with async_session_maker() as session:
 # 错误：不要在异步函数中使用同步会话
 ```
 
+- **失败通知不能写在刚失败的那个会话上**：`scheduler/tasks.py` 的 `except` 里原本直接拿扫描用的会话建 `scan_error`，而扫描要是死在 `flush()` 上（撞唯一约束就是这个形状），会话已经带着 `PendingRollback` 状态进了这个分支，紧接着那条 INSERT 只会再抛一次，被下一层 `except Exception: logger.exception(...)` 无声咽掉。真机上的现场因此是「0 条 `scan_error` 配上一整日志的 `IntegrityError` 回溯」——承诺"失败一定发通知"的路径，恰好在最需要它的失败形状上是死的。写通知前先 `await session.rollback()`（用例：`tests/test_scheduler_scan.py`）
 ### 2. 关系加载
 
 ```python

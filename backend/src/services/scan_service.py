@@ -187,7 +187,7 @@ class ScanService:
         """Scan a single video source for new videos and subtitles.
 
         Returns a summary dict with keys: source_id, files_found, new_videos,
-        subtitles_found.
+        subtitles_found, foreign_paths.
         """
         source_result = await self.session.execute(
             select(VideoSource).where(VideoSource.id == source_id)
@@ -202,6 +202,7 @@ class ScanService:
         new_videos = 0
         subtitles_found = 0
         missing_flips = 0
+        foreign_paths = 0
 
         with _tracked_scan():
             _scan_state["current_source"] = source.name
@@ -243,6 +244,23 @@ class ScanService:
                         filepath,
                         known_subtitles,
                         storage,
+                    )
+                    continue
+
+                # `videos.filepath` 是全库唯一的，而上面的 `existing` 只装了本源的行：
+                # 两个源指向同一个目录（或一个目录被挂了两次）时，别源已经建过的那条
+                # 路径在这里看着像新片。留着不管也能靠每文件那层 SAVEPOINT 兜住，代价
+                # 是每轮定时扫描对每个撞车的文件都撞一次唯一约束、在日志里刷一段完整
+                # 的 IntegrityError 回溯，而界面上永远不会说"这片子是别的源建的"。
+                holder = (
+                    await self.session.execute(
+                        select(Video.source_id).where(Video.filepath == filepath)
+                    )
+                ).scalar_one_or_none()
+                if holder is not None:
+                    foreign_paths += 1
+                    logger.info(
+                        "跳过 %s：这条路径已属于视频源 %d", filepath, holder
                     )
                     continue
 
@@ -350,6 +368,7 @@ class ScanService:
             "files_found": files_found,
             "new_videos": new_videos,
             "subtitles_found": subtitles_found,
+            "foreign_paths": foreign_paths,
         }
 
     async def scan_all_active(self) -> dict:

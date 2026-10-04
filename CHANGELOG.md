@@ -2,6 +2,18 @@
 
 ## 2026-10-05
 
+### 修复：两个视频源指向同一目录时每轮定时扫描都在刷回溯，而那条本该报出问题的 `scan_error` 通知从来没落地过
+
+- **动因**：验证上一单（备份补跑）时在真机器上留下的日志里，每 30/60 分钟就刷一段完整的 `IntegrityError` 回溯：`duplicate key value violates unique constraint "videos_filepath_key"`。原因是 `video_sources` 里 5 号和 6 号都指着 `backend/data/test_videos`（6 号是转码走查时留下的），而"这个文件我认识吗"的判断只看**本源**的行，别源建过的路径就被当成新片重插一次
+- **第一个假设被自己的复现打脸**：以为撞一次唯一约束会把整轮扫描带走。真写用例跑，两条都绿——`scan_service.py` 每个文件外面套着一层 `begin_nested()`（SAVEPOINT），单次失败只回滚那一个文件。所以缺陷不是"整轮炸"，是另外两件事，下面分开修
+- **改法 A（`scan_service.py`）**：插之前先问一句这条路径归谁（`select(Video.source_id).where(Video.filepath == filepath)`），有主了就 `logger.info` 跳过并计入新加的 `foreign_paths`，返回值与 docstring 一并带上这个键。为什么不"撞了让 SAVEPOINT 救"：撞一次日志就是一整段回溯、每轮对每个撞车文件重撞一次，而界面上永远看不到"这片子是别的源建的"
+- **改法 B（`scheduler/tasks.py`）才是这单真正的死路**：`except` 里直接拿**刚被失败 flush 弄脏的那个会话**去写通知，那条 `create()` 自己就抛 `PendingRollbackError`，再被下一层 `except Exception: logger.exception(...)` 咽掉。真机现场因此是「0 条 `scan_error` 配上一整日志的 `IntegrityError` 回溯」——"扫描失败一定发通知"这条承诺，恰好在最需要它的失败形状上是死的。修法是写通知之前 `await session.rollback()`，两处（单源与全量）都补
+- **先红**：`tests/test_services/test_scan_service.py` 新增两条在 HEAD 上报 `KeyError: 'foreign_paths'`（其中一条同时暴露 SAVEPOINT 之后同会话下一查的 `PendingRollbackError`——撞一次不能把同一份清单里那部真正的新片一起带走），`tests/test_scheduler_scan.py`（新增文件，2 条）报的是 `PendingRollbackError`；四条都在 HEAD 的 `git worktree` 里验过红，补完实现两种方言各绿
+- **顺带记下但没动的数据问题**：`video_sources` 的 1–4 号指向的路径根本不存在（`/data/videos`、`/tmp/test_videos`、`/tmp/api_test`、`/tmp/api_test2`），却都是 `is_active=t`，每轮扫一次空目录。删行是动真库的数据，留给用户点头
+- **验证**：真 SQLite（`TEST_DATABASE_URL=`）**716 passed + 1 skipped**、PostgreSQL **717 passed**，两套串行；`src/scheduler/tasks.py` **62% → 92%**、`scan_service.py` **96%**；`ruff check .` **0 项**、`mypy src` **34 项**（与上一单同数，改过的两个文件各零项）；打真后端的 e2e **3 passed**（10.8s，扫描这条路径由真 uvicorn 走了一遍）
+- **真机复核（throwaway 脚本直连 `home_sites` 各扫一遍 5 号与 6 号源，用完即删）**：两边都是 `files_found=6, new_videos=0, foreign_paths=3`，日志里是六行「跳过 …：这条路径已属于视频源 N」，**一段回溯都没有**；`notifications` 仍是 4 行（零新增照旧不吭声，#85 那条约定没被破坏）。顺带量到真实的数据形状：这两个源把同一个目录**对半分**了（5 号占 `sample_1..3.mp4`，6 号占 `long_720p.mp4` 与 `sub/` 下两条），所以撞车不是"某一个源是多余的"，而是历史插入顺序把同一批文件劈成了两半——这一单没去动它
+- **生效条件**：:8000 已重启到这份工作树（PID 40184，日志 `data/dev-102.log` / `dev-102.err.log`），下一轮定时扫描起就走新路径
+
 ### 修复：`GET /api/tags/{id}/videos` 的 500——响应模型要读的关系，得写进查询里
 
 - **怎么撞出来的**：跑全量带覆盖率的套件时偶然红了一条，`GET /api/tags/{id}/videos` 回 500，`api/tags.py:118` 那里报 `ResponseValidationError: {'loc': ('response', 0, 'tags'), 'msg': "Error extracting attribute: MissingGreenlet: greenlet_spawn has not been called"}`。同一套用例重跑又是绿的——它取决于会话里那枚 `Video` 实例当时冷不冷
