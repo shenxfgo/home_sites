@@ -2,6 +2,22 @@
 
 ## 2026-10-05
 
+### 新增：真后端 e2e 加到 10 条——同一个目录挂两个源，扫它不出重复片、删它不伤别人的片子
+
+- **动因**：`videos.filepath` 是**全库唯一**的，而"两个源指向同一个目录"恰好是这个约束唯一的日常成因（#102：那样每轮扫描都会撞一次 `IntegrityError`）。这个数据形状在此前九条真库用例里一次没出现过——播种只留一个源，替身夹具更是连唯一约束都没有：`page.route` 给什么前端就信什么，"重复插一行"这种事在替身侧根本不构成错误。同一批还没人签字的是源本身的读写面：`last_scan_at` 只有 `scan_service.py:330` 一个写入方，界面上那格「从未」到底是 null 还是没渲染；而 `source_service.delete` 的谓词写反一位字符就会删掉别人的片子。
+- **用例 10（同目录双源）**：先读 `GET /api/sources`，把播种那个源逐字段钉住（名字 `E2E local`、`type=local`、`is_active`、`scan_interval=3600`），其中 `last_scan_at` **必须非 null**——它是播种那趟真扫描盖上去的，界面上那一格因此不是「从未」。然后在页面上走完整个生命周期：「添加视频源」填同名不同叫法、路径**照抄**播种那个源的路径，`POST /api/sources/{id}/scan` 扫它，断言 `files_found=1`（文件确实被看到了，否则"没新增"只是因为扫了个空目录）而 `new_videos=0`（#102 的不变量）；库里仍然只有一部片子、`source_id` 仍是 1、`/api/videos/1/thumbnail` 仍然回一张非空的封面（归属没被抢走）；时间戳只盖在被扫的那一个源上，源 1 那一格仍是播种时的**同一个字符串**。最后从界面点删除、走 `ElMessageBox` 确认，回到只剩播种那一个源，而**那部片子和它的封面字节数一个都没变**。
+- **红在先（这条钉的也是既有契约，所以照样用变异证明能红——但这三次结果是"两次红、一次绿"，那一次绿本身就是这一单的发现）**：
+  - `scan_service.py:330` 的 `source.last_scan_at = datetime.now(timezone.utc)` 注释掉 → 红在 `expect(seeded?.last_scan_at).not.toBeNull()`（`:525`）。这一句顺带证明「从未」那格读的确实是这个字段。
+  - `source_service.py:99` 的谓词 `Video.source_id == source_id` 写成 `!=` → 红在 `expect(afterDelete.total).toBe(1)`（`:588`，实测 **Expected 1 / Received 0**）：删第二个源把第一个源的片子带走了。这是这一单最想要的证据——**这个操作在替身夹具里连数据都不会变**，删错了也没人知道。
+  - `scan_service.py:260` 那道跨源 `holder` 跳过改成 `if False:`（等于把 #102 的修复还原）→ **用例照样绿**（`1 passed`）。但 uvicorn 日志里露出了当年的原症状：`asyncpg.exceptions.UniqueViolationError: duplicate key value violates unique constraint "videos_filepath_key"`，紧跟着 SQLAlchemy 的 `IntegrityError`。根因在 `scan_service.py:323-327`：每个文件各自一个 `try/except Exception` + SAVEPOINT，所以唯一约束冲突当场被吞掉、`new_videos` 依然是 0、HTTP 依然 200。**#102 修的是日志里的那一坨堆栈，不是界面上的任何一个数**——而 HTTP 层看不出区别，所以这条用例守的是**不变量**（全局唯一 filepath ⇒ 不产生重复行、不 500、不抢归属），不是那处修复。这与 #106 记下的"两道闸门冗余、只摘一道不会红"是同一类发现：**缝能守住结果，守不住过程；过程只有一份日志。**
+  - 两次变异各改各的文件、各跑一次 `-g 同一个目录`（只命中这一条）、每次 `git checkout --` 后立即核对 `git status` 只剩本单要交的那一个文件，无 `DEBUG-` 残留。
+- **踩到的两处接线**：一是扫描端点的路径（router prefix 本身就是 `/api`，真调的是 `POST /api/sources/{id}/scan`，照着 axios 组件里的 `/sources/${id}/scan` 拼会 404）；二是 `GET /api/videos` 回的是 `{total, items}`，对它用整对象 `toEqual` 会连带 `items` 一起比，这条只需要 `total`，就单独 `JSON.parse(...) as { total: number }` 取一个字段——与上一单 `ScanResultResponse` 那三个 `| None` 字段是同一个教训。
+- **为什么它排在最后**：它新建源、扫一遍、再删掉，末尾是把 `GET /api/sources` 整张表当成"只剩播种那一个"来断言的——放在任何一条前面都可能把别人数源的断言弄红。也因此**播种不能预置第二个源**。
+- **文档同步**：`README.md`、`CLAUDE.md`、`frontend/CLAUDE.md` 三处计数 9 → 10；`frontend/CLAUDE.md` 的顺序段从"九条"改"十条"，补了第 10 条为什么排最后、`/api/sources/{id}/scan` 那个前缀坑，以及证明能红用的第三条 `-g` 命令；`backend/CLAUDE.md` 的 §真后端 e2e 补一句"源表只留一个，预置第二个就会弄红这条用例"。
+- **验证**：打真后端的 e2e **10 passed**（单 worker 串行，28.5 秒，三次变异全部还原之后重跑）；`-g 同一个目录` 单独跑 **1 passed**（8.9 秒）；后端 PostgreSQL 全量 **718 passed**（被变异过的两个后端文件还原后整跑一遍才是证据）；`typecheck:test` 绿；前端单测 **279 passed**、桩 e2e **82 passed**；`ruff check .` **0 项**、`mypy src` **34 项**（基线同数，本单未提交任何后端代码改动）。
+- **覆盖面现状**：浏览器用例总数实测 **92** 条——打真库 **10** 条，其余 **82** 条继续对着 `e2e/fixtures.ts` 的替身。仍然零真库签字的读路径：设置（系统配置那套键值，播种从不写 `settings` 表）、搜索与筛选的分面。
+
+
 ### 新增：真后端 e2e 加到 9 条——通知是广播的、已读是按人的，而"零新增那一轮"从此发不出通知
 
 - **动因**：#85 修的是"定时扫描每轮同一条链路写两行、零新增也照发"，把通知流刷成一堵墙的那种 bug。它的修复只有两道**观察面**：`scan_service.py:347` 那道"库没变就不发"的闸门，和 `notification_reads` 那张 `(notification_id, user_id)` 复合主键表。前者在替身夹具里根本不存在（夹具给一份写死的列表，扫不扫都一样），后者要求**两个人对同一条记录有不同状态**——替身只有一份 `read`。这一单把这两面一起接到真库上。

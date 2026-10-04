@@ -497,3 +497,98 @@ test('通知是广播的、已读是按人的：同批文件再扫一遍零新�
   expect(denied.status).toBe(403)
   expect((await readNotifications(page)).total).toBe(1)
 })
+
+/** `GET /api/sources` 里这条用例真正在用的那几项。 */
+type SourceRow = {
+  id: number
+  name: string
+  path: string
+  type: string
+  is_active: boolean
+  scan_interval: number
+  last_scan_at: string | null
+}
+
+async function readSources(page: Page): Promise<SourceRow[]> {
+  return JSON.parse((await fetchInPage(page, '/api/sources')).text) as SourceRow[]
+}
+
+test('同一个目录挂两个源：扫它不出重复片，删它不伤第一个源那部片子', async ({ page }) => {
+  // `videos.filepath` 是全库唯一的，所以"两个源指向同一个目录"这件事只有真库能回答：
+  // 替身给不出一次唯一约束冲突，也给不出一个"服务端刚写上去"的扫描时刻。
+  const [seeded] = await readSources(page)
+  expect(seeded?.name).toBe('E2E local')
+  expect(seeded?.type).toBe('local')
+  expect(seeded?.is_active).toBe(true)
+  expect(seeded?.scan_interval).toBe(3600)
+  // 播种那趟真扫描盖的时间戳（`scan_service.py:330`），界面上那一格因此不是「从未」
+  expect(seeded?.last_scan_at).not.toBeNull()
+
+  await page.goto('/sources')
+  const firstCard = page.locator('.source-card', { hasText: 'E2E local' })
+  await expect(firstCard).toHaveCount(1)
+  await expect(firstCard.locator('.path-value')).toHaveText(seeded?.path ?? '')
+  await expect(firstCard.locator('.info-row', { hasText: '上次扫描' })).not.toContainText('从未')
+
+  // 第二个源指向**同一个目录**——真库里那两个源就是这么来的（#102 的现场形状）
+  await page.locator('.page-header button', { hasText: '添加视频源' }).click()
+  const dialog = page.locator('.el-dialog')
+  await dialog.locator('input[placeholder="例如：我的NAS"]').fill('E2E 同目录')
+  await dialog.locator('input[placeholder^="例如：/mnt/videos"]').fill(seeded?.path ?? '')
+  await dialog.getByRole('button', { name: '创建' }).click()
+  await expect(page.locator('.source-card')).toHaveCount(2)
+
+  const sources = await readSources(page)
+  const second = sources.find((entry) => entry.name === 'E2E 同目录')
+  const secondId = second?.id
+  expect(secondId).toBeTruthy()
+  expect(second?.path).toBe(seeded?.path)
+  expect(second?.last_scan_at).toBeNull()
+
+  // 扫第二个源：那部片子已经属于源 1，路径撞在全库唯一约束上，于是一行都不许多
+  const scanned = await fetchInPage(page, `/api/sources/${secondId}/scan`, {
+    method: 'POST',
+    headers: CSRF,
+  })
+  expect(scanned.status).toBe(200)
+  const counted = JSON.parse(scanned.text) as { files_found: number; new_videos: number }
+  expect(counted.files_found).toBe(1) // 文件确实被看到了，不是"扫了个空目录所以当然没新增"
+  expect(counted.new_videos).toBe(0)
+
+  // 时间戳只盖在被扫的那一个源上（源 1 那一格还是播种时的同一个值，精确到字符串）
+  const afterScan = await readSources(page)
+  expect(afterScan.find((entry) => entry.id === secondId)?.last_scan_at).not.toBeNull()
+  expect(afterScan.find((entry) => entry.id === 1)?.last_scan_at).toBe(seeded?.last_scan_at)
+
+  const library = JSON.parse((await fetchInPage(page, '/api/videos')).text) as {
+    total: number
+    items: { id: number; title: string; source_id: number }[]
+  }
+  expect(library.total).toBe(1)
+  // 归属没被第二个源抢走，也没多出一条重复的行
+  expect(library.items.map((entry) => [entry.id, entry.title, entry.source_id])).toEqual([
+    [1, 'e2e sample', 1],
+  ])
+
+  // 删掉第二个源（界面上要过确认框）：第一个源那部片子和**磁盘上那张封面**都不能受牵连
+  // ——删除视频源那条路径出过 500，而"删源的时候把封面文件也删了"是另一单修过的。
+  const cover = await fetchInPage(page, '/api/videos/1/thumbnail')
+  expect(cover.status).toBe(200)
+  expect(cover.bytes).toBeGreaterThan(0)
+
+  await page.reload()
+  await page
+    .locator('.source-card', { hasText: 'E2E 同目录' })
+    .getByRole('button', { name: '删除' })
+    .click()
+  await page.locator('.el-message-box').getByRole('button', { name: '删除' }).click()
+  await expect(page.locator('.source-card')).toHaveCount(1)
+
+  const afterDelete = JSON.parse((await fetchInPage(page, '/api/videos')).text) as { total: number }
+  expect(afterDelete.total).toBe(1)
+  const coverAfter = await fetchInPage(page, '/api/videos/1/thumbnail')
+  expect(coverAfter.status).toBe(200)
+  expect(coverAfter.bytes).toBe(cover.bytes)
+  const remaining = await readSources(page)
+  expect(remaining.map((entry) => entry.name)).toEqual(['E2E local'])
+})
