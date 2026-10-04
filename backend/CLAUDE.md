@@ -547,7 +547,7 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 
 下面那份薄位置清单是**修正后**重测的（SQLite 全量 717 passed + 1 skipped，TOTAL 92%，2026-10-05 复量；清单里个别条目另标了自己更晚的重量时间）：
 
-- `utils/ffmpeg.py` **23%**——转码要真 FFmpeg 和真片子才跑得动，桩不出真形状没有意义
+- `utils/ffmpeg.py` **23%**——转码要真 FFmpeg 和真片子才跑得动，桩不出真形状没有意义。真跑那一趟现在有了（`frontend/e2e/real/transcode.real.spec.ts` 那条第 14 用例，真 FFmpeg 写出真文件、真读文件头），但它活在另一个进程里、不进这份读数，和下面 `api/stream.py` 那条同理
 - `scheduler/tasks.py` **62%**（2026-10-05 补上启动补跑之后重量的，此前 57%）——缺的还是 `scan_source_task` / `scan_all_active_task` 两个包装的函数体（自己开会话、把异常变成一条 `scan_error` 通知）；测试和被调的定时任务都是直接走 `ScanService`，只有两条备份任务（每晚 + 启动补跑）是端到端测过的
 - `src/e2e_seed.py` **55%**（2026-10-05 加第二个账号之后重量的，PostgreSQL 全量 718 passed，此前 58%）——一次性库的播种与重置，主要活在打真后端的 e2e 那个进程里，pytest 进程只 import 和调其中一部分（`seed()` 整段 177–280 行没人走，它要真 PG、真媒体目录和真 FFmpeg；`seed_user_stats` 从 2026-10-05 起有一条用例直接过它）
 - `api/settings.py` **100%**（2026-10-05 补齐系统配置那一面之后重量的，PostgreSQL 全量 725 passed，此前 71%）——先前缺的就是整份 `PUT` 和单键读写这几条端点：`test_preferences.py` 只测过白名单拒绝和一次单键写入，`GET /api/settings` 的默认值那一路反而没人走

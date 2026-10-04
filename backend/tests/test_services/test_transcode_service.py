@@ -107,6 +107,37 @@ async def test_transcode_rejects_overwriting_source(db_session, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_target_format_is_normalized_before_the_encoder_sees_it(
+    db_session, tmp_path, monkeypatch
+):
+    """闸门大小写不敏感，编码器查表大小写敏感——两边必须拿到同一个值。
+
+    ``check_format_support("MKV")`` 认了，``SUPPORTED_FORMATS.get("MKV")`` 却没有，
+    于是接口先回 200「已启动」，任务再在后台失败成「不支持的格式：MKV」。这条用例把
+    真正传给编码器的那个字符串钉住（其余用例都把 ``transcode_video`` 整个换掉，参数
+    是什么没人看），顺带钉住输出文件的扩展名也跟着归一。
+    """
+    _silence_notifications(monkeypatch)
+    video = await _create_video(db_session, tmp_path)
+    calls = []
+
+    async def spy(input_path, output_path, target_format, **kwargs):
+        calls.append((output_path, target_format))
+        return True, None
+
+    monkeypatch.setattr(tc_module, "transcode_video", spy)
+
+    started = await TranscodeService(db_session).transcode(video.id, "MKV")
+    await tc_module._jobs[video.id].task
+
+    assert started["target_format"] == "mkv", started
+    assert started["output_path"] == str(tmp_path / "movie.mkv"), started
+    assert calls == [(str(tmp_path / "movie.mkv"), "mkv")], calls
+    status = await TranscodeService(db_session).get_status(video.id)
+    assert status["status"] == "completed", status
+
+
+@pytest.mark.asyncio
 async def test_status_and_progress_shared_across_service_instances(
     db_session, tmp_path, monkeypatch
 ):

@@ -47,6 +47,11 @@ class TranscodeService:
 
     async def transcode(self, video_id: int, target_format: str) -> dict:
         """Start transcoding a video."""
+        # 归一在这里做，不在闸门里做：闸门 ``check_format_support`` 大小写不敏感，而
+        # 编码器查表和输出文件的扩展名用的都是原串。只归一其中一处，"MKV" 会先被闸门
+        # 放行（HTTP 200「已启动」），再在后台失败成「不支持的格式：MKV」。
+        target_format = target_format.lower()
+
         # Validate format
         if not check_format_support(target_format):
             raise ValueError(f"Unsupported format: {target_format}")

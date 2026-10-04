@@ -20,51 +20,14 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'no
 import { createHash } from 'node:crypto'
 import { join, sep } from 'node:path'
 
-import { E2E_DIR, E2E_MEMBER_USERNAME, E2E_PASSWORD, E2E_USERNAME, MEDIA_DIR, THUMBNAIL_DIR } from './env'
-
-/** 非 GET 都要带这个头，中间件先查它再查角色（顺序写在 `middleware/auth.py`）。 */
-const CSRF = { 'x-requested-with': 'fetch' }
-
-async function signIn(page: Page, username: string = E2E_USERNAME): Promise<void> {
-  // 先交出手里那张 cookie：/login 对已登录的人是直接送回首页的，表单压根不渲染（真库实测
-  // 过一次 30 秒超时）。一轮里要换两次身份，所以这一步写在函数里而不是每个调用点抄一遍。
-  await page.context().clearCookies()
-  await page.goto('/login')
-  await page.locator('#login-username').fill(username)
-  await page.locator('#login-password').fill(E2E_PASSWORD)
-  await page.locator('.submit').click()
-  await expect(page).toHaveURL(/\/$/)
-}
+import { E2E_DIR, E2E_MEMBER_USERNAME, E2E_USERNAME, MEDIA_DIR, THUMBNAIL_DIR } from './env'
+// 登录、带 cookie 发请求这两件事现在住在 `support.ts`，因为打真后端的 spec 已经有两份了：
+// 一个页面改了，两处都该跟着红，而不是只红一份。但钩子必须各自注册（理由见 `support.ts` 文件头）。
+import { CSRF, fetchInPage, signIn } from './support'
 
 test.beforeEach(async ({ page }) => {
   await signIn(page)
 })
-
-/** 在页面里发请求，凭的是浏览器刚从真登录接口拿到的那张 cookie。 */
-async function fetchInPage(
-  page: Page,
-  path: string,
-  init: {
-    headers?: Record<string, string>
-    method?: string
-    body?: string
-  } = {},
-): Promise<{ status: number; contentType: string; contentRange: string | null; bytes: number; text: string }> {
-  return page.evaluate(
-    async ({ path, init }) => {
-      const response = await fetch(path, init)
-      const body = await response.arrayBuffer()
-      return {
-        status: response.status,
-        contentType: response.headers.get('content-type') ?? '',
-        contentRange: response.headers.get('content-range'),
-        bytes: body.byteLength,
-        text: new TextDecoder().decode(body),
-      }
-    },
-    { path, init },
-  )
-}
 
 test('真表单登录后，首页渲染出扫描出来的那一行', async ({ page }) => {
   await expect(page.locator('.top-nav')).toBeVisible()
