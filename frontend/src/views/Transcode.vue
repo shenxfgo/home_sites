@@ -37,7 +37,16 @@ const video = ref<Video | null>(null)
 const formats = ref<FormatInfo[]>([])
 const selectedFormat = ref('')
 const transcodeStatus = ref<TranscodeStatus | null>(null)
+const statusFetchError = ref<string | null>(null)
 const transcoding = ref(false)
+
+/**
+ * 拦截器（`api/client.ts`）把服务端的 detail 摊成一句话后 reject 的是一个新
+ * Error，`error.response` 早就不在上面了 —— 想让人看到原因，只能读 message。
+ */
+function errorReason(error: unknown): string | null {
+  return error instanceof Error && error.message ? error.message : null
+}
 
 const filename = computed(
   () => video.value?.filepath.split(/[/\\]/).pop() ?? '',
@@ -73,7 +82,7 @@ const fetchVideo = async () => {
     const response = await api.get(`/videos/${videoId.value}`)
     video.value = response.data
   } catch (error) {
-    ElMessage.error('获取视频信息失败')
+    ElMessage.error(`获取视频信息失败：${errorReason(error) ?? '未知原因'}`)
     router.push('/')
   }
 }
@@ -83,7 +92,8 @@ const fetchFormats = async () => {
     const response = await api.get('/transcode/formats')
     formats.value = response.data
   } catch (error) {
-    console.error('获取格式列表失败:', error)
+    // 格式列表空着，页面上既选不了目标格式也没有一句解释，比报错更难查
+    ElMessage.error(`获取格式列表失败：${errorReason(error) ?? '未知原因'}`)
   }
 }
 
@@ -91,6 +101,7 @@ const fetchStatus = async () => {
   try {
     const response = await api.get(`/transcode/${videoId.value}/status`)
     transcodeStatus.value = response.data
+    statusFetchError.value = null
     if (transcodeStatus.value?.status === 'completed' && pollTimer) {
       ElMessage.success('转码完成')
     }
@@ -98,7 +109,12 @@ const fetchStatus = async () => {
       ElMessage.error(transcodeStatus.value.error ?? '转码失败')
     }
   } catch (error) {
-    console.error('获取转码状态失败:', error)
+    statusFetchError.value = errorReason(error) ?? '状态接口没有回应'
+    // 轮询 1.5 秒一次，每条失败都弹一层 toast 就会把屏幕刷成一堵墙；
+    // 只有用户主动来看（还没开始轮询）的那一次才说出口。
+    if (!pollTimer) {
+      ElMessage.error(`获取转码状态失败：${statusFetchError.value}`)
+    }
   }
 }
 
@@ -142,9 +158,10 @@ const startTranscode = async () => {
     ElMessage.success('转码任务已启动')
     await fetchStatus()
     startPolling()
-  } catch (error: any) {
+  } catch (error) {
+    // ElMessageBox 取消时 reject 的是字符串 'cancel'，不是 Error
     if (error !== 'cancel') {
-      ElMessage.error(error.response?.data?.detail || '转码失败')
+      ElMessage.error(errorReason(error) ?? '转码失败')
     }
   } finally {
     transcoding.value = false
@@ -163,9 +180,9 @@ const cancelTranscode = async () => {
     ElMessage.success('转码已取消')
     stopPolling()
     await fetchStatus()
-  } catch (error: any) {
+  } catch (error) {
     if (error !== 'cancel') {
-      ElMessage.error(error.response?.data?.detail || '取消失败')
+      ElMessage.error(errorReason(error) ?? '取消失败')
     }
   }
 }
@@ -184,6 +201,7 @@ watch(
     stopPolling()
     videoId.value = Number(id)
     transcodeStatus.value = null
+    statusFetchError.value = null
     loadAll()
   }
 )
@@ -270,6 +288,9 @@ onUnmounted(stopPolling)
               {{ statusLabel || '未知' }}
             </el-tag>
           </el-descriptions-item>
+          <el-descriptions-item v-if="statusFetchError" label="状态获取失败">
+            <span class="status-fetch-error">{{ statusFetchError }}</span>
+          </el-descriptions-item>
           <el-descriptions-item v-if="transcodeStatus?.target_format" label="目标格式">
             {{ transcodeStatus.target_format.toUpperCase() }}
           </el-descriptions-item>
@@ -338,6 +359,12 @@ onUnmounted(stopPolling)
 
 .status-error {
   color: var(--el-color-danger);
+  word-break: break-all;
+}
+
+/* 状态接口挂了时面板上还留着上一次的值，用告警色和「失败原因」的红色区分开 */
+.status-fetch-error {
+  color: var(--el-color-warning);
   word-break: break-all;
 }
 </style>

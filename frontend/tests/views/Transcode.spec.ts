@@ -10,18 +10,31 @@ const env = vi.hoisted(() => ({
   video: null as Record<string, unknown> | null,
   status: null as Record<string, unknown> | null,
   formats: [] as Record<string, unknown>[],
+  // 拦截器（src/api/client.ts）在服务端返回 detail 时 reject 的是一个新的
+  // Error，只留一句人话，不再带 response。替身照这个形状失败，用例才测得到
+  // 视图有没有把那句原因显示出来。
+  failGet: [] as { on: string; message: string }[],
+  failPost: [] as { on: string; message: string }[],
 }))
+
+function rejectionFor(table: { on: string; message: string }[], url: string) {
+  return table.find((entry) => url.includes(entry.on))?.message ?? null
+}
 
 vi.mock('@/api/client', () => ({
   default: {
     get: (url: string) => {
       env.get.push(url)
+      const failure = rejectionFor(env.failGet, url)
+      if (failure) return Promise.reject(new Error(failure))
       if (url === '/transcode/formats') return Promise.resolve({ data: env.formats })
       if (url.endsWith('/status')) return Promise.resolve({ data: env.status })
       return Promise.resolve({ data: env.video })
     },
     post: (url: string, data?: unknown) => {
       env.post.push({ url, data })
+      const failure = rejectionFor(env.failPost, url)
+      if (failure) return Promise.reject(new Error(failure))
       return Promise.resolve({ data: {} })
     },
   },
@@ -49,6 +62,8 @@ describe('Transcode view', () => {
   beforeEach(() => {
     env.get = []
     env.post = []
+    env.failGet = []
+    env.failPost = []
     env.formats = [{ format: 'webm', codec: 'libvpx-vp9', extension: 'webm' }]
     env.video = {
       id: 7,
@@ -182,6 +197,102 @@ describe('Transcode view', () => {
     await flushPromises()
 
     expect(buttonByText(wrapper, '开始转码').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('shows the server reason when the video cannot be loaded', async () => {
+    env.failGet = [{ on: '/videos/', message: '视频不存在' }]
+
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    expect(ElMessage.error).toHaveBeenCalledWith(expect.stringContaining('视频不存在'))
+    wrapper.unmount()
+  })
+
+  it('says why the format list is empty instead of only logging it', async () => {
+    env.failGet = [{ on: '/transcode/formats', message: '转码服务未就绪' }]
+
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    expect(ElMessage.error).toHaveBeenCalledWith(expect.stringContaining('转码服务未就绪'))
+    wrapper.unmount()
+  })
+
+  it('toasts the reason once when the very first status request fails', async () => {
+    env.failGet = [{ on: '/status', message: '请求超时' }]
+
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    expect(ElMessage.error).toHaveBeenCalledTimes(1)
+    expect(ElMessage.error).toHaveBeenCalledWith(expect.stringContaining('请求超时'))
+    expect(wrapper.find('.status-fetch-error').text()).toBe('请求超时')
+    wrapper.unmount()
+  })
+
+  it('keeps a polling failure on the panel instead of stacking toasts', async () => {
+    env.status = idleStatus({ is_transcoding: true, status: 'running' })
+    vi.useFakeTimers()
+
+    const wrapper = mount(Transcode)
+    await flushPromises()
+    expect(ElMessage.error).not.toHaveBeenCalled()
+
+    env.failGet = [{ on: '/status', message: '转码服务无响应' }]
+    await vi.advanceTimersByTimeAsync(1500)
+    await vi.advanceTimersByTimeAsync(1500)
+
+    // 轮询每 1.5 秒一次，每失败一次弹一层 toast 就会把屏幕刷成一堵墙
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    expect(wrapper.find('.status-fetch-error').text()).toBe('转码服务无响应')
+    wrapper.unmount()
+  })
+
+  it('clears the status failure line once the poll answers again', async () => {
+    env.status = idleStatus({ is_transcoding: true, status: 'running' })
+    vi.useFakeTimers()
+
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    env.failGet = [{ on: '/status', message: '转码服务无响应' }]
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(wrapper.find('.status-fetch-error').exists()).toBe(true)
+
+    env.failGet = []
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(wrapper.find('.status-fetch-error').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('surfaces the server reason when starting a transcode is refused', async () => {
+    env.failPost = [{ on: '/transcode/7', message: '源文件已不在原路径' }]
+
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    wrapper.findComponent(ElSelect).vm.$emit('update:modelValue', 'webm')
+    await flushPromises()
+    await buttonByText(wrapper, '开始转码').trigger('click')
+    await flushPromises()
+
+    expect(ElMessage.error).toHaveBeenCalledWith('源文件已不在原路径')
+    wrapper.unmount()
+  })
+
+  it('surfaces the server reason when cancelling is refused', async () => {
+    env.status = idleStatus({ is_transcoding: true, status: 'running' })
+    env.failPost = [{ on: '/transcode/7/cancel', message: '当前没有正在进行的转码任务' }]
+
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    await buttonByText(wrapper, '取消转码').trigger('click')
+    await flushPromises()
+
+    expect(ElMessage.error).toHaveBeenCalledWith('当前没有正在进行的转码任务')
     wrapper.unmount()
   })
 })

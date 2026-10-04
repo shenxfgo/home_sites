@@ -66,3 +66,24 @@ test('未选择目标格式时不会发起转码', async ({ page }) => {
   await expect(page.locator('.el-message--warning')).toContainText('请选择目标格式')
   expect(posted).toBe(false)
 })
+
+test('加载不到视频时弹的是服务端原话而不是统一一句失败', async ({ page }) => {
+  await page.goto('/videos/5/transcode')
+
+  await expect(page.locator('.el-message--error')).toContainText('视频不存在')
+})
+
+// 后端的详情接口挂掉时页面不能只是安静地留着上一次的进度：状态卡片上要写明原因。
+test('状态接口失败时在卡片上写明原因', async ({ page }) => {
+  await page.route(/\/api\/transcode\/\d+\/status$/, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '转码服务未就绪' }),
+    }),
+  )
+  await page.goto('/videos/1/transcode')
+
+  await expect(page.locator('.status-fetch-error')).toHaveText('转码服务未就绪')
+  await expect(page.locator('.el-message--error')).toContainText('转码服务未就绪')
+})

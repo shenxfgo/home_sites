@@ -537,7 +537,7 @@ setTheme('auto')    // 跟随系统
 // src/api/client.ts
 const client = axios.create({
   baseURL: '/api',
-  timeout: 10000,
+  timeout: 15000,
   headers: {
     'Content-Type': 'application/json',
     // 后端对非 GET 的 Cookie 请求强制要这个头（跨站表单发不出来），写在这里最省事
@@ -566,6 +566,8 @@ client.interceptors.response.use(
 
 - `flattenDetail` 是为 422 存在的：pydantic 的校验错误在 `detail` 里是**对象数组**（`type` / `loc` / `msg` / `ctx`），原样当消息用浏览器就渲染成 `[object Object],[object Object]`。摊出来的格式是「字段 原因；字段 原因」，字段名取 `loc` 除第 0 项（`body`/`query`/`path` 这些 scope）之后最后一个字符串，所以 `['body','tags',0]` 报成 `tags`。原因按 `type` 查表翻译成中文，表里没有的类型退回 `msg` 原文——**宁可留一句英文，也不要再出现 `[object Object]`**。后端普遍用 `min_length=1` 表达必填，这类单独说成「不能为空」
 - 表单页仍然要自己做**空值前置校验**（见 `views/Login.vue` 的 `submit()`）：客户端拦得住的错不必绕一圈服务端。拦截器的摊平是兜底，管的是拦不住的那些（长度、范围、格式）
+- **`catch` 里只能读 `error.message`**：拦截器 reject 的是现场 `new Error(...)`，`error.response` 已经不在上面了——`error.response?.data?.detail` 恒为 undefined，最后露出来的永远是写死的那句兜底文案。`views/Transcode.vue` 的六个 catch 原先全这么写，服务端说「源文件已不在原路径」、页面回「转码失败」。现在统一走一个 `errorReason(error)`（取 `message`，非 Error 的 reject 回 null；`ElMessageBox` 取消时 reject 的正是字符串 `'cancel'`，要先挡掉）
+- 轮询里的失败**不要每轮弹一次 toast**：转码状态 1.5 秒问一次，服务端一挂就是刷屏。做法是把原因留在状态卡片上（`.status-fetch-error`，告警色，和转码本身失败的 `.status-error` 红色区分），toast 只在用户主动进页那一次给（`pollTimer` 还没起来时）。同时卡片要清掉这一行 once 恢复响应，否则用户会一直以为还在报错
 
 ## 认证与路由守卫
 
