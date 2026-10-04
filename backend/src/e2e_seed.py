@@ -36,6 +36,7 @@ from src.database.migrations import business_tables
 from src.models.history import PlayHistory
 from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
+from src.models.user import User
 from src.models.video import Video
 from src.models.watchlist import WatchlistItem
 from src.services.auth_service import AuthService
@@ -46,6 +47,9 @@ from src.services.watchlist_service import WatchlistService
 #: 测试账号。它只活在马上要被 TRUNCATE 的库里，所以字面值进版本库不是泄密——
 #: 真正的判据是下面 ``assert_disposable`` 保证这个库永远不是真库。
 DEFAULT_USERNAME = "e2e_owner"
+#: 第二个账号，角色是 member。角色网关那条用例打的必须是**真中间件**：替身夹具里的
+#: `MEMBER_WRITE` 是这份名单的手抄本，改一边另一边不会红，只有真后端会。
+DEFAULT_MEMBER_USERNAME = "e2e_member"
 DEFAULT_SOURCE_NAME = "E2E local"
 
 #: 一次性目录的名字。删除只允许发生在它下面，见 :func:`prepare_media`。
@@ -180,6 +184,9 @@ async def seed(*, password: str, media_dir: str, username: str = DEFAULT_USERNAM
     async with async_session_maker() as session:
         auth = AuthService(session)
         user = await auth.create_user(username, password, role="owner", display_name="E2E")
+        await auth.create_user(
+            DEFAULT_MEMBER_USERNAME, password, role="member", display_name="E2E 成员"
+        )
         source = VideoSource(
             name=DEFAULT_SOURCE_NAME,
             path=media_dir,
@@ -234,6 +241,10 @@ async def seed(*, password: str, media_dir: str, username: str = DEFAULT_USERNAM
             await session.scalars(select(PlayHistory.completed).order_by(PlayHistory.id))
         )
         items = await session.scalar(select(func.count(WatchlistItem.id))) or 0
+        # 两个账号是角色网关那条用例的前提，而它断言全是 403——"member 那行其实没建成
+        # member"和"根本没权限"在现场长得一模一样，所以核对的是 role 这一列，不是行数。
+        account_rows = await session.execute(select(User.username, User.role).order_by(User.id))
+        accounts = account_rows.tuples().all()
 
     if videos != EXPECTED_VIDEOS or subtitles != EXPECTED_SUBTITLES:
         raise SeedError(
@@ -260,11 +271,18 @@ async def seed(*, password: str, media_dir: str, username: str = DEFAULT_USERNAM
         raise SeedError(
             f"seeded {items} watchlist item(s), expected {EXPECTED_WATCHLIST_ITEMS}"
         )
+    if accounts != [(username, "owner"), (DEFAULT_MEMBER_USERNAME, "member")]:
+        raise SeedError(
+            f"seeded accounts {accounts}, expected [{(username, 'owner')}] + "
+            f"[('{DEFAULT_MEMBER_USERNAME}', 'member')]"
+        )
 
     return {
         "database": settings.database_url.rsplit("/", 1)[-1],
-        "username": user.username,
-        "role": user.role,
+        "username": accounts[0][0],
+        "role": accounts[0][1],
+        "member_username": DEFAULT_MEMBER_USERNAME,
+        "users": len(accounts),
         "source_id": source_id,
         "new_videos": scan.get("new_videos", 0),
         "videos": videos,

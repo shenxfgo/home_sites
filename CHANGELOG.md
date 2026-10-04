@@ -2,6 +2,21 @@
 
 ## 2026-10-05
 
+### 新增：真后端 e2e 加到 6 条——成员角色网关第一次撞上真中间件
+
+- **动因**：替身夹具里那份 `MEMBER_WRITE` 是 `backend/src/middleware/auth.py` 名单的手抄本，前端单测和 82 条桩 e2e 都只对着一份可能抄歪的副本绿；而且真后端那一套夹具到这一单之前**只有一个账号**，"归属过滤"这条契约在真库上从来没被第二个人验过。这一单把两件事一起补上：播种多建一个 member，用例 6 用同一个浏览器上下文换两次身份。
+- **播种侧**（`src/e2e_seed.py`）：`AuthService.create_user(..., role="member")` 建 `e2e_member`，display_name「E2E 成员」，**不写任何个人数据**——所以"成员从 0 开始加收藏""同名片单在本人范围内不冲突"这两句有东西可对。核对闸门查的是 `users.role` 这一列而不是行数：这条用例断言全是 403，"member 那行压根没建成 member"在现场和"真没权限"长得一模一样，查行数就等于把夹具坏掉伪装成用例通过。摘要多回 `member_username` 和 `users`，界面与用例都不再各自抄第二个账号名。
+- **用例 6（角色网关）**：成员侧先看界面（顶栏恰好只剩「首页/播放历史/观影统计/收藏/片单」五个、用户菜单里没有「用户管理」、手敲 `/settings` 被守卫送回首页），再看请求——`GET /api/users` 与 `/api/settings` **连读都 403** 且 `detail` 是「需要管理员权限」；`DELETE /api/videos/1` 也 403，这里刻意带上 `x-requested-with: fetch`，因为中间件是**先查这个头、再查角色**，不带头的话两条 403 分不出是谁挡的；紧接着 `GET /api/videos/1` 回 200，证明那一行没被删（拒绝发生在服务层之前）。反向的一半：名单内的写必须真通，`POST /api/favorites/1` 回 201 并能在收藏页读到，`POST /api/watchlists` 用**和 owner 那份播种同名**的「今晚看这些」回 201 而不是 409（片单名的唯一性只在本人范围内成立），成员列表里也只有这一条；换回 owner 后仍是自己那两条片单、收藏 `total` 仍是 1——两个人在同一个库里各读各的。
+- **顺手修的接线**：`fetchInPage()` 的第三个参数从"请求头表"改成真正的 fetch init（`method`/`body`/`headers`），否则这条用例只能测 GET；`signIn(page, username)` 支持第二个账号，并且**进 `/login` 先清 cookie**——已登录的人撞 `/login` 会被守卫直接送回首页、表单根本不渲染，这个现象第一次跑就是 30 秒超时（真库实测），而它同时是"同一个上下文里换身份"的前提。
+- **红在先（这条用例对着未改动的代码本来就是绿的：它钉的是既有契约，所以用变异证明能红）**：
+  - 只从 `OWNER_ONLY_READ_PATHS` 里摘掉 `/api/users` → **全 6 条照绿**。原因不是用例软，是这一面有**两层**闸门：路由上还有 `Depends(require_owner)`，而且两层回的状态码和 `detail` 一模一样，从外面分不出来。把两层一起摘掉才红在用例 6 的 `expect(blocked.status, path).toBe(403)`（`library.real.spec.ts:273`）。这一条值得单独记：**契约是"成员读不到管理面"，不是"哪一层拦的"**，所以少摘一层不红是正确行为，不是覆盖漏洞。
+  - 去掉 `watchlist_service.py:_require_free_name` 里的 `Watchlist.owner_id == user_id` → 红在 `expect(named.status).toBe(201)`（`:299`，实际 409）。
+  - 摘掉 `MainLayout.vue` 里「设置」那条的 `ownerOnly` → 红在 `expect(labels).toEqual([...])`（`:263`）。注意路由守卫用的是 `meta.roles`，和顶栏这两个开关是**两处独立真值**，所以这一变异不会让守卫那句跳转红——两句都在才都拦得住。
+  - 三次变异各恰好 1 例红、其余 5 例照绿；每次改回后 `git status` 只剩本单要交的三个文件，无 `DEBUG-` 残留。
+- **文档同步**：`README.md`、`CLAUDE.md`、`frontend/CLAUDE.md`（覆盖面那句 + 顺序约定那条重写：六条的顺序、两个账号、清 cookie 的理由、闸门查 role 列的理由）、`backend/CLAUDE.md`（§真后端 e2e 补上为什么建两个账号，文件树那行改成"建 owner + member"）。
+- **验证**：打真后端的 e2e **6 passed**（单 worker 串行，18.6 秒）；`tests/test_e2e_seed.py` **9 passed**；播种脚本单跑一遍摘要为 `users=2`、`role=owner`、`member_username=e2e_member`；后端 PostgreSQL 全量 **718 passed**（3:30）、真 SQLite **717 passed + 1 skipped**（0:46，`TEST_DATABASE_URL=` 那套，两套都是在播种脚本最后那次改动之后各重跑的）；带覆盖率的 PostgreSQL 全量 `src/e2e_seed.py` **58% → 55%**（新加的行全在 `seed()` 那段只有真 PG + 真 FFmpeg 才走得到的里面）、TOTAL **92%**；前端单测 **279 passed**、`typecheck:test` 绿、`ruff check .` **0 项**、`mypy src/e2e_seed.py` 干净（全项目 **34 项**与上一单同数）。桩 e2e 这一轮报 **80 passed + 2 failed**（`player.spec.ts` 的进度条拖动与偏好记忆两条），当时后台压着覆盖率全量在跑——单独重跑这两条 **2 passed**，判为 CPU 争抢下的计时抖动，不是回归。
+- **覆盖面现状（先更正上一单的数：它是数错了，不是口径不同）**：浏览器用例总数实测 **88** 条——打真库 **6** 条，其余 **82** 条继续对着 `e2e/fixtures.ts` 的替身（上一单写的"85 里 5 条、其余 80 条"两个数都不对，`npx playwright test --list` 现量的是 82 + 6）。用户管理、视频源、观影统计、设置这几页的读路径仍然没有真库签字；替身那份 `MEMBER_WRITE` 的手抄风险这单只覆盖了"成员被拦"这一面，"owner 全通"那一面仍只有桩。
+
 ### 新增：真后端 e2e 从 3 条加宽到 5 条——继续观看那条轨和片单页也到真库签了字
 
 - **动因**：#81 立起"打真后端"那条缝时只压了三条链路（登录、字幕/流式、收藏），其余页面仍是前端对着手抄的替身响应自己绿。这一单挑的两条，共同点是**界面上那个数是另一张表算出来的**：继续观看的"剩 0:12"和进度条宽度来自 `PlayHistory.progress` 被抄到影片对象上（`history_service.py:78`），片单里那条"已看 0:18"是 `api/watchlists.py:62` 现查的 `attach_watch_progress`。替身夹具给不给这一列，前端都不会红；只有真后端不给才会红。

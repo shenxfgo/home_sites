@@ -198,7 +198,7 @@ npm run test               # 单元测试（Vitest，tests/ 目录）
 npm run test:watch         # 单元测试 watch 模式
 npm run test:coverage      # 单元测试 + 覆盖率
 npm run test:e2e           # 端到端测试（Playwright，自动拉起 dev server）
-npm run test:e2e:real      # 端到端测试（5 条，打真后端 + PostgreSQL 测试库，见 frontend/CLAUDE.md）
+npm run test:e2e:real      # 端到端测试（6 条，打真后端 + PostgreSQL 测试库，见 frontend/CLAUDE.md）
 npm run typecheck:test     # 只检查测试代码类型
 ```
 

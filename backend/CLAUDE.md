@@ -107,7 +107,7 @@ backend/
 │   ├── cli.py             # 账号管理命令行（create-user / list-users / set-role / revoke-sessions）
 │   ├── db_audit.py        # 换数据库前的只读审计（`uv run python -m src.db_audit`）
 │   ├── db_transfer.py     # 搬家：一个事务内插完并对账，对不上就整体回滚（`uv run python -m src.db_transfer --from <老库> --to <新库>`）
-│   ├── e2e_seed.py        # 真后端 e2e 的一次性现场：造媒体 → TRUNCATE → 建 owner → 走真扫描（`python -m src.e2e_seed`，由前端的 test:e2e:real 调用）
+│   ├── e2e_seed.py        # 真后端 e2e 的一次性现场：造媒体 → TRUNCATE → 建 owner + member → 走真扫描（`python -m src.e2e_seed`，由前端的 test:e2e:real 调用）
 │   ├── config.py          # 配置管理
 │   └── main.py            # 应用入口
 ├── alembic/               # schema 的出处（版本化迁移）
@@ -252,7 +252,7 @@ app.include_router(examples_router)
 
 新路由一注册就落在 `AuthMiddleware` 后面，匿名请求拿到的就是 401，不需要（也不应该）自己往依赖里挂鉴权。确实要公开的话得改 `PUBLIC_API_PATHS`，目前只有登录与登录页的状态探测在里面。路由内部取当前用户用 `Depends(get_current_user)`，要知道自己这枚会话就用 `Depends(get_session_token)`。
 
-角色同理，而且**新加接口要动的地方在中间件，不在路由上**：成员该能写的接口必须登记进 `MEMBER_WRITE_PATHS`，否则成员一律 403（忘了登记会立刻被 `test_roles.py` 的扫面用例和使用者发现，这正是想要的失败方向）；管理面（账号、系统配置）连读都限 owner 的话写进 `OWNER_ONLY_READ_PATHS`。只有确实需要拿到操作者 `User` 对象的路由（改角色、停用、重置密码）才额外挂 `Depends(require_owner)`。
+角色同理，而且**新加接口要动的地方在中间件，不在路由上**：成员该能写的接口必须登记进 `MEMBER_WRITE_PATHS`，否则成员一律 403（忘了登记会立刻被 `test_roles.py` 的扫面用例和使用者发现，这正是想要的失败方向）；管理面（账号、系统配置）连读都限 owner 的话写进 `OWNER_ONLY_READ_PATHS`。只有确实需要拿到操作者 `User` 对象的路由（改角色、停用、重置密码）才额外挂 `Depends(require_owner)`。`/api/users` 那一组是**两道都拦**（每个端点都要 `actor` 来做"不能停用/降级自己"那几条护栏，所以它们本来就挂），而两道回的 403 连 `detail` 都一模一样——从外面完全分不出是哪一层拦的。这不叫冗余，契约是"成员读不到管理面"而不是"哪一层拦的"，但记着它：只摘一道，打真后端的 e2e 也不会红（这一单实测过一次全绿的变异）。
 
 ### 5. 编写测试
 
@@ -339,7 +339,7 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 搬家的顺序：审计（`db_audit`）→ 目标库建空（`deploy/pg-provision.example.sql`，schema 由 `0001` 基线建，别手工建表）→ `db_transfer --from <老库> --to <新库> --dry-run` 预演 → 去掉 `--dry-run` 正式搬。`--dry-run` 会一路跑到对账通过再整体回滚，新库不留一行，所以它和正式搬用的是同一条代码路，预演过了才算过。目标库必须已建表且为空，否则直接中止。搬的时候 `sessions` 整表跳过（旧 token 到了新库也不该还能用），`alembic_version` 也不搬；自增序列会推到当前最大值。方向是双向的：回滚到 SQLite 就把它当目标库再搬一次，`_reset_sequences` 两种方言都实现了。
 
-真后端 e2e 的现场由 `src/e2e_seed.py` 一手准备，前端只负责把它串在 uvicorn 之前起（`frontend/CLAUDE.md` 的「打真后端的端到端测试」）。这里有两道闸门，理由和 `db_transfer` 一样——"连哪个库""清哪个目录"都只看一条环境变量，所以判据不能靠调用方自觉：库名必须以 `_test` 结尾才允许 TRUNCATE，非 PostgreSQL 方言直接拒收（这套用例要证明的就是和生产同一个方言）；媒体目录必须落在 `backend/data/e2e` 之下才允许整目录删除，否则报错发生在任何删除之前。**媒体夹具在这个进程里写，不放在前端的 Playwright 配置里写**：那个配置文件会被执行好几遍（主进程 + 每个 worker），写在配置里的副作用会在播种之后把 `data/e2e` 再清一次，留下的现象是库里的封面路径指向一个不存在的文件。扫描产物同样只核对不解释：1 部片子、1 条字幕、1 张封面，对不上就在起步时失败，而不是让每条用例各炸一次——封面这一项是为了 FFmpeg 不在 PATH 上时报"ffmpeg 抽不出封面"，而不是报一个看不出根因的图片加载失败。个人的那两行（一次观看进度 + 一条片单）也走**服务层本身**（`VideoService.record_play`/`update_progress`、`WatchlistService`），不手写 INSERT：`completed` 是 `is_completed()` 按 `duration` 的尾部容差算出来的，继续观看那条轨只读 `completed == False` 的行，自己抄一份判定规则的话规则一改夹具就悄悄失真，变成"库里说看完了、界面上还在轨里"这种两边都自洽的假象。
+真后端 e2e 的现场由 `src/e2e_seed.py` 一手准备，前端只负责把它串在 uvicorn 之前起（`frontend/CLAUDE.md` 的「打真后端的端到端测试」）。这里有两道闸门，理由和 `db_transfer` 一样——"连哪个库""清哪个目录"都只看一条环境变量，所以判据不能靠调用方自觉：库名必须以 `_test` 结尾才允许 TRUNCATE，非 PostgreSQL 方言直接拒收（这套用例要证明的就是和生产同一个方言）；媒体目录必须落在 `backend/data/e2e` 之下才允许整目录删除，否则报错发生在任何删除之前。**媒体夹具在这个进程里写，不放在前端的 Playwright 配置里写**：那个配置文件会被执行好几遍（主进程 + 每个 worker），写在配置里的副作用会在播种之后把 `data/e2e` 再清一次，留下的现象是库里的封面路径指向一个不存在的文件。扫描产物同样只核对不解释：1 部片子、1 条字幕、1 张封面，对不上就在起步时失败，而不是让每条用例各炸一次——封面这一项是为了 FFmpeg 不在 PATH 上时报"ffmpeg 抽不出封面"，而不是报一个看不出根因的图片加载失败。个人的那两行（一次观看进度 + 一条片单）也走**服务层本身**（`VideoService.record_play`/`update_progress`、`WatchlistService`），不手写 INSERT：`completed` 是 `is_completed()` 按 `duration` 的尾部容差算出来的，继续观看那条轨只读 `completed == False` 的行，自己抄一份判定规则的话规则一改夹具就悄悄失真，变成"库里说看完了、界面上还在轨里"这种两边都自洽的假象。账号建**两个**（owner + member，都走 `AuthService.create_user`）：member 那份不写任何个人数据，专门给角色网关那条用例撞真中间件用。这里的核对闸门查的是 `users.role` 这一列而不是行数——那条用例断言的全是 403，"member 那行压根没建成"和"账号真没权限"在现场长得一模一样。
 
 每日备份在 `src/backup.py`，挂载在 `main.py` 的 lifespan 里，走的是应用自己的 APScheduler（`add_backup_job` 是每天那条 cron，`add_backup_catchup_job` 是启动时那条一次性检查，两者和扫描共用同一个调度器——两个调度器会让每个任务各跑一遍）。核心是 `run_backup()`：从 `settings.database_url` 拆出连接参数，起 `pg_dump -Fc --no-owner`，然后 `pg_restore -l` 把清单读回来，读不回的文件**当场删掉**。三个约束是这块的意义所在，改之前先看用例：
 
@@ -547,7 +547,7 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 
 - `utils/ffmpeg.py` **23%**——转码要真 FFmpeg 和真片子才跑得动，桩不出真形状没有意义
 - `scheduler/tasks.py` **62%**（2026-10-05 补上启动补跑之后重量的，此前 57%）——缺的还是 `scan_source_task` / `scan_all_active_task` 两个包装的函数体（自己开会话、把异常变成一条 `scan_error` 通知）；测试和被调的定时任务都是直接走 `ScanService`，只有两条备份任务（每晚 + 启动补跑）是端到端测过的
-- `src/e2e_seed.py` **58%**——一次性库的播种与重置，主要活在打真后端的 e2e 那个进程里，pytest 进程只 import 和调其中一部分（`seed()` 整段 173–260 行没人走，它要真 PG、真媒体目录和真 FFmpeg；`seed_user_stats` 从 2026-10-05 起有一条用例直接过它）
+- `src/e2e_seed.py` **55%**（2026-10-05 加第二个账号之后重量的，PostgreSQL 全量 718 passed，此前 58%）——一次性库的播种与重置，主要活在打真后端的 e2e 那个进程里，pytest 进程只 import 和调其中一部分（`seed()` 整段 177–280 行没人走，它要真 PG、真媒体目录和真 FFmpeg；`seed_user_stats` 从 2026-10-05 起有一条用例直接过它）
 - `api/settings.py` **71%**——批量改配置和单键读写两条端点没人调（界面走的是另一套偏好接口）
 - `api/stream.py` **72%**——整文件直读那两个分支和"封面文件不在"的兜底；`Range` 分段由打真后端的 e2e 覆盖，不在这份读数里
 

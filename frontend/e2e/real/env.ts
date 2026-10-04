@@ -26,6 +26,13 @@ export const THUMBNAIL_DIR = resolve(E2E_DIR, 'thumbnails')
 export const E2E_USERNAME = 'e2e_owner'
 
 /**
+ * 第二个账号，角色是 member，由播种一起建出来。名字要和 `backend/src/e2e_seed.py` 的
+ * `DEFAULT_MEMBER_USERNAME` 一致——那条用例断言的全是 403，账号没建成时它也会"过"，
+ * 所以播种侧另有一道核对角色的闸门。
+ */
+export const E2E_MEMBER_USERNAME = 'e2e_member'
+
+/**
  * 测试账号的口令，字面值进版本库。它不构成凭据：这个库的名字必须以 `_test` 结尾才允许
  * 被清空（闸门在 `backend/src/e2e_seed.py`），而且每次跑之前整表 TRUNCATE。
  */
