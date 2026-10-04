@@ -2,6 +2,22 @@
 
 ## 2026-10-05
 
+### 新增：真后端 e2e 加到 9 条——通知是广播的、已读是按人的，而"零新增那一轮"从此发不出通知
+
+- **动因**：#85 修的是"定时扫描每轮同一条链路写两行、零新增也照发"，把通知流刷成一堵墙的那种 bug。它的修复只有两道**观察面**：`scan_service.py:347` 那道"库没变就不发"的闸门，和 `notification_reads` 那张 `(notification_id, user_id)` 复合主键表。前者在替身夹具里根本不存在（夹具给一份写死的列表，扫不扫都一样），后者要求**两个人对同一条记录有不同状态**——替身只有一份 `read`。这一单把这两面一起接到真库上。
+- **用例 9（通知）**：起点是播种那趟**真扫描**留下的那一行——`total == 1`、`type == scan_complete`、`read == false`，文案里的「发现 1 个新视频」「1 条字幕」和 `data` 里的 `{source_id: 1, new_count: 1, subtitles_found: 1, missing_changed: 0}` 全是扫描器的计数器（`data` 那一列顺带成了 JSON 列在真库上的往返检查）。顶栏铃铛的角标文本是 `1`，弹层里 `.notification-item` 带 `unread` 类。然后 **#85 的回归位置**：`POST /api/sources/1/scan` 对同一批文件再扫一遍，回 `files_found=1 / new_videos=0 / subtitles_found=0`（"确实扫到了文件"和"库没变"两句要同时成立，否则"没发通知"只是因为没扫东西），而 `GET /api/notifications` 的 `total` **必须还是 1**。已读那一半走界面：点「全部已读」之后**刷新**再从接口读——不刷新就只证明了前端那句乐观更新——`read` 变 `true`、`/api/notifications/unread` 回 `{count: 0}`。反向的一半才是这条用例的意义：换成员登录，`total` 仍是 1 且 `items[0].id` 就是同一条（feed 是广播的），但对他 `read` 仍是 `false`、`unread` 仍是 1；而他能把整条流清空的那两个 `DELETE` 拿到 403（库级破坏性操作不在 `MEMBER_WRITE_PATHS` 里），删完库里那一行还在。
+- **踩到的两处接线**：扫描端点的真实路径是 `/api/sources/{id}/scan`（`api/scan.py` 的 router prefix 就是 `/api`，不是 `/api/scan`；前端 axios 的 baseURL 才是 `/api`，所以照着界面写法拼出来的是 404），以及 `ScanResultResponse` 里那三个 `| None` 字段在无类型注解的 JSON 上会渲染成 `null`——用 `toEqual(整对象)` 断言会被这些"没用的字段"绊倒，改成逐字段断言。
+- **红在先（这条对着未改动的代码也是绿的：它钉的是既有契约，所以照样用变异证明能红，三次各恰好 1 例红）**：
+  - `scan_service.py:347` 的 `if new_videos or subtitles_found or missing_flips:` 换成 `if True:`（= 把 #85 还原）→ 红在 `expect((await readNotifications(page)).total).toBe(1)`，实测 **Expected 1 / Received 2**（`:473`）。这一条就是这单想要的证据：**症状与当年那堵墙一模一样，而且它只有在真链路上才量得到**——替身那侧"扫不扫都回同一份列表"是自洽的。
+  - `notification_service.get_notifications` 里那句 `NotificationRead.user_id == user_id` 摘掉（已读变成"谁读过都算读过"）→ 红在 `expect(memberView.items[0]?.read).toBe(false)`（`:490`，实际 true）。**这句断言无法用"两边都从接口取"来替代**：owner 侧 `read` 变 true 是它自己点出来的，成员侧仍读到 true 才说明 join 漏了人。
+  - `scan_service.py:348` 的文案去掉 `发现 {new_videos} 个新视频` 那半句 → 红在 `toContain('发现 1 个新视频')`（`:451`），实测 Received `"视频源 E2E local 扫描完成、1 条字幕"`（顺带量到播种那个源的真名）。
+  - 最后那两句（成员 `DELETE` 403、`unread` 接口）**没有单独变异**：403 的机制与用例 6 完全同源（同一份 `MEMBER_WRITE_PATHS`，那一单已经证过摘名单会红），这里只是把通知这条路径也纳入名单覆盖；`/unread` 的按人计数与上面第二条共用同一张表，变异点也是同一处。记下来是为了不把"跑过三次变异"误读成"每条断言都被证过"。
+  - 三次变异各改各的文件、各跑一次 `-g 通知是广播`（只命中这一条）、每次 `git checkout --` 后立即核对 `git status` 只剩本单要交的那一个文件，无 `DEBUG-` 残留。
+- **文档同步**：`README.md`、`CLAUDE.md`、`frontend/CLAUDE.md` 三处计数 8 → 9；`frontend/CLAUDE.md` 的顺序那一段从"八条"改"九条"，并写清为什么标签和通知这两条都排在后面（它们各自把一张表当成"只有我自己的那些"，而通知那条还会再扫一遍、给 owner 写下已读、往 source 上盖新的 `last_scan_at`）；`backend/CLAUDE.md` 的 §真后端 e2e 补一句"通知同理——播种只留那一趟扫描写的那一条，多发一条就会弄红这条用例"。
+- **验证**：打真后端的 e2e **9 passed**（单 worker 串行，25.9 秒，三次变异全部还原之后重跑）；`-g 通知是广播` 单独跑 **1 passed**（8.1 秒，这条自足）；后端 PostgreSQL 全量 **718 passed**（3:05——被变异过的两个后端文件还原后整跑一遍才是证据）；`typecheck:test` 绿；前端单测 **279 passed**、桩 e2e **82 passed**（34 秒那套，跑时后台没有别的东西压着）；`ruff check .` **0 项**、`mypy src` **34 项**（基线同数，本单未提交任何后端代码改动）。
+- **覆盖面现状**：浏览器用例总数实测 **91** 条——打真库 **9** 条，其余 **82** 条继续对着 `e2e/fixtures.ts` 的替身。仍然零真库签字的读路径：视频源（`/api/sources`，含"两个源指向同一目录"那个数据形状）、设置（系统配置那套键值）、搜索与筛选的分面。
+
+
 ### 新增：真后端 e2e 加到 8 条——标签挂到真影片上，那个 500 有了回归位置
 
 - **动因**：`/api/tags` 这一面带过一个真 bug（#101：`GET /api/tags/{id}/videos` 回 500，`MissingGreenlet`）。它的根因是**关系加载**——序列化是同步的，而那一查经多对多的 `Tag.videos` 走到影片时没有预取第二层 `video.tags`，于是属性访问变成 greenlet 之外的一次 IO。这件事在替身夹具里不可能出现（`page.route` 直接给一份 JSON，没有会话、没有关系），所以前端那 82 条桩用例对着它永远是绿的；只有真库才拦得住。播种**一个标签都不建**，所以建标签这一下走的也是真接口。

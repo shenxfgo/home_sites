@@ -423,3 +423,77 @@ test('标签挂在真影片上：两个标签各数各的视频，标签下那�
   expect(listed.map((entry) => [entry.id, entry.title])).toEqual([[1, 'e2e sample']])
   expect(listed[0]?.tags.map((entry) => entry.id)).toEqual([attachedId])
 })
+
+/** `GET /api/notifications` 里这条用例真正在用的那几项。 */
+type NotificationRow = {
+  id: number
+  type: string
+  title: string
+  message: string
+  read: boolean
+  data: { source_id: number; new_count: number; subtitles_found: number; missing_changed: number }
+}
+type NotificationList = { items: NotificationRow[]; total: number }
+
+async function readNotifications(page: Page): Promise<NotificationList> {
+  return JSON.parse((await fetchInPage(page, '/api/notifications')).text) as NotificationList
+}
+
+test('通知是广播的、已读是按人的：同批文件再扫一遍零新增就一句都不发', async ({ page }) => {
+  // 起点是播种那趟**真扫描**留下的那一行，不是夹具里手抄的文案：句末那两个数是
+  // `scan_source` 的计数器（`new_videos` / `subtitles_found`），而 `data` 那一列是
+  // JSON 列在真库上的往返——替身夹具两样都给不了。
+  const seeded = await readNotifications(page)
+  expect(seeded.total).toBe(1)
+  const only = seeded.items[0]
+  expect(only?.type).toBe('scan_complete')
+  expect(only?.read).toBe(false)
+  expect(only?.message).toContain('发现 1 个新视频')
+  expect(only?.message).toContain('1 条字幕')
+  expect(only?.data).toEqual({ source_id: 1, new_count: 1, subtitles_found: 1, missing_changed: 0 })
+
+  // 铃铛：角标是未读数，弹层里那一行就是库里那一行
+  await expect(page.locator('.notification-badge .el-badge__content')).toHaveText('1')
+  await page.locator('.notification-badge button').click()
+  const popper = page.locator('.notification-popper')
+  await expect(popper.locator('.notification-item')).toHaveCount(1)
+  await expect(popper.locator('.notification-item')).toHaveClass(/unread/)
+  await expect(popper.locator('.notification-title')).toHaveText('扫描完成')
+  await expect(popper.locator('.notification-message')).toContainText('发现 1 个新视频')
+
+  // #85 的回归位置：文件一个没变，再扫一遍的计数全为 0，于是一条通知都不许多出来。
+  // 这一句只有打真库才成立——替身那侧"扫不扫都回同一份列表"本来就是自洽的。
+  const rescan = await fetchInPage(page, '/api/sources/1/scan', { method: 'POST', headers: CSRF })
+  expect(rescan.status).toBe(200)
+  const counted = JSON.parse(rescan.text) as { files_found: number; new_videos: number; subtitles_found: number }
+  // 文件确实被扫到了（不是"扫了个空目录所以当然没新增"），但库没变
+  expect(counted.files_found).toBe(1)
+  expect(counted.new_videos).toBe(0)
+  expect(counted.subtitles_found).toBe(0)
+  expect((await readNotifications(page)).total).toBe(1)
+
+  // 已读写成真库的一行：点「全部已读」之后**刷新**再读，界面和接口都得到同一个 read=true
+  // （不刷新就只证明了前端那句乐观更新）。
+  await popper.getByRole('button', { name: '全部已读' }).click()
+  await page.reload()
+  expect((await readNotifications(page)).items[0]?.read).toBe(true)
+  expect(
+    JSON.parse((await fetchInPage(page, '/api/notifications/unread')).text) as { count: number },
+  ).toEqual({ count: 0 })
+
+  // 反向的一半才说明这不是全局开关：换成员登录，**同一条**通知还在（feed 是广播的），
+  // 但那一行对他仍是未读——`notification_reads` 的主键是 (notification_id, user_id)。
+  await signIn(page, E2E_MEMBER_USERNAME)
+  const memberView = await readNotifications(page)
+  expect(memberView.total).toBe(1)
+  expect(memberView.items[0]?.id).toBe(only?.id)
+  expect(memberView.items[0]?.read).toBe(false)
+  expect(
+    JSON.parse((await fetchInPage(page, '/api/notifications/unread')).text) as { count: number },
+  ).toEqual({ count: 1 })
+
+  // 成员能改自己的已读状态，但清空整条流是库级动作，不在中间件那份名单里
+  const denied = await fetchInPage(page, '/api/notifications', { method: 'DELETE', headers: CSRF })
+  expect(denied.status).toBe(403)
+  expect((await readNotifications(page)).total).toBe(1)
+})
