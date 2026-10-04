@@ -17,14 +17,13 @@
  * 一轮只 TRUNCATE 一次，所以用例之间是接力而不是各自重启——顺序即约定。
  */
 import { expect, test, type Page } from '@playwright/test'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join, sep } from 'node:path'
 
-import { E2E_DIR, E2E_MEMBER_USERNAME, E2E_USERNAME, MEDIA_DIR, THUMBNAIL_DIR } from './env'
+import { E2E_DIR, E2E_MEMBER_USERNAME, E2E_USERNAME, MEDIA_DIR } from './env'
 // 登录、带 cookie 发请求这两件事现在住在 `support.ts`，因为打真后端的 spec 已经有两份了：
 // 一个页面改了，两处都该跟着红，而不是只红一份。但钩子必须各自注册（理由见 `support.ts` 文件头）。
-import { CSRF, fetchInPage, signIn } from './support'
+import { CSRF, coverFingerprints, fetchInPage, scanSource, signIn } from './support'
 
 test.beforeEach(async ({ page }) => {
   await signIn(page)
@@ -811,57 +810,6 @@ async function readHistoryRows(page: Page): Promise<[number, number, string | nu
     items: { id: number; video_id: number; video_title: string | null }[]
   }
   return list.items.map((item) => [item.id, item.video_id, item.video_title])
-}
-
-/**
- * 缩略图目录下每个 `.jpg` 的「相对路径 + 内容 sha1」，排序后逐项可比。
- *
- * 名字集合挡住"文件被删掉了"，也挡住"文件写到了别处"：封面路径是
- * `<root>/<source_id>/<stem>-<locator 摘要>.jpg`，行如果被删掉重扫，新的那行拿到的是
- * 另一个 id，于是目录名跟着变，这一份列表就多出（或少掉）一项。内容哈希只多一道保险，
- * 承担不起"证明没重编码"这种说法——同一份输入重编码出来的字节本来就可能一致。
- */
-function coverFingerprints(): string[] {
-  if (!existsSync(THUMBNAIL_DIR)) return []
-  return readdirSync(THUMBNAIL_DIR, { recursive: true })
-    .map((entry) => String(entry).split(sep).join('/'))
-    .filter((name) => name.toLowerCase().endsWith('.jpg'))
-    .map(
-      (name) =>
-        `${name} ${createHash('sha1').update(readFileSync(join(THUMBNAIL_DIR, name))).digest('hex')}`,
-    )
-    .sort()
-}
-
-/**
- * 扫一个源，只取它报的四个计数。
- *
- * 挑字段而不是 `toEqual` 整个对象：单个源的扫描和 `/api/sources/scan`（全部源）共用同一份
- * 响应模型，那一侧才有的 `sources_scanned` / `total_*` 在这里全是 null。照整个对象写死，断言
- * 就成了「响应模型今天有哪几个键」，多一个键就红，而那和这条用例要验的事无关。
- *
- * `foreign_paths` 也不在这里：服务层那个 dict 里有，`ScanResult` 没把它带过 HTTP 边界，
- * 所以浏览器永远读不到它（第一版照抄服务层的形状，红在这里）。
- */
-type ScanCounters = {
-  files_found: number
-  new_videos: number
-  subtitles_found: number
-}
-
-async function scanSource(page: Page, sourceId: number): Promise<ScanCounters> {
-  const response = await fetchInPage(page, `/api/sources/${sourceId}/scan`, {
-    method: 'POST',
-    headers: CSRF,
-  })
-  expect(response.status).toBe(200)
-  const body = JSON.parse(response.text) as ScanCounters & { source_id: number }
-  expect(body.source_id).toBe(sourceId)
-  return {
-    files_found: body.files_found,
-    new_videos: body.new_videos,
-    subtitles_found: body.subtitles_found,
-  }
 }
 
 test('片子从磁盘上消失再挂回来：行只翻 is_missing，横幅、算子和那句「已找回」都跟着走', async ({ page }) => {

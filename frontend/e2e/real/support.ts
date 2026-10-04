@@ -1,7 +1,8 @@
 /**
- * 真后端 e2e 各文件共用的那几行接线：登录、带 cookie 发请求、非 GET 的那个头。
+ * 真后端 e2e 各文件共用的那几行接线：登录、带 cookie 发请求、非 GET 的那个头、扫描一个源、
+ * 以及把封面目录拍成一张可比对的清单。
  *
- * 单独成一个文件而不是在两份 spec 里各抄一遍：这套用例的"顺序即约定"本来就要求它们
+ * 单独成一个文件而不是在几份 spec 里各抄一遍：这套用例的"顺序即约定"本来就要求它们
  * 共用同一次播种，登录怎么走、响应怎么读如果两边各有一份实现，改页面时只会红一处。
  *
  * `beforeEach(signIn)` **不在这里注册**：根级钩子只挂在"第一个 import 到本模块的那个文件"
@@ -10,8 +11,11 @@
  * 所以每个 spec 自己写那一行。
  */
 import { expect, type Page } from '@playwright/test'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { join, sep } from 'node:path'
 
-import { E2E_PASSWORD, E2E_USERNAME } from './env'
+import { E2E_PASSWORD, E2E_USERNAME, THUMBNAIL_DIR } from './env'
 
 /** 非 GET 都要带这个头，中间件先查它再查角色（顺序写在 `middleware/auth.py`）。 */
 export const CSRF = { 'x-requested-with': 'fetch' }
@@ -80,4 +84,57 @@ export async function requestJson<T>(
   })
   expect(response.status, `${path} -> ${response.text.slice(0, 300)}`).toBe(expectStatus)
   return (response.status === 204 ? null : (JSON.parse(response.text) as T)) as T
+}
+
+/**
+ * 缩略图目录下每个 `.jpg` 的「相对路径 + 内容 sha1」，排序后逐项可比。
+ *
+ * 名字集合挡住"文件被删掉了"，也挡住"文件写到了别处"：封面路径是
+ * `<root>/<source_id>/<stem>-<locator 摘要>.jpg`，行如果被删掉重扫，新的那行拿到的是
+ * 另一个 id，于是目录名跟着变，这一份列表就多出（或少掉）一项。内容哈希只多一道保险，
+ * 承担不起"证明没重编码"这种说法——同一份输入重编码出来的字节本来就可能一致。
+ *
+ * 两个 spec 都要它，所以住在这里：一个是"扫描不该动别人的封面"，一个是"删除只该动自己
+ * 那一张"，两边读的是同一个目录、同一份算法。
+ */
+export function coverFingerprints(): string[] {
+  if (!existsSync(THUMBNAIL_DIR)) return []
+  return readdirSync(THUMBNAIL_DIR, { recursive: true })
+    .map((entry) => String(entry).split(sep).join('/'))
+    .filter((name) => name.toLowerCase().endsWith('.jpg'))
+    .map(
+      (name) =>
+        `${name} ${createHash('sha1').update(readFileSync(join(THUMBNAIL_DIR, name))).digest('hex')}`,
+    )
+    .sort()
+}
+
+/**
+ * 扫一个源，只取它报的四个计数。
+ *
+ * 挑字段而不是 `toEqual` 整个对象：单个源的扫描和 `/api/sources/scan`（全部源）共用同一份
+ * 响应模型，那一侧才有的 `sources_scanned` / `total_*` 在这里全是 null。照整个对象写死，断言
+ * 就成了「响应模型今天有哪几个键」，多一个键就红，而那和这条用例要验的事无关。
+ *
+ * `foreign_paths` 也不在这里：服务层那个 dict 里有，`ScanResult` 没把它带过 HTTP 边界，
+ * 所以浏览器永远读不到它（第一版照抄服务层的形状，红在这里）。
+ */
+export type ScanCounters = {
+  files_found: number
+  new_videos: number
+  subtitles_found: number
+}
+
+export async function scanSource(page: Page, sourceId: number): Promise<ScanCounters> {
+  const body = await requestJson<ScanCounters & { source_id: number }>(
+    page,
+    `/api/sources/${sourceId}/scan`,
+    { method: 'POST' },
+  )
+  expect(body.source_id).toBe(sourceId)
+  return {
+    files_found: body.files_found,
+    new_videos: body.new_videos,
+    subtitles_found: body.subtitles_found,
+  }
 }
