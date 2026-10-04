@@ -592,3 +592,92 @@ test('同一个目录挂两个源：扫它不出重复片，删它不伤第一�
   const remaining = await readSources(page)
   expect(remaining.map((entry) => entry.name)).toEqual(['E2E local'])
 })
+
+/** `GET /api/settings` 读的全部五项——设置页渲染的就是这份形状。 */
+type SystemSettings = {
+  auto_scan_enabled: boolean
+  auto_scan_interval: number
+  default_transcode_format: string
+  thumbnail_width: number
+  thumbnail_height: number
+}
+
+async function readSettings(page: Page): Promise<SystemSettings> {
+  return JSON.parse((await fetchInPage(page, '/api/settings')).text) as SystemSettings
+}
+
+test('系统配置写进真库再读回来：PUT 的回显不算数，一次坏写入也不再打坏整页', async ({ page }) => {
+  // `settings` 表播种从不写，所以开头那五项是**代码默认值经过一次 Text→int/bool 强制转换**
+  // 之后读回来的样子；而 `PUT /api/settings` 回的是请求体本身，于是"保存成功"和"库里到底
+  // 有没有那一行"在替身夹具里是同一件事。这里要把它分开：改完必须换一路读才作数。
+  const defaults: SystemSettings = {
+    auto_scan_enabled: true,
+    auto_scan_interval: 3600,
+    default_transcode_format: 'mp4',
+    thumbnail_width: 320,
+    thumbnail_height: 180,
+  }
+  expect(await readSettings(page)).toEqual(defaults)
+
+  // 先把两个数字键写成**非默认值**（走单键 PUT，顺带证明那条路径真的落库）。默认值留着
+  // 的话最后那句"被拒的写入没有落地"就没有对照——那一格本来就是 320，改成"不落地"也还是
+  // 320。注意它**不能**反过来抓"整份保存漏写了一个键"：漏写只是不再覆盖，库里留的是上一次的
+  // 值，不是代码默认值（这一条是变异试出来的：漏写 thumbnail_height 全绿，漏写界面真改过的
+  // auto_scan_interval 才红）。
+  for (const [key, value] of [
+    ['thumbnail_width', '640'],
+    ['thumbnail_height', '480'],
+  ] as const) {
+    const written = await fetchInPage(page, `/api/settings/${key}`, {
+      method: 'PUT',
+      headers: { ...CSRF, 'content-type': 'application/json' },
+      body: JSON.stringify({ value }),
+    })
+    expect(written.status).toBe(200)
+  }
+  expect(await readSettings(page)).toEqual({ ...defaults, thumbnail_width: 640, thumbnail_height: 480 })
+
+  await page.goto('/settings')
+  const form = page.locator('.el-form-item', { hasText: '扫描间隔' })
+  await expect(page.locator('.settings-card')).toHaveCount(3)
+  await expect(form).toContainText('每小时') // 界面给的是 label，3600 在 value 里
+  await expect(page.locator('.el-form-item', { hasText: '自动扫描' }).locator('.el-switch')).toHaveClass(/is-checked/)
+
+  await form.locator('.el-select').click()
+  await page.locator('.el-select-dropdown__item', { hasText: '每 2 小时' }).click()
+  await page.locator('.el-form-item', { hasText: '自动扫描' }).locator('.el-switch').click()
+  await page.getByRole('button', { name: '保存设置' }).click()
+  await expect(page.locator('.el-message')).toContainText('设置已保存')
+
+  // 这一路读才算数：`PUT` 那份回显只是把请求体原样送回。界面上没动过的那两格要还带着
+  // 640 / 480，说明整份保存把它们一起写回来了（而不是又写了一遍默认值）。
+  const saved: SystemSettings = {
+    auto_scan_enabled: false,
+    auto_scan_interval: 7200,
+    default_transcode_format: 'mp4',
+    thumbnail_width: 640,
+    thumbnail_height: 480,
+  }
+  expect(await readSettings(page)).toEqual(saved)
+  // 库里那一格是 Text 列，读回来才是数字 7200——这一层强制转换只在真库上存在
+  const raw = JSON.parse((await fetchInPage(page, '/api/settings/auto_scan_interval')).text) as {
+    key: string
+    value: string
+  }
+  expect(raw).toEqual({ key: 'auto_scan_interval', value: '7200' })
+
+  await page.reload()
+  await expect(page.locator('.el-form-item', { hasText: '扫描间隔' })).toContainText('每 2 小时')
+  await expect(page.locator('.el-form-item', { hasText: '自动扫描' }).locator('.el-switch')).not.toHaveClass(/is-checked/)
+
+  // 本单的修复：单键 PUT 认键名，原先不认值。写一个 `GET` 读不回来的字符串进去，
+  // 设置页从此 500，直到有人手工去改那一行。
+  const poisoned = await fetchInPage(page, '/api/settings/thumbnail_width', {
+    method: 'PUT',
+    headers: { ...CSRF, 'content-type': 'application/json' },
+    body: JSON.stringify({ value: 'not-a-number' }),
+  })
+  expect(poisoned.status).toBe(400)
+  expect(poisoned.text).toContain('必须是整数')
+  expect(await readSettings(page)).toEqual(saved)
+})

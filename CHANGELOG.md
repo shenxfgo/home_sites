@@ -2,6 +2,23 @@
 
 ## 2026-10-05
 
+### 修复 + 新增：单键写系统配置能把设置页打成 500；真后端 e2e 加到 11 条
+
+- **动因**：`PUT /api/settings/{key}` 认键名（白名单，M3 加的），**不认值**——它收的是裸 `value: str`，写什么进库什么。而 `GET /api/settings` 读回来的时候对 `auto_scan_interval` / `thumbnail_width` / `thumbnail_height` 三个键做 `int(...)`。于是一次写入就把整个设置页永久打成 500，直到有人手工去改库里那一行。整份的 `PUT /api/settings` 不会有这个问题：它走 `AllSettingsResponse`，Pydantic 替它挡了。
+- **原症状**（先跑出来的证据，不是推测）：`PUT /api/settings/thumbnail_width {"value":"abc"}` → 200，随后 `GET /api/settings` 抛 `ValueError: invalid literal for int() with base 10: 'abc'`（`api/settings.py:63`）。
+- **修复**：`INT_SETTING_KEYS` + `_check_setting_value`，规则只有一条——**写进去的值必须能被读回来的那条路径解析**。不合法的键值现在 400，报错文案点名是哪个键、必须是什么。刻意**没有**加范围校验：那三个数在项目里目前没有任何消费者（`grep auto_scan_interval` 只命中 `api/settings.py` 自己），定时扫描用的是源级别的 `scan_interval`，所以"0 秒扫一次"现在还伤不到谁，等有消费者了再按那个消费者的约束收。
+- **用例（后端）**：`tests/test_api/test_preferences.py` 参数化三条（三个数字键各一），断 400 **并且** `GET /api/settings` 仍是 200。红在先：改完之后跑，`assert 200 == 400` 三条同时红，先看着它红再写修复。顺手把这一面缺的四条补齐——整份 `PUT` 的回显、整份 `PUT` 之后换一路读（含 Text 列原文）、单键再写一次走"那一行已存在"的分支、以及"漏一个键 = 回到代码默认值"这条边界（`AllSettingsResponse` 五个字段都带默认值，少传一个 Pydantic 替它填上；界面每次都发全五项所以碰不到）。这一面此前是 `api/settings.py` **71%**，量完是 100%（缺的只有那一行"已存在就改值"）。
+- **用例 11（真后端 e2e，系统配置）**：这一条要签的是**"保存成功"和"库里有没有那一行"是两件事**——`PUT /api/settings` 直接把请求体送回，替身夹具里连库都不碰，所以界面上那句「设置已保存」什么也没证明。用例先断 `settings` 表空着时读回来的是五项代码默认值，再用单键 PUT 把两个数字键写成非默认值，然后在界面上改扫描间隔（每小时 → 每 2 小时）和自动扫描开关、点保存，**换 `GET /api/settings` 这一路**核对五项，再 `GET /api/settings/auto_scan_interval` 核对库里那一格的原文是字符串 `"7200"`（Text→int 那层强制转换只在真库上存在），刷新后界面读回同一个值，最后打一次坏值证明 400 之后库里没被写坏。
+- **红在先（四次变异：三次红、一次绿，那一次绿写下来）**：
+  - 注释掉 `update_settings` 里的 `await session.commit()` → 红在 `expect(await readSettings(page)).toEqual(saved)`（`:658`）。**这一条就是"回显不算数"的证据**：服务器照旧回 200、界面照旧弹「设置已保存」，什么都没写进去。
+  - 从整份 PUT 的字典里删掉 `"auto_scan_interval"`（界面真改过的那个键）→ 同一个位置红：`Expected 7200 / Received 3600`。
+  - 删掉 `"thumbnail_height"`（界面上**没**动过的键）→ **全绿**。这是一次有价值的失败：漏写一个键不会让它回到默认值，只是**不再覆盖**，库里留的还是上一次写进去的那个数。默认值只在"那一行根本不存在"时生效。所以"先写成非默认值"这步买到的是最后那句 400 的对照（那一格没被写坏），不是"漏写键"的探针。
+  - 摘掉 `_check_setting_value(key, data.value)` → 红在 `expect(poisoned.status).toBe(400)`（`:677`，实际 200），紧接着那句 `readSettings` 也会红——**这就是当年那个 500**。
+- **文档同步**：`README.md`、`CLAUDE.md`、`frontend/CLAUDE.md` 三处计数 10 → 11，顺序段写清第 11 条为什么排在最后（它开头断的是空表、末尾留下四行非默认值；顺序在这里不是硬约束，因为播种那趟 `TRUNCATE` 走 `business_tables()` 会连 `settings` 一起清），`backend/CLAUDE.md` 的 §设置接口补一句值这一道校验和"范围校验为什么暂不加"。
+- **验证**：真后端 e2e **11 passed**（31.3 秒，四次变异全部还原之后重跑）；`-g 系统配置` 单独跑 **1 passed**（8.6 秒）；后端 PostgreSQL 全量 **725 passed**（718 → 725 是本单新增的七条），带 `--cov` 再跑一遍确认 `api/settings.py` 71% → **100%**、TOTAL 仍是 **92%**；`typecheck:test` 绿；前端单测 **279 passed**、桩 e2e **82 passed**；`ruff check .` **0 项**、`mypy src` **34 项**（基线同数）。
+- **覆盖面现状**：浏览器用例总数实测 **93** 条——打真库 **11** 条，其余 **82** 条继续对着 `e2e/fixtures.ts` 的替身。仍然零真库签字的读路径：搜索与筛选的分面、转码任务那条长流程。
+
+
 ### 新增：真后端 e2e 加到 10 条——同一个目录挂两个源，扫它不出重复片、删它不伤别人的片子
 
 - **动因**：`videos.filepath` 是**全库唯一**的，而"两个源指向同一个目录"恰好是这个约束唯一的日常成因（#102：那样每轮扫描都会撞一次 `IntegrityError`）。这个数据形状在此前九条真库用例里一次没出现过——播种只留一个源，替身夹具更是连唯一约束都没有：`page.route` 给什么前端就信什么，"重复插一行"这种事在替身侧根本不构成错误。同一批还没人签字的是源本身的读写面：`last_scan_at` 只有 `scan_service.py:330` 一个写入方，界面上那格「从未」到底是 null 还是没渲染；而 `source_service.delete` 的谓词写反一位字符就会删掉别人的片子。

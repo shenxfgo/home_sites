@@ -5,7 +5,8 @@
 会变成"一个人切深色，全家跟着变"。
 
 键名走白名单而不是随便往里塞：``PUT /api/settings/{key}`` 原先能写任意键，前端读
-的却是固定字段，多余的键没人清理，最后没人知道哪些还有用。
+的却是固定字段，多余的键没人清理，最后没人知道哪些还有用。白名单只管键名，
+值还要单独过一道 ``_check_setting_value``——那三个数字键在 ``GET`` 里走 ``int()``。
 """
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -37,6 +38,25 @@ class SettingResponse(BaseModel):
 class SettingUpdate(BaseModel):
     """Request model for updating a setting."""
     value: str
+
+
+#: 读回来的时候要走 `int(...)` 的那几个键。单键 PUT 收的是裸字符串，
+#: 不挡就等于让一次写入把整个设置页打成 500。
+INT_SETTING_KEYS: frozenset[str] = frozenset(
+    {"auto_scan_interval", "thumbnail_width", "thumbnail_height"}
+)
+
+
+def _check_setting_value(key: str, value: str) -> None:
+    """Reject a value the read path could not parse back."""
+    if key in INT_SETTING_KEYS:
+        try:
+            int(value)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{key} 必须是整数，收到的值是「{value}」",
+            ) from None
 
 
 class AllSettingsResponse(BaseModel):
@@ -124,6 +144,7 @@ async def update_setting(
             status_code=400,
             detail=f"未知的配置项：{key}。可写的只有 {', '.join(sorted(SYSTEM_SETTING_KEYS))}",
         )
+    _check_setting_value(key, data.value)
 
     result = await session.execute(
         select(Setting).where(Setting.key == key)
