@@ -41,6 +41,19 @@ TEST_SESSION_TOKEN = "test-session-token"
 #: 填了就在真库上跑（迁移主线要求的 PostgreSQL 路径），留空则退回原来的内存 SQLite。
 TEST_DATABASE_URL = settings.test_database_url
 
+
+def pytest_report_header(config) -> str:  # noqa: ARG001
+    """把这次的方言打在头部。
+
+    踩过的坑：`backend/.env` 里带着 `TEST_DATABASE_URL`，所以裸 `pytest` 跑的是
+    PostgreSQL，而连续几单的报告把它写成了 SQLite——命令一模一样，差别只在环境。
+    光靠纪律拦不住（判据不在命令行上），所以让每次运行自己说一遍。
+    """
+    if not TEST_DATABASE_URL:
+        return "测试库: 内存 SQLite（TEST_DATABASE_URL 为空；backend/.env 会把它填上）"
+    dialect = TEST_DATABASE_URL.split("://", 1)[0].split("+", 1)[0]
+    return f"测试库: 真库 {dialect}（TEST_DATABASE_URL 来自环境或 backend/.env）"
+
 # 建表只在一次 pytest 会话里做一次：Alembic 的 DDL 是启动路径，逐用例重跑既慢，
 # 又会把一个用例的循环绑住另一个用例的连接。
 _schema_ready = False

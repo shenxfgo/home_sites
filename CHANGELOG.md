@@ -2,6 +2,15 @@
 
 ## 2026-10-05
 
+### 更正：此前几单报的"SQLite 全量"跑的其实是 PostgreSQL——判据在 `backend/.env` 里，不在命令行上
+
+- **撞出来的经过**：这一晚连着几单都在末尾写"SQLite N passed + 1 skipped / PostgreSQL N+1 passed"，两边数字只差那条 PG-only 的搬迁用例。核对上一单的原始输出时才发现，被标成 SQLite 的那一套里根本没有 skip 行——它跑的就是 PG。命令一模一样（`python -m pytest`），差别只在环境变量
+- **为什么会这样**：`tests/conftest.py:42` 取的是 `settings.test_database_url`，而 pydantic 的 `Settings` 会读 `backend/.env`；这台机器的 `.env` 在 2026-10-04 切 PG 时就把 `TEST_DATABASE_URL` 一并写进去了（指向 `home_sites_test`）。所以**裸 `pytest` 是 PostgreSQL**，之前那种"默认走内存 SQLite"的理解在切库之后就失效了，而我一直在按失效的理解报数
+- **正确的取法**：真 SQLite 要显式清空——`TEST_DATABASE_URL= python -m pytest ...`（环境变量在 pydantic-settings 里压过 `.env`）。判据也简单：**看到 `tests/test_db_transfer.py:335` 那条 skip（"需要真 PostgreSQL：设 TEST_DATABASE_URL 才跑"）才是 SQLite 跑过**，PG 那一套是 0 skipped
+- **这一单把两家各重测了一遍**：SQLite **716 passed + 1 skipped**、PG **717 passed**，用例数一致，所以上几单的功能结论没有受影响，受影响的只是"这套是在哪种方言上验的"这句话
+- **写进文档的是纪律，另加一个会自己报话的头部**：光立纪律拦不住——判据不在命令行上。所以 `tests/conftest.py` 加了 `pytest_report_header`，每次运行在头部印「测试库: 真库 postgresql（TEST_DATABASE_URL 来自环境或 backend/.env）」或「测试库: 内存 SQLite（TEST_DATABASE_URL 为空…）」，两种方言各实测一遍都印对。注意 **`-q` 会把这段一起吞掉**，要看见它得用不带 `-q` 的跑法；`backend/CLAUDE.md` 的 PostgreSQL 一节把这两条印记（头部 + `test_db_transfer.py:335` 的 skip）都写成了报数前的检查项
+- **此前各单里被标成 SQLite 的通过数没有回头改**——它们里有些是真 SQLite（早期确实带过空值，且都记着 `+ 1 skipped`），事后无从分辨；与其 retro 重写历史，不如把判别方法立起来
+
 ### 修复：两个视频源指向同一目录时每轮定时扫描都在刷回溯，而那条本该报出问题的 `scan_error` 通知从来没落地过
 
 - **动因**：验证上一单（备份补跑）时在真机器上留下的日志里，每 30/60 分钟就刷一段完整的 `IntegrityError` 回溯：`duplicate key value violates unique constraint "videos_filepath_key"`。原因是 `video_sources` 里 5 号和 6 号都指着 `backend/data/test_videos`（6 号是转码走查时留下的），而"这个文件我认识吗"的判断只看**本源**的行，别源建过的路径就被当成新片重插一次
