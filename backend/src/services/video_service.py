@@ -1,9 +1,13 @@
 """VideoService for video CRUD operations and playback tracking."""
 import asyncio
+import logging
 import operator
+import os
+from collections.abc import Iterable
 from datetime import datetime, timezone
+from typing import cast
 
-from sqlalchemy import case, delete, exists, func, or_, select
+from sqlalchemy import Table, case, delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.video import Video
@@ -19,6 +23,8 @@ from src.models.watchlist import WatchlistItem
 from src.storage import fingerprint
 from src.utils.video_search import VideoSearchQuery, parse_video_search
 
+logger = logging.getLogger(__name__)
+
 
 def is_completed(progress: int, duration: int | None) -> bool:
     """Whether ``progress`` counts as having watched the video to the end.
@@ -32,16 +38,47 @@ def is_completed(progress: int, duration: int | None) -> bool:
     return progress >= duration - max(1, min(10, duration * 0.05))
 
 
+#: 每一张外键挂在 ``videos.id`` 上的表，删除影片时必须一起清掉。
+#:
+#: 统一收成 ``Table`` 是因为关联表 ``video_tags`` 不是 ORM 模型，列只能在 ``.c``
+#: 上取。清单由 ``test_the_explicit_cascade_list_is_every_child_of_videos`` 对着
+#: 模型元数据核对，新增一张挂 ``videos.id`` 的表却忘了进来时那条用例要红。
+#: ``cast`` 是给 mypy 的：项目没启用 SQLAlchemy 的 mypy 插件，它把 ``__table__``
+#: 只看成 ``FromClause``，而运行时它确实就是 ``Table``。
+VIDEO_CHILD_TABLES: tuple[Table, ...] = cast(
+    "tuple[Table, ...]",
+    (
+        PlayHistory.__table__,
+        Favorite.__table__,
+        NewVideo.__table__,
+        Subtitle.__table__,
+        WatchEvent.__table__,
+        WatchlistItem.__table__,
+        video_tags,
+    ),
+)
+
+
 async def delete_videos_cascade(
     session: AsyncSession, video_filter
-) -> None:
+) -> list[str]:
     """Delete the matching videos together with every row pointing at them.
 
-    The schema declares ``ondelete="CASCADE"``, but SQLite only honours that
-    when foreign key enforcement is enabled, which this project does not do.
-    Without these explicit deletes, removing a video (or its source) leaves
-    orphaned history, favorite and new-video rows behind.
+    Returns the cover files those rows referenced, without touching them: the
+    caller removes them **after** its commit, so a rolled-back delete cannot
+    leave a row in the library whose picture is gone.
+
+    The schema declares ``ondelete="CASCADE"``, and PostgreSQL honours it while
+    SQLite does not enforce foreign keys at all. The two dialects therefore fail
+    in opposite directions -- a child table missing from
+    :data:`VIDEO_CHILD_TABLES` is silently covered in production but visible in
+    tests -- so this list is kept as the full set rather than whatever a case
+    happened to notice, and stays the one place deciding what a delete takes.
     """
+    covers = (
+        await session.execute(select(Video.thumbnail_path).where(video_filter))
+    ).scalars().all()
+
     video_ids = select(Video.id).where(video_filter)
     # The per-person "seen it" rows hang off ``new_videos``, so they go first.
     await session.execute(
@@ -51,14 +88,29 @@ async def delete_videos_cascade(
             )
         )
     )
-    for model in (PlayHistory, Favorite, NewVideo, Subtitle, WatchEvent, WatchlistItem):
+    for table in VIDEO_CHILD_TABLES:
         await session.execute(
-            delete(model).where(model.video_id.in_(video_ids))
+            delete(table).where(table.c.video_id.in_(video_ids))
         )
-    await session.execute(
-        delete(video_tags).where(video_tags.c.video_id.in_(video_ids))
-    )
     await session.execute(delete(Video).where(video_filter))
+    return [path for path in covers if path]
+
+
+def delete_cover_files(paths: Iterable[str]) -> None:
+    """Remove the covers the app generated for deleted videos.
+
+    A cover that cannot be removed is logged and skipped: the rows are already
+    committed, and failing the request over a leftover jpg would strand the
+    library worse than an orphaned file does.
+    """
+    for path in paths:
+        if not os.path.isfile(path):
+            continue
+        try:
+            os.remove(path)
+        except OSError:
+            logger.warning("封面文件没能删掉: %s", path, exc_info=True)
+
 
 
 async def attach_watch_progress(
@@ -461,13 +513,14 @@ class VideoService:
         return video
 
     async def delete_video(self, video_id: int) -> None:
-        """Delete a video, with every account's rows pointing at it."""
+        """Delete a video, its rows in every account, and the cover we generated."""
         video = await self.session.get(Video, video_id)
         if not video:
             raise ValueError(f"Video with id {video_id} not found")
 
-        await delete_videos_cascade(self.session, Video.id == video_id)
+        covers = await delete_videos_cascade(self.session, Video.id == video_id)
         await self.session.commit()
+        delete_cover_files(covers)
 
     async def get_new_videos(self, user_id: int, source_id: int | None = None) -> list[Video]:
         """Get videos the caller discovered and has not looked at yet."""

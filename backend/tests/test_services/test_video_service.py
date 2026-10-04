@@ -34,7 +34,7 @@ async def _create_video(session, source_id=1, title="Test Video", filepath="/tes
 
 @pytest.mark.asyncio
 async def test_delete_video_removes_dependent_rows(db_session, user_id):
-    """SQLite ignores the schema's ON DELETE CASCADE, so the service must not."""
+    """级联清单不指望数据库替它删：PG 会、SQLite 不会，两边都得由服务说同一句话。"""
     from sqlalchemy import func, select
 
     from src.models.favorite import Favorite
@@ -630,3 +630,83 @@ async def test_deleting_a_video_takes_its_watch_events_with_it(db_session, user_
 
     result = await db_session.execute(select(func.count(WatchEvent.id)))
     assert result.scalar_one() == 0
+
+
+# --- 删除影片时，应用自己生成的封面也要跟着走 ---
+
+
+@pytest.mark.asyncio
+async def test_delete_video_removes_its_cover_but_never_the_media(db_session, tmp_path):
+    """封面是应用生成的产物，删记录就该删掉；影片文件属于用户，绝不能碰。"""
+    from src.services.video_service import VideoService
+
+    cover = tmp_path / "cover.jpg"
+    cover.write_bytes(b"\xff\xd8jpeg")
+    media = tmp_path / "深夜测试.mp4"
+    media.write_bytes(b"not really a video")
+
+    video = await _create_video(db_session, filepath=str(media))
+    video.thumbnail_path = str(cover)
+    await db_session.commit()
+
+    await VideoService(db_session).delete_video(video.id)
+
+    assert not cover.exists()
+    assert media.exists()
+
+
+@pytest.mark.asyncio
+async def test_cascade_only_reports_covers_so_a_rollback_keeps_them(db_session, tmp_path):
+    """删除文件必须排在提交之后：级联函数只报出该删谁，回滚不该把封面弄丢。"""
+    from src.services.video_service import delete_videos_cascade
+
+    cover = tmp_path / "cover.jpg"
+    cover.write_bytes(b"x")
+    video = await _create_video(db_session, filepath="/v.mp4")
+    video.thumbnail_path = str(cover)
+    await db_session.commit()
+
+    paths = await delete_videos_cascade(db_session, Video.id == video.id)
+
+    assert paths == [str(cover)]
+    assert cover.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_video_tolerates_dead_or_legacy_cover_paths(db_session, tmp_path):
+    """老行的 thumbnail_path 可能写着已经不存在的文件，甚至带 ./ 前缀和混用分隔符。"""
+    from src.services.video_service import VideoService
+
+    vanished = tmp_path / "already-gone.jpg"
+    gone = await _create_video(db_session, title="图没了", filepath="/a.mp4")
+    gone.thumbnail_path = str(vanished)
+    legacy = await _create_video(db_session, title="老写法", filepath="/b.mp4")
+    legacy.thumbnail_path = "./data/thumbnails\\5\\sample_1.jpg"
+    blank = await _create_video(db_session, title="没封面", filepath="/c.mp4")
+    await db_session.commit()
+
+    for video_id in (gone.id, legacy.id, blank.id):
+        await VideoService(db_session).delete_video(video_id)
+
+    for video_id in (gone.id, legacy.id, blank.id):
+        assert await db_session.get(Video, video_id) is None
+
+
+def test_the_explicit_cascade_list_is_every_child_of_videos():
+    """清单靠人维护，模型里的外键靠机器声明：新增一张挂 videos.id 的表漏进清单要能红。
+
+    两种方言的失败方向是相反的——PG 认 ON DELETE CASCADE，会替你把子行删掉；SQLite
+    不查外键，静默留孤儿行。所以这份清单得是全集，不能是"用例恰好写到的那几张"。
+    """
+    from src.database.base import Base
+    from src.services.video_service import VIDEO_CHILD_TABLES
+
+    declared = {
+        table.name
+        for table in Base.metadata.tables.values()
+        for fk in table.foreign_keys
+        if fk.target_fullname == "videos.id"
+    }
+    listed = {table.name for table in VIDEO_CHILD_TABLES}
+
+    assert declared == listed

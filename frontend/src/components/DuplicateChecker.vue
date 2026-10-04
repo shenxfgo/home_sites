@@ -97,7 +97,7 @@ async function removeExtras(group: DuplicateGroup) {
 async function confirmRemoval(count: number): Promise<boolean> {
   try {
     await ElMessageBox.confirm(
-      `将从库里移除 ${count} 条记录。磁盘上的文件不会被动，请到文件管理器里删掉它，否则下次扫描会重新收录。`,
+      `将从库里移除 ${count} 条记录。磁盘上的视频文件不会被动，但记录生成的封面会一并删掉；要腾出空间请到文件管理器里删掉视频本体，否则下次扫描会重新收录。`,
       '确认移除记录',
       { confirmButtonText: '移除记录', cancelButtonText: '再想想', type: 'warning' },
     )

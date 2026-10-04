@@ -301,7 +301,13 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 `sessions` 没有自增 id，所以「我的设备」拿这枚摘要当行的地址用（`TOKEN_HASH_HEX` 是 `auth_service` 与中间件共用的一份形状）：路由用 `Path(pattern=TOKEN_HASH_HEX)` 卡参数，形状不对在路由层就是 422；中间件白名单里对应一条 `^/api/auth/sessions/{摘要}$`，成员也在 `MEMBER_WRITE_PATHS` 里放行这一条。`AuthService.revoke_session(user_id, token_hash)` 的匹配条件带上 `user_id`，所以别人的摘要只会得到 404 而不是把他踢下线；列表（`list_sessions`）按 `last_seen_at` 倒序取全部行、不做分页，一个家的浏览器就几台。响应回给浏览器的是摘要，不是 Cookie 值。
 
-归属分两种。**属于人**的表带外键列：`favorites`/`play_history`/`watch_events` 有 `user_id`，`watchlists` 有 `owner_id`，唯一约束都是 `(人, 影片)` 或 `(owner_id, name)` 这种成对形式；`watchlist_items` 不加列，归属随它所在的清单。**全库广播**的内容只有一份行——`new_videos`（扫描日志）与 `notifications`（系统通知）——"读过没"另记在 `new_video_reads`/`notification_reads`（复合主键天然去重），响应里的 `read`/`is_new` 是 service 现查现挂的临时属性，不在模型列里。因此标记已读是 INSERT 而不是 UPDATE，`unread_count` 走 `~EXISTS`；删掉一条通知则是全家一起少一条，它没有归属列，所以这两个删除口不在 `MEMBER_WRITE_PATHS` 里——语义仍是家庭级，只是动手的换成 owner。删影片时 `delete_videos_cascade` 要连 `new_video_reads` 一起清（SQLite 不执行 `ON DELETE CASCADE`，得手写）。
+归属分两种。**属于人**的表带外键列：`favorites`/`play_history`/`watch_events` 有 `user_id`，`watchlists` 有 `owner_id`，唯一约束都是 `(人, 影片)` 或 `(owner_id, name)` 这种成对形式；`watchlist_items` 不加列，归属随它所在的清单。**全库广播**的内容只有一份行——`new_videos`（扫描日志）与 `notifications`（系统通知）——"读过没"另记在 `new_video_reads`/`notification_reads`（复合主键天然去重），响应里的 `read`/`is_new` 是 service 现查现挂的临时属性，不在模型列里。因此标记已读是 INSERT 而不是 UPDATE，`unread_count` 走 `~EXISTS`；删掉一条通知则是全家一起少一条，它没有归属列，所以这两个删除口不在 `MEMBER_WRITE_PATHS` 里——语义仍是家庭级，只是动手的换成 owner。删影片（或整个视频源）时 `delete_videos_cascade` 要连 `new_video_reads` 一起清——它挂在 `new_videos` 上，是这条链最深的孩子。
+
+级联的孩子清单只有一处出处：`video_service.VIDEO_CHILD_TABLES`，外键指向 `videos.id` 的表一张不落（`play_history`/`favorites`/`new_videos`/`subtitles`/`watch_events`/`watchlist_items`/`video_tags`）。清单统一存 `Table` 而非 ORM 模型——关联表 `video_tags` 没有模型，列只能从 `.c` 上取，一份形状一个循环就能过完。`tests/test_services/test_video_service.py::test_the_explicit_cascade_list_is_every_child_of_videos` 拿 `Base.metadata` 现算出"所有引用 `videos.id` 的表"跟这张清单对账，新加一张却忘了登记时这条用例要红。
+
+两个方言朝**相反方向**失效：PG 真的执行 `ON DELETE CASCADE`，SQLite 默认连外键都不查、于是悄悄留下孤儿行。只信 schema 声明，SQLite 上的测试永远发现不了漏表；只信手写清单，加了表却不登记，PG 那边当场 500。所以显式删除留着——为的是"由这一处决定删除带走什么"，两边同一个答案。代价是这张清单必须有人守，于是守卫做成用例，不靠记性。
+
+删行之外还带走封面：`delete_videos_cascade` 把这些行的 `thumbnail_path` 返回给调用方，调用方**提交之后**再调 `delete_cover_files` 落盘删除（顺序反了的话，回滚的删除会留下"行还在、图没了"的影片）。封面只由 `scan_service` 生成在本地磁盘，S3 源在 `scan_service.py:256` 的 `local_path` 闸门上根本不会生成，所以清理走服务层的 `os.remove` 就够了，**没有**给 `MediaStorage` 加 `delete()`——那个 seam 是只读的，而且 UI 明说删记录不动磁盘上的视频，一个能删对象的口子比它要修的孤儿文件更危险。
 
 通知只有一个写入方：`ScanService.scan_source` 发 `scan_complete`，`TranscodeService` 发 `transcode_complete`/`transcode_error`，`src/scheduler/tasks.py` 只在异常时补一条 `scan_error`。调度任务**不再**对同一个结果再播一条——曾经两处各写一份，六个源跑一轮就是 12 条。另一半规则是"变了才说"：`new_videos`、`subtitles_found`、`is_missing` 翻转（`missing_flips`）三个计数全为零就不写，因为一轮定时扫描的常态就是"什么都没变"，而扫过没扫过本来就记在 `video_sources.last_scan_at` 上，不需要通知当心跳。这条规则由 `tests/test_services/test_scan_service.py` 末尾四例钉住（一轮只播一次 / 零变化不播 / 文件消失要播 / 新增字幕要播）。后两例是防止静得太狠：文件消失和新加字幕都不体现在 `new_videos` 上，只看新增计数会把它们一起静掉。
 
@@ -382,6 +388,7 @@ class Video(Base):
 - **文件名由 locator 派生并带一段摘要**：`{原文件名}-{sha256(locator)[:12]}.jpg`，落在 `THUMBNAIL_PATH/{source_id}/` 下（`scan_service._thumbnail_target`）。只按 basename 命名的话，同一视频源的不同子目录里的同名视频（`a/01.mp4` 与 `b/01.mp4`）会写到同一个 `01.jpg`，后扫的那张悄悄盖掉前一张，两行都显示"有封面"，看不出坏过
 - **`THUMBNAIL_PATH` 的相对值在配置层就按 `backend/` 展开成绝对路径**：库里 `videos.thumbnail_path` 存的是算出来的完整字符串，读取端（`stream.py` 的 `os.path.isfile`）按进程工作目录解析它，相对值会让"从仓库根目录启动"变成全库无封面。同类的 `DATABASE_URL` 与 `.env` 本身仍是 cwd 相对，**从 `backend/` 启动服务这个约定没取消**
 - **设置页的「缩略图宽度 / 高度」没有接**：`generate_thumbnail` 里的 `scale=320:-1` 和 `-ss 00:00:01` 是硬编码，那两个值只是存进 `settings` 表、无人读取。要真做成可配得改函数签名并把设置读进来，别以为改表单就行
+- **封面跟着记录走**：删影片或删整个视频源时，`delete_videos_cascade` 把被删行的 `thumbnail_path` 交给调用方，提交成功后由 `delete_cover_files` 从磁盘移除；漏了这一步就是永久孤儿文件（删行不碰磁盘，重扫又会按同一个派生名新建一张，盘上只会越攒越多）。视频本体**永远不删**——那是用户的片，不是应用生成的。细节见「数据模型」一节
 
 `boto3` 是可选依赖（`.[s3]`），不装也能起服务，真去读对象存储时才提示「请安装 .[s3]」；`moto`（在 `.[dev]` 里）在内存中演一个桶来测 S3 实现，不碰网络——它证明的是客户端接线正确，不代表真服务器就这么答，端点行为仍要人肉验一次。两个包都没装时相关用例 `importorskip` 跳过而不是报错。
 

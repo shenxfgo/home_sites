@@ -100,7 +100,7 @@ describe('DuplicateChecker', () => {
     await clickInRow(wrapper, 1, '移除记录')
 
     expect(ElMessageBox.confirm).toHaveBeenCalledWith(
-      expect.stringContaining('磁盘上的文件不会被动'),
+      expect.stringContaining('磁盘上的视频文件不会被动'),
       expect.any(String),
       expect.any(Object),
     )

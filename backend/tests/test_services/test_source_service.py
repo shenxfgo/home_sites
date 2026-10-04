@@ -207,3 +207,34 @@ async def test_update_last_scan(db_session):
     updated = await service.get_by_id(created.id)
     assert updated.last_scan_at is not None
     assert isinstance(updated.last_scan_at, datetime)
+
+
+@pytest.mark.asyncio
+async def test_delete_source_takes_the_covers_with_it(db_session, tmp_path):
+    """删源与删影片走同一套级联，应用生成的封面也该一起走。"""
+    from src.models.video import Video
+    from src.services.source_service import SourceService
+
+    service = SourceService(db_session)
+    doomed = await service.create(name="Doomed", path="/doomed", type="local")
+    keeper = await service.create(name="Keeper", path="/keeper", type="local")
+
+    doomed_cover = tmp_path / "doomed.jpg"
+    doomed_cover.write_bytes(b"x")
+    keeper_cover = tmp_path / "keeper.jpg"
+    keeper_cover.write_bytes(b"x")
+
+    doomed_video = Video(
+        source_id=doomed.id, filepath="/doomed/a.mp4", title="a", thumbnail_path=str(doomed_cover)
+    )
+    keeper_video = Video(
+        source_id=keeper.id, filepath="/keeper/b.mp4", title="b", thumbnail_path=str(keeper_cover)
+    )
+    db_session.add_all([doomed_video, keeper_video])
+    await db_session.commit()
+
+    await service.delete(doomed.id)
+
+    assert not doomed_cover.exists()
+    # 别的源的封面不能被带掉
+    assert keeper_cover.exists()

@@ -200,6 +200,24 @@ async def test_delete_video_not_found(client):
 
 
 @pytest.mark.asyncio
+async def test_delete_video_endpoint_takes_the_cover_with_it(client, db_session, tmp_path):
+    """界面调的是这个入口，封面清理就得在这儿验一次，不能只停在服务层。"""
+    from src.models.video import Video
+
+    source = await _create_source(db_session)
+    cover = tmp_path / "cover.jpg"
+    cover.write_bytes(b"\xff\xd8jpeg")
+    video = await _create_video(db_session, source_id=source.id)
+    video.thumbnail_path = str(cover)
+    await db_session.commit()
+
+    response = await client.delete(f"/api/videos/{video.id}")
+    assert response.status_code == 204
+    assert not cover.exists()
+    assert await db_session.get(Video, video.id) is None
+
+
+@pytest.mark.asyncio
 async def test_list_new_videos(client, db_session):
     """Test listing new (unviewed) videos."""
     from src.models.new_video import NewVideo

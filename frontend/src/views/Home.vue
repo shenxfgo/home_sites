@@ -243,7 +243,7 @@ function showMissingOnly() {
 async function clearMissingRecords() {
   try {
     await ElMessageBox.confirm(
-      `将删除 ${missingCount.value} 条扫描时找不到文件的记录。磁盘上的视频不会被改动，但播放历史与收藏会一起删除；文件回来后重新扫描会重新登记。`,
+      `将删除 ${missingCount.value} 条扫描时找不到文件的记录。磁盘上的视频不会被改动，但播放历史、收藏与这些记录生成的封面会一起删除；文件回来后重新扫描会重新登记，封面也重新生成。`,
       '清理丢失记录',
       { type: 'warning', confirmButtonText: '删除记录', cancelButtonText: '再想想' },
     )

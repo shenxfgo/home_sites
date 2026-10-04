@@ -96,7 +96,7 @@ test('移除多余副本会先确认，只发出一次记录级 DELETE', async (
   })
 
   await page.getByRole('button', { name: '移除多余记录' }).click()
-  await expect(page.locator('.el-message-box')).toContainText('磁盘上的文件不会被动')
+  await expect(page.locator('.el-message-box')).toContainText('磁盘上的视频文件不会被动')
   await page.locator('.el-message-box__btns button', { hasText: '移除记录' }).click()
 
   await expect(page.locator('.dup-group')).toHaveCount(0)
