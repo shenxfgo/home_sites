@@ -3,8 +3,11 @@
  *
  * 这套用例存在的理由是替身夹具补不上的一环：替身把响应形状写在了前端测试里，前端和后端
  * 各自对着自己那份理解测试，中间没人签字。这里验的正是中间那层——真扫描产出的行、真
- * FFmpeg 封面、真 SRT→WebVTT 转换、真 Range 分段、真写进库的收藏，以及真角色闸门
- * （替身夹具那份 `MEMBER_WRITE` 名单是从后端抄来的，抄错也不会红，只有真中间件会）。
+ * FFmpeg 封面、真 SRT→WebVTT 转换、真 Range 分段、真写进库的收藏，真角色闸门
+ * （替身夹具那份 `MEMBER_WRITE` 名单是从后端抄来的，抄错也不会红，只有真中间件会），
+ * 以及只在真库上才出现的**关系加载**：标签下那批影片要带着自己的 `tags` 集合回来，
+ * 序列化是同步的，少预取一层就是一次 greenlet 之外的 IO（500），而替身给的是一份 JSON，
+ * 没有关系可加载，永远测不到这件事。
  *
  * 数据来自 `backend/src/e2e_seed.py` 的一次性播种，长这样（真库实测）：两个账号
  * （owner `e2e_owner` + member `e2e_member`）、影片 id=1、片名 `e2e sample`、时长 30 秒、
@@ -362,4 +365,61 @@ test('管理面那两页的数是后台算出来的：窗口按 days 零填充�
       rows.filter({ hasText: entry.username }).first().locator('td').nth(3),
     ).toHaveText(String(entry.signed_in_devices))
   }
+})
+
+/** `GET /api/tags` 里这条用例真正在用的那几项。 */
+type TagRow = { id: number; name: string; video_count: number }
+
+test('标签挂在真影片上：两个标签各数各的视频，标签下那部片子读得到自己的标签', async ({ page }) => {
+  // 播种一个标签都没建，所以建标签这一下走的是真接口；而 #101 修的那个 500（响应模型要读
+  // `video.tags`，那一查却没预取第二层）只会在真库的关系加载上出现，替身夹具永远测不到。
+  await page.goto('/tags')
+  await page.locator('.page-header button', { hasText: '添加标签' }).click()
+  const dialog = page.locator('.el-dialog')
+  await dialog.locator('input[placeholder="请输入标签名称"]').fill('真库标签')
+  await dialog.getByRole('button', { name: '创建' }).click()
+  const firstCard = page.locator('.tag-card', { hasText: '真库标签' })
+  await expect(firstCard).toHaveCount(1)
+  await expect(firstCard.locator('.tag-meta')).toContainText('0 个视频')
+
+  // 挂到扫描出来的那部影片上（界面上这个动作在详情页，这里走接口把两步分开）
+  const created = JSON.parse((await fetchInPage(page, '/api/tags')).text) as TagRow[]
+  const attachedId = created.find((entry) => entry.name === '真库标签')?.id
+  expect(attachedId).toBeTruthy()
+  const linked = await fetchInPage(page, '/api/tags/video/1', {
+    method: 'POST',
+    headers: { ...CSRF, 'content-type': 'application/json' },
+    body: JSON.stringify({ tag_ids: [attachedId] }),
+  })
+  expect(linked.status).toBe(204)
+
+  await page.reload()
+  await expect(firstCard.locator('.tag-meta')).toContainText('1 个视频')
+
+  // 第二个标签只建不挂：`video_count` 要是算成了全局的数，这里就会跟着变成"1 个视频"。
+  // （期望写成映射而不是数组：`GET /api/tags` 按名字排，而中文在 PG 与 SQLite 上的排序
+  // 规则不保证一致，这条两边都要能过。）
+  const second = await fetchInPage(page, '/api/tags', {
+    method: 'POST',
+    headers: { ...CSRF, 'content-type': 'application/json' },
+    body: JSON.stringify({ name: '没挂过片子的标签' }),
+  })
+  expect(second.status).toBe(201)
+  await page.reload()
+  await expect(
+    page.locator('.tag-card', { hasText: '没挂过片子的标签' }).locator('.tag-meta'),
+  ).toContainText('0 个视频')
+
+  const rows = JSON.parse((await fetchInPage(page, '/api/tags')).text) as TagRow[]
+  expect(Object.fromEntries(rows.map((entry) => [entry.name, entry.video_count]))).toEqual({
+    真库标签: 1,
+    没挂过片子的标签: 0,
+  })
+
+  // 这一句是那单的回归位置：状态码必须还是 200，而那部片子带着自己的标签集合回来
+  const videos = await fetchInPage(page, `/api/tags/${attachedId}/videos`)
+  expect(videos.status).toBe(200)
+  const listed = JSON.parse(videos.text) as { id: number; title: string; tags: { id: number }[] }[]
+  expect(listed.map((entry) => [entry.id, entry.title])).toEqual([[1, 'e2e sample']])
+  expect(listed[0]?.tags.map((entry) => entry.id)).toEqual([attachedId])
 })
