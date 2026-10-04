@@ -518,6 +518,8 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 
 同理，测试里改过某行的时间后要看真实结果，用 `await db_session.refresh(row)` 重新读；`expire_all()` 之后靠关系属性懒加载会抛 `MissingGreenlet`。
 
+**关系只要被响应模型读到，就必须写进那一条查询**（2026-10-05 实测）。`VideoResponse` 带 `tags`，而 `get_videos_by_tag` 是经多对多的 `Tag.videos` 走到影片的，那批影片的 `tags` 没有被关系上的 `lazy="selectin"` 带上，序列化时（pydantic 是同步的）一碰就是 greenlet 之外的 IO → 端点 500。写法是把它链到底：`selectinload(Tag.videos).selectinload(Video.tags)`。别指望默认加载兜住：同样用 `expire_all()` 造冷会话，经**多对一**（`PlayHistory.video` / `Favorite.video` / `WatchlistItem.video`）的五个读接口都能带回标签，只有经多对多集合那一头会漏（`tests/test_api/test_video_reads_with_a_cold_session.py` 钉的就是这个差别）。我没从文档里推出一条"什么时候默认加载会生效"的一般规则，所以按戒律走，别去赌那个形状。
+
 ### 4. 类型检查剩下的两类边界
 
 `mypy src` 现在这 34 项不是"注解还没写完"，是两处刻意保留的形状。别指望总数降到 0，也别为了凑数加 `cast`：
