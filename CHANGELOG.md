@@ -2,6 +2,20 @@
 
 ## 2026-10-05
 
+### 新增：真后端 e2e 的夹具带上音轨，转码配方的音频半边从此能红（#115 的变异⑧翻红）
+
+- **动因**：#115 那八个变异里唯一绿的一个（⑧：把 webm 的 acodec `libopus` 改成容器明确拒收的 `aac`）不是断言写歪了，是**夹具的问题**——播种那部片子只有一条视频轨。源里没有音频流时 ffmpeg 把 `-c:a` 整个跳过（实测：无声夹具 + `-c:v libvpx-vp9 -c:a aac` 回 **rc=0**、写出一个 1332 字节只含 vp9 的 webm），于是 `SUPPORTED_FORMATS` 里音频那一列在**整套测试**中没有一处被执行过；而 `acodec` 又不进任何 API 响应（`get_supported_formats` 只回 `codec` 和 `extension`），接口那侧也拦不住写错的值。
+- **红在先**：先把断言写进 `expectRealOutput`（新增的 `probeStreams` 去问 `ffprobe`：产物必须是配方那一对编码器），再拿**旧夹具**单独跑一次 `-g 转码` —— 红在 `frontend/e2e/real/transcode.real.spec.ts:151`，`Expected [['audio','opus'],['video','vp9']] / Received [['video','vp9']]`。这一步先跑，是为了证明这条断言确实有牙，而不是和夹具一起改完直接绿。
+- **夹具**：`backend/src/e2e_seed.py` 的 `SAMPLE_MP4_B64` 换成 64x36 黑帧、1 fps、30 秒，外加一条 1 秒的 44100 Hz 单声道正弦（AAC），5008 字节（原 1882）。时长仍是 `30.000000`、封面仍是 320×180，所以扫描、播放、`Range`、继续观看那几条用例的断言**一个字都没改**，整跑仍是 14 条。
+- **用例**：`transcode.real.spec.ts` 现在对两个产物各核一份流清单（webm → `vp9` + `opus`，avi → `h264` + `aac`），不再只看文件头那几个字节。`STREAMS` 里写的是 ffprobe 那一侧的编码器名，不是配方字面值（`libvpx-vp9` → `vp9`、`libopus` → `opus`、`libx264` → `h264`），这层映射是手抄的。
+- **三个变异**（每个单独 `-g 转码` 跑，跑完 `cp` 还原并核对 md5 `b18c9b52…`）：① webm 的 acodec → `aac`，也就是 #115 那个绿的⑧，**现在红了**——红在 `.status-section` 那句「已完成」（现 :206），页面上直接摆着容器自己那句话：`Only VP8 or VP9 or AV1 video and Vorbis or Opus audio and WebVTT subtitles are supported for WebM.`（顺带又一次实测了 #74 那条"失败原因必须露出来"：这句话是 `transcode_error` 的 `error` 原样进界面）；② avi 的 acodec → `libopus` 红在 avi 状态四元组那一句（现 :266；AVI 同样不收 opus，任务落 `failed`）；③ webm 的 vcodec → `libx264` 红在格式清单那一句（现 :184，接口那侧先把它挡住），新增的 `['video','vp9']` 是同一件事的第二道闸门——只有"清单和命令行各自读一份表"这种改法才轮到它红。
+- **仍然没钉住的**：四行配方里 `mp4` 与 `mkv` 两行的 acodec 还是零真进程签字。mp4 造不出产物（源文件本身是 mp4，同格式覆盖被闸门拒绝），mkv 的 `aac` 虽然和 avi 的 `aac` 是同一个字面值，但**只改 mkv 那一行不会红**，因为用例不产 mkv。这条写进用例注释，不假装覆盖。
+- **播种侧的闸门**：`backend/tests/test_e2e_seed.py` 现在除了尺寸还钉 `blob.count(b"trak") == 2` 和 `b"mp4a" in blob`——音轨被无声地换回"只有一条视频流"时，红在 `pytest` 的半秒里，而不是等到真 PG 加真 FFmpeg 都起来的那条 e2e 才看得见。
+- **顺带看到的**：变异①那一趟失败后，媒体目录里留下一个 262 字节的坏 `e2e_sample.webm`，而用例的 `produced` 只在断言通过后才把路径交出去。不用管它——下一次起跑 `prepare_media` 整目录重建。记这一句是为了别把"跑完目录是干净的"误当成用例自己负责的证据。
+- **文档同步**：`frontend/e2e/real/library.real.spec.ts` 文件头的夹具描述（1882 字节 → 5008 字节 + 一条 AAC 音轨）、`transcode.real.spec.ts` 文件头补上"问 ffprobe 的那两条流"和"夹具必须带音轨"这条前提、`frontend/CLAUDE.md` 两处（第 14 条要签的东西 + 播种那一行的夹具形状）、`backend/CLAUDE.md` 薄位置清单里 `utils/ffmpeg.py` 那条（现在也核对产物里的流）。
+- **验证**：`-g 转码` 单独 **1 passed**（6.1 秒，三个变异还原之后）；真后端 e2e 整跑 **14 passed**（1.0 分钟，单 worker 串行）；后端 PostgreSQL 全量 **727 passed**（3:31，和 #115 同数——本单没加服务层用例，只改了播种闸门那一条的断言）；`ruff check .` **0 项**、`mypy src` **34 项**（基线同数）；前端单测 **281 passed**、`typecheck:test` 绿、`npm run build` 绿、桩 e2e **82 passed**（35.8 秒）。跑完 `data/e2e/media/` 只剩 `e2e_sample.mp4` 与 `e2e_sample.zh.srt`。
+- **覆盖面现状**：浏览器用例总数仍是 **96** 条（真库 14 + 替身 82），本单加宽的是第 14 条的**断言厚度**而不是条数。#115 那份"仍然零真库签字"的清单里，**音频那半张配方已经划掉**（webm、avi 两行已签，mp4、mkv 两行见上），剩下的是 `storage.reachable()` 那道闸门（要一个"列不出来"的源，服务层那份假存储带这个开关）和转码跑到一半被取消（30 秒的片子实测 0.04–0.06 秒转完，没有可靠的"中途"窗口）。
+
 ### 修复 + 新增：转码格式名的大小写会先回 200 再在后台失败；真后端 e2e 加到 14 条（转码长流程）
 
 - **动因**：转码是这一套里最后一条"从没在真库、真进程上签过字"的长流程，而它被**两层假**夹着：82 条桩用例把 `/api/transcode*` 四个端点全写在 `frontend/e2e/fixtures.ts` 自己的处理器里（那份处理器**不做任何校验、也永远不会失败**，`output_path` 写死成 `/tmp/out.<格式>`），后端 11 条服务用例里凡是走到编码那一步的 5 条又把 `transcode_video` 整个换掉、剩下 6 条只测拒绝。于是"真起一个 FFmpeg、真往磁盘写一个文件、真由后台任务写一行通知"这一段，整套测试没有一处跑过——大小写那个 bug 正是从这条缝里掉下去的。

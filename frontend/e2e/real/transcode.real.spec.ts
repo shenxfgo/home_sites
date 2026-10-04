@@ -10,12 +10,15 @@
  * 敏感，而两层测试各自都摸不到对方那一层。
  *
  * 所以这条用例断言的是只有真进程给得出的东西：服务器报回来的那个**绝对输出路径**在磁盘上
- * 确实在、里面确实是所请求的那种容器（读文件头那几个字节，不看文件名）、后台任务写进真库
- * 的那条通知带着自己的格式与影片 id，以及三种拒绝（同格式、不认识、已经结束的任务）各有
- * 原话可说。
+ * 确实在、里面确实是所请求的那种容器（读文件头那几个字节，不看文件名）、里面真有着那半张
+ * 配方编出来的两条流（问 ffprobe：webm 是 vp9 + opus、avi 是 h264 + aac；`acodec` 不进任何
+ * 响应，而源里没有音频流时 ffmpeg 会把 `-c:a` 整个跳过——所以这一句要成立，播种那部片子
+ * 就得带一条音轨，见 `backend/src/e2e_seed.py`）、后台任务写进真库的那条通知带着自己的格式
+ * 与影片 id，以及三种拒绝（同格式、不认识、已经结束的任务）各有原话可说。
  */
 import { expect, test, type Page } from '@playwright/test'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { join, sep } from 'node:path'
 
@@ -33,6 +36,29 @@ const FIXTURE = join(MEDIA_DIR, 'e2e_sample.mp4')
 const CONTAINER: Record<string, string> = {
   webm: 'webm',
   avi: 'AVI LIST',
+}
+
+/**
+ * 产物里应该有的那两条流。`-c:v` / `-c:a` 这半张配方不进任何 API 响应
+ * （`get_supported_formats` 只回 `codec` 和 `extension`），所以它原先在整套测试里
+ * 一处都证不到：把 webm 的 acodec 从 `libopus` 改成容器直接拒收的 `aac`，无声夹具那趟
+ * 整跑下来是绿的（没有音频流可选时 ffmpeg 把 `-c:a` 整个跳过，实测 rc=0、产物只有一条
+ * vp9）。这里写的是 ffprobe 那一侧的编码器名，不是配方字面值：libvpx-vp9 → vp9、
+ * libx264 → h264、libopus → opus、aac → aac。
+ *
+ * 四行配方只有这两行有产物可查：`mp4` 造不出产物（源文件本身就是 mp4，同格式覆盖被闸门
+ * 拒绝），这条用例也不产 mkv——所以 `mp4` 与 `mkv` 这两行的 acodec 至今没有真进程签字，
+ * 改错它们不会红。
+ */
+const STREAMS: Record<string, [string, string][]> = {
+  webm: [
+    ['audio', 'opus'],
+    ['video', 'vp9'],
+  ],
+  avi: [
+    ['audio', 'aac'],
+    ['video', 'h264'],
+  ],
 }
 
 interface FormatRow {
@@ -99,6 +125,18 @@ async function waitSettled(page: Page): Promise<TranscodeStatus> {
   return readStatus(page)
 }
 
+/** 问 ffprobe 这个文件里有哪几条流：编出来的东西只有它说了才算。 */
+function probeStreams(path: string): { codec_type: string; codec_name: string }[] {
+  const probe = spawnSync(
+    'ffprobe',
+    ['-v', 'quiet', '-print_format', 'json', '-show_streams', path],
+    { encoding: 'utf8' },
+  )
+  expect(probe.status, `ffprobe ${path}`).toBe(0)
+  const parsed = JSON.parse(probe.stdout) as { streams: { codec_type: string; codec_name: string }[] }
+  return parsed.streams
+}
+
 /** 服务器报回来的输出路径，必须是磁盘上真存在、且文件头自报家门的那个文件。 */
 function expectRealOutput(outputPath: string, format: string): void {
   const mediaRoot = asUrlPath(MEDIA_DIR)
@@ -111,6 +149,10 @@ function expectRealOutput(outputPath: string, format: string): void {
   expect(bytes.subarray(0, 64).toString('latin1'), outputPath).toContain(
     CONTAINER[format] as string,
   )
+  const streams = probeStreams(outputPath)
+    .map((stream) => [stream.codec_type, stream.codec_name] as [string, string])
+    .sort()
+  expect(streams, outputPath).toEqual(STREAMS[format])
 }
 
 async function chooseFormat(page: Page, label: string): Promise<void> {
@@ -156,10 +198,8 @@ test('转码：真 FFmpeg 写出真文件，通知由后台任务写进真库，
   await expect(page.locator('.formats-section')).toContainText('.webm')
 
   // ---- 2. 走一遍界面：选 webm → 确认 → 任务真跑完 → 页面自己轮询到「已完成」
-  // 挑 webm 是因为它是这四种里和 mkv/avi 不同族的那一个（VP9 编码器）。它**证不到**音频
-  // 那半张配方：夹具这部片子只有视频轨（`ffprobe` 实测一条 stream，h264），`-c:a` 从没
-  // 被用上，而 `FormatInfo` 也不把 acodec 报给界面——把 webm 的 acodec 改成 aac（当年
-  // 真错在这里的那个值）这一条整跑下来是绿的，实测。
+  // 挑 webm 是因为它是这四种里和 mkv/avi 不同族的那一个：视频、音频两半配方（VP9 + Opus）
+  // 都和另外三个不一样。
   await chooseFormat(page, 'webm (.webm)')
   const beforeStart = await readNotifications(page)
   await page.getByRole('button', { name: '开始转码' }).click()

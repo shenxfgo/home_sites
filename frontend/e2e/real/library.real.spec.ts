@@ -11,7 +11,8 @@
  *
  * 数据来自 `backend/src/e2e_seed.py` 的一次性播种，长这样（真库实测）：两个账号
  * （owner `e2e_owner` + member `e2e_member`）、影片 id=1、片名 `e2e sample`、时长 30 秒、
- * 1882 字节的 H.264 片段、一条 lang=zh 的 sidecar 字幕，外加服务层写进库的 18 秒观看
+ * 5008 字节、一条视频流外加一条 1 秒的 AAC 音轨（音轨是给转码配方的音频半边准备的，见
+ * `transcode.real.spec.ts`）、一条 lang=zh 的 sidecar 字幕，外加服务层写进库的 18 秒观看
  * 进度和一条排好队的片单（member 那个账号什么都没写）。
  * 一轮只 TRUNCATE 一次，所以用例之间是接力而不是各自重启——顺序即约定。
  */

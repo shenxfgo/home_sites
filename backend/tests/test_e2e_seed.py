@@ -66,12 +66,19 @@ def test_media_reset_rebuilds_only_the_fixtures(tmp_path: Path, monkeypatch) -> 
     e2e_seed.prepare_media(str(media))
 
     assert sorted(p.name for p in media.iterdir()) == ["e2e_sample.mp4", "e2e_sample.zh.srt"]
-    # 常量是从前端替身夹具里搬来的同一份字节：拷贝走样时这里先红，而不是让 e2e 报
-    # "浏览器放不出来"那种看不出根因的错。
+    # 常量解码回来还得是一个真 mp4：拷贝走样时这里先红，而不是让 e2e 报"浏览器放不出来"
+    # 那种看不出根因的错。
     clip = media / "e2e_sample.mp4"
-    assert clip.read_bytes() == base64.b64decode(e2e_seed.SAMPLE_MP4_B64)
-    assert clip.stat().st_size == 1882
-    assert clip.read_bytes()[4:8] == b"ftyp"
+    blob = clip.read_bytes()
+    assert blob == base64.b64decode(e2e_seed.SAMPLE_MP4_B64)
+    assert clip.stat().st_size == len(blob) == 5008
+    assert blob[4:8] == b"ftyp"
+    # 音轨也在这里钉死。转码配方的音频半边只有在源里带音频流时才会被执行——无声的源让
+    # ffmpeg 把 `-c:a` 整个跳过，于是把 `libopus` 写成容器拒收的 `aac` 也能成功；那条产物
+    # 断言要真 PG 加真 FFmpeg 起得来才看得见，而这两行在 `pytest` 的半秒里就能红。两条
+    # `trak` 盒子加一个 `mp4a` 采样说明，就是"一条视频流 + 一条 AAC"。
+    assert blob.count(b"trak") == 2
+    assert b"mp4a" in blob
     assert (media / "e2e_sample.zh.srt").read_bytes() == e2e_seed.SIDECAR_SRT.encode("utf-8")
 
 
