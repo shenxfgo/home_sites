@@ -96,7 +96,14 @@ class TagService:
             raise ValueError(f"Tag with id {tag_id} not found")
 
         result = await self.session.execute(
-            select(Tag).where(Tag.id == tag_id).options(selectinload(Tag.videos))
+            select(Tag)
+            .where(Tag.id == tag_id)
+            # 第二层不能省：响应模型要读 `video.tags`，而这一查是经多对多的
+            # `Tag.videos` 走到影片的，那批 Video 的标签集合没有被关系上的
+            # `lazy="selectin"` 带上（会话里已经躺着一枚过期实例时尤其如此）。
+            # 序列化又是同步的，于是那一下属性访问就是一次 greenlet 之外的 IO——
+            # `MissingGreenlet`，端点回 500。写明要加载它，状态码就不看会话冷热。
+            .options(selectinload(Tag.videos).selectinload(Video.tags))
         )
         tag = result.scalar_one()
         return list(tag.videos)

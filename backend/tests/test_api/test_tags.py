@@ -193,6 +193,28 @@ async def test_tagging_a_video_shows_up_on_both_sides(client, db_session):
     assert (await client.get("/api/videos/1")).json()["tags"][0]["name"] == "科幻"
 
 
+async def test_videos_of_a_tag_come_back_whether_or_not_the_session_is_cold(
+    client, db_session
+):
+    """同一部影片第二次经 `Tag.videos` 走出来时翻过一次车，这里把那个状态钉住。
+
+    真服务器上它偶发回 500：`MissingGreenlet`——`video.tags` 那一次没被加载，而
+    pydantic 的序列化是同步的，碰它就是"在 greenlet 之外做 IO"。用例用
+    `expire_all()` 造出"会话里已经有一枚过期实例"的形状（生产的会话工厂是
+    `expire_on_commit=False` 且每请求一个新的，所以这不是给生产补的洞），而修法是
+    把要加载的关系写明到查询里：状态码不再取决于会话热不热。
+    """
+    await ensure_video(db_session)
+    tag = await _create(client, "科幻")
+    assert (await _tag_a_video(client, 1, [tag["id"]])).status_code == 204
+
+    db_session.expire_all()
+
+    response = await client.get(f"/api/tags/{tag['id']}/videos")
+    assert response.status_code == 200, response.text
+    assert [item["tags"][0]["name"] for item in response.json()] == ["科幻"]
+
+
 async def test_tagging_twice_is_not_two_rows(client, db_session):
     await ensure_video(db_session)
     tag = await _create(client, "科幻")

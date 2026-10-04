@@ -2,6 +2,15 @@
 
 ## 2026-10-05
 
+### 修复：`GET /api/tags/{id}/videos` 的 500——响应模型要读的关系，得写进查询里
+
+- **怎么撞出来的**：跑全量带覆盖率的套件时偶然红了一条，`GET /api/tags/{id}/videos` 回 500，`api/tags.py:118` 那里报 `ResponseValidationError: {'loc': ('response', 0, 'tags'), 'msg': "Error extracting attribute: MissingGreenlet: greenlet_spawn has not been called"}`。同一套用例重跑又是绿的——它取决于会话里那枚 `Video` 实例当时冷不冷
+- **先红**：把那个状态钉死的用例是 `tests/test_api/test_tags.py::test_videos_of_a_tag_come_back_whether_or_not_the_session_is_cold`，用 `db_session.expire_all()` 造出"会话里已有同名实例且已过期"。在 HEAD 的 `git worktree` 里验的红：同两个文件 1 failed（就是这条，报的正是上面那句 `MissingGreenlet`）+ 31 passed，验完删掉工作树
+- **根因**：`VideoResponse` 带着 `tags`，而这一查是经**多对多**的 `Tag.videos` 走到影片的，那批影片的 `tags` 集合没有被关系上的 `lazy="selectin"` 带上。pydantic 的序列化是同步的，于是那一下属性访问就是一次 greenlet 之外的 IO。改法是把要加载的关系写明：`selectinload(Tag.videos).selectinload(Video.tags)`
+- **这不是给生产补的活 500**：会话工厂是 `expire_on_commit=False`，每个请求又各一个新会话，所以今天真服务器走不到这条。修它是因为**状态码不该取决于会话冷热**——同一句查询、同一个端点，会话热的时候 200、冷的时候 500，那是一条谁都可能踩上的脆性
+- **顺手把同一形状的其它读接口都扫了一遍**：新文件 `tests/test_api/test_video_reads_with_a_cold_session.py`（5 条：影片列表、单取、继续观看、收藏列表、片单详情）。这 5 条在 HEAD 上**本来就是绿的**，钉的是既有不变量而不是修复。差别有实测的形状：经**多对一**（`PlayHistory.video` / `Favorite.video` / `WatchlistItem.video`）走同样的冷会话都能带出标签，只有经多对多集合那一头会漏。为什么多对一没漏，我没能从文档里推出一条一般规则，所以纪律写成"响应模型碰到的关系就写进查询"，不指望默认加载兜住
+- **验证**：`tests/test_api/test_tags.py` 27 passed、`test_video_reads_with_a_cold_session.py` 5 passed，两种方言各一遍（真 SQLite 与真 PG 各 32 passed）；`ruff check .` 0 项，`mypy src` 34 项（与上一单同数，一处没动）；全量数字在下一单末尾
+
 ### 修复：漏掉的每晚备份不再无声消失——醒来补跑，启动时按目录补一趟
 
 - **动因**：`03:30` 那条 cron 只在"那个分钟进程正好活着"时执行。机器睡着、进程被占用，APScheduler 默认只给 **1 秒**宽限，过了就把这一轮丢掉，只在日志里留一行；而备份成功本来就不发通知（#85 定的"变了才说"），于是"备份已经停了三天"和"备份一直健康"看起来一模一样。`tasks.py` 里原先写着"失败通知是人们得知备份停了的唯一途径"——这个假设正是这一单要纠正的
