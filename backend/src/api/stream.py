@@ -1,9 +1,10 @@
 """Video streaming API endpoints."""
 import os
 from pathlib import Path
+from typing import Iterator
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
@@ -18,11 +19,16 @@ async def stream_video(
     video_id: int,
     request: Request,
     session: AsyncSession = Depends(get_session),
-):
+) -> Response:
     """Stream video with Range support for seeking.
 
     Where the bytes come from is the storage layer's business: the locator
     stored on the row says whether it is a path on disk or an object key.
+
+    返回值统一标成 ``Response``：FastAPI 会拿函数的返回注解去推断
+    response_model，而 ``Response`` 的孙子类型是它明确跳过推断的那一类——
+    这里三种分支（整文件、206 分段、读不到的占位）本来就该原样送出，
+    不该被任何模型再序列化一遍。
     """
     # The row is read directly rather than through VideoService: streaming only
     # needs the path, and the service call would add a per-person history lookup.
@@ -62,21 +68,24 @@ async def stream_video(
         )
 
     # Placeholder response for files this process cannot read at all
-    return {
-        "message": f"Stream endpoint for video {video_id}",
-        "filepath": filepath,
-        "note": "文件当前读不到。挂载盘未就绪、对象存储凭证缺失或文件已删除都会走到这里。",
-    }
+    return JSONResponse(
+        {
+            "message": f"Stream endpoint for video {video_id}",
+            "filepath": filepath,
+            "note": "文件当前读不到。挂载盘未就绪、对象存储凭证缺失或文件已删除都会走到这里。",
+        }
+    )
 
 
 @router.get("/{video_id}/thumbnail")
 async def get_thumbnail(
     video_id: int,
     session: AsyncSession = Depends(get_session),
-):
+) -> Response:
     """Get video thumbnail.
 
     Returns the thumbnail file if available, or a placeholder response.
+    注解同 stream_video：走 Response 这一类，FastAPI 才不会再去推断 response_model。
     """
     video = await session.get(Video, video_id)
     if not video:
@@ -88,7 +97,7 @@ async def get_thumbnail(
             media_type="image/jpeg",
         )
 
-    return {"thumbnail": None, "message": "No thumbnail available"}
+    return JSONResponse({"thumbnail": None, "message": "No thumbnail available"})
 
 
 def _get_content_type(filepath: str) -> str:
@@ -140,7 +149,7 @@ def _handle_range_request(
 
     content_length = end - start + 1
 
-    def file_iterator():
+    def file_iterator() -> Iterator[bytes]:
         # 惰性交给存储层：响应头此刻已经提交，第一次取字节才真正打开文件。
         yield from storage_for_locator(locator).iter_range(locator, start, end)
 

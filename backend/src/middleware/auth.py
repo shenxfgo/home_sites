@@ -15,6 +15,7 @@ from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse
+from starlette.types import ASGIApp
 
 from src.database import get_session
 from src.database.session import async_session_maker
@@ -88,7 +89,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     def __init__(
         self,
-        app: Callable[..., Awaitable[Response]],
+        app: ASGIApp,
         *,
         session_factory: Callable[[], AsyncSession] | None = None,
     ) -> None:
@@ -170,7 +171,7 @@ async def get_current_user_id(
 
 async def get_session_token(request: Request) -> str:
     """The raw session token, so a route can revoke its own session."""
-    token = getattr(request.state, "session_token", None)
+    token: str | None = getattr(request.state, "session_token", None)
     if not token:  # pragma: no cover
         raise HTTPException(status_code=401, detail="未认证")
     return token

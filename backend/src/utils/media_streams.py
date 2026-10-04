@@ -7,6 +7,7 @@ request by :func:`extract_subtitle_webvtt` — nothing is written to disk.
 import json
 import os
 import subprocess
+from typing import Any, cast
 
 from src.utils.subtitles import SubtitleConversionError
 
@@ -71,7 +72,9 @@ def _run_ffprobe(filepath: str) -> dict:
     if result.returncode != 0 or not result.stdout:
         return {}
     try:
-        return json.loads(result.stdout)
+        # ffprobe 带 -print_format json 时总是回一个对象；json.loads 的声明只到
+        # Any，所以在这里断言一次，而不是把返回类型一路放宽成 Any。
+        return cast(dict[str, Any], json.loads(result.stdout))
     except ValueError:
         return {}
 
@@ -79,7 +82,7 @@ def _run_ffprobe(filepath: str) -> dict:
 def _language_of(stream: dict) -> str | None:
     """Read the track's language tag, if the packager set one."""
     tags = stream.get("tags") or {}
-    code = tags.get("language") or tags.get("LANGUAGE")
+    code: str | None = tags.get("language") or tags.get("LANGUAGE")
     if not code:
         return None
     code = code.strip().lower()
@@ -89,7 +92,7 @@ def _language_of(stream: dict) -> str | None:
 def _label_of(stream: dict, position: int) -> str:
     """Name a track the way the player's menu should show it."""
     tags = stream.get("tags") or {}
-    title = tags.get("title") or tags.get("TITLE")
+    title: str | None = tags.get("title") or tags.get("TITLE")
     if title:
         return title.strip()
     language = _language_of(stream)

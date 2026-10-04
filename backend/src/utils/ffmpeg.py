@@ -6,7 +6,7 @@ import re
 import subprocess
 from collections import deque
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, cast
 
 SUPPORTED_FORMATS = {
     "mp4": {"codec": "libx264", "acodec": "aac", "ext": ".mp4"},
@@ -50,7 +50,7 @@ def get_video_info(filepath: str) -> dict:
             timeout=30,
         )
         if result.returncode == 0 and result.stdout:
-            return json.loads(result.stdout)
+            return cast(dict[str, Any], json.loads(result.stdout))
         return {}
     except Exception:
         return {}
@@ -99,9 +99,12 @@ async def transcode_video(
 
     # Keeps the tail of any non-progress output so failures can be reported.
     other_output: deque[str] = deque(maxlen=20)
+    # 上面显式要了 stdout=PIPE，读句柄必然在；Process 的声明给的是 Optional，
+    # 所以在这里收窄一次，而不是为不可能的情况加分支。
+    stdout = cast(asyncio.StreamReader, proc.stdout)
     try:
         while True:
-            raw = await proc.stdout.readline()
+            raw = await stdout.readline()
             if not raw:
                 break
             line = raw.decode("utf-8", "replace").strip()

@@ -17,11 +17,11 @@ import hashlib
 import json
 import sqlite3
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import Column, Table
 from sqlalchemy.types import (
@@ -161,12 +161,26 @@ def canonical_value(col: Column, value: Any) -> str:
     return str(value)
 
 
-def row_text(columns: Sequence[Column], values: Mapping[str, Any]) -> str:
+class RowValues(Protocol):
+    """任何能按列名取值的行。
+
+    调用方递来的既有 sqlite3.Row，也有 SQLAlchemy 的 Row 和普通 dict：三者都支持
+    ``row["列名"]``，却没有一个是 ``Mapping`` 的子类。按能力声明，两边都不必 cast。
+    """
+
+    def __getitem__(self, key: str) -> Any: ...
+
+
+def row_text(columns: Iterable[Column], values: RowValues) -> str:
     """一行的规范化文本，列名一起写进去。
 
     审计报告和搬迁脚本各自算一次这个文本再取整表摘要，所以拼法只能有一处：列名在内，
     两张库就算列顺序不同也不会撞出同一个数。CLAUDE.md 说的"搬完在目标库上再算一遍对得上
     才算搬全"，靠的正是这两个数可比。
+
+    两个参数都按用到的能力声明，而不是按某一处的具体类型：列来自
+    ``table.columns``（可迭代，但不是 Sequence），行则同时来自 sqlite3.Row 和
+    SQLAlchemy 的 Row——它们都能按键取值，却都不是 Mapping 的子类。
     """
     return "|".join(f"{col.name}={canonical_value(col, values[col.name])}" for col in columns)
 

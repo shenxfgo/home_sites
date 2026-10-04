@@ -1,5 +1,6 @@
 """SourceService for video source CRUD operations."""
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,9 +61,13 @@ class SourceService:
     async def update(
         self,
         source_id: int,
-        **kwargs,
+        **kwargs: Any,
     ) -> VideoSource:
-        """Update a video source."""
+        """Update a video source.
+
+        ``**kwargs`` 保持 ``Any``：值是按 ``hasattr`` 挑着往模型上设的，
+        每一种列类型都可能出现，写死一个类型只会骗过检查器。
+        """
         source = await self.get_by_id(source_id)
         if not source:
             raise ValueError(f"Source with id {source_id} not found")

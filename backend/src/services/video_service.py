@@ -5,10 +5,11 @@ import operator
 import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import cast
+from typing import Any, cast
 
-from sqlalchemy import Table, case, delete, exists, func, or_, select
+from sqlalchemy import ColumnElement, Table, case, delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnOperators
 
 from src.models.favorite import Favorite
 from src.models.history import PlayHistory
@@ -60,7 +61,7 @@ VIDEO_CHILD_TABLES: tuple[Table, ...] = cast(
 
 
 async def delete_videos_cascade(
-    session: AsyncSession, video_filter
+    session: AsyncSession, video_filter: ColumnElement[bool]
 ) -> list[str]:
     """Delete the matching videos together with every row pointing at them.
 
@@ -132,7 +133,7 @@ async def attach_watch_progress(
             PlayHistory.video_id.in_([v.id for v in videos]),
         )
     )
-    positions = dict(result.all())
+    positions = {row[0]: row[1] for row in result.all()}
     for video in videos:
         video.progress = positions.get(video.id)
 
@@ -148,7 +149,7 @@ _COMPARATORS = {
 # Correlated EXISTS fragments: a filter on a child table must not multiply the
 # video rows, which is why these stay subqueries instead of joins. Whether a
 # title counts as played is each person's own, so both take the viewer.
-def _played(user_id: int):
+def _played(user_id: int) -> ColumnElement[bool]:
     return (
         select(PlayHistory.id)
         .where(PlayHistory.video_id == Video.id, PlayHistory.user_id == user_id)
@@ -156,7 +157,7 @@ def _played(user_id: int):
     )
 
 
-def _finished(user_id: int):
+def _finished(user_id: int) -> ColumnElement[bool]:
     return (
         select(PlayHistory.id)
         .where(
@@ -168,7 +169,7 @@ def _finished(user_id: int):
     )
 
 
-def _unread_new_video(user_id: int):
+def _unread_new_video(user_id: int) -> ColumnElement[bool]:
     """EXISTS for a scan record of this video the viewer has not read yet."""
     return (
         select(NewVideo.id)
@@ -185,13 +186,22 @@ def _unread_new_video(user_id: int):
     )
 
 
-def _like(column, term: str):
-    """A ``LIKE`` for a user typed term, with the wildcards inside it escaped."""
+def _like(column: ColumnOperators, term: str) -> ColumnElement[bool]:
+    """A ``LIKE`` for a user typed term, with the wildcards inside it escaped.
+
+    收 ``ColumnOperators`` 而不是 ``ColumnElement[str]``：调用方递来的是
+    ``Video.title`` 这种 ORM 属性，SQLAlchemy 把它声明成
+    ``InstrumentedAttribute[str | None]``，那不是 ``ColumnElement[str]`` 的子类型；
+    而 ``.ilike`` 真正住的接口是 ``ColumnOperators``，裸用（不带泛型参数）就能同时
+    收下 ORM 属性和纯表达式。
+    """
     escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return column.ilike(f"%{escaped}%", escape="\\")
+    # 断言而不是推断：裸接口上的 ``.ilike`` 只承诺返回 ``ColumnOperators``，
+    # 而它实际总是一个布尔表达式——泛型参数在这里给不出更多信息。
+    return cast(ColumnElement[bool], column.ilike(f"%{escaped}%", escape="\\"))
 
 
-def _tagged_with(predicate):
+def _tagged_with(predicate: ColumnElement[bool]) -> ColumnElement[bool]:
     """EXISTS for a video carrying a tag that satisfies ``predicate``."""
     return (
         select(video_tags.c.video_id)
@@ -202,7 +212,7 @@ def _tagged_with(predicate):
     )
 
 
-def _term_filter(term: str):
+def _term_filter(term: str) -> ColumnElement[bool]:
     """Where a single keyword may be found: title, description or tag name."""
     return or_(
         _like(Video.title, term),
@@ -211,7 +221,7 @@ def _term_filter(term: str):
     )
 
 
-def _term_relevance(term: str):
+def _term_relevance(term: str) -> ColumnElement[int]:
     """How strongly one keyword matches: a title hit outranks the rest."""
     return case(
         (_like(Video.title, term), 2),
@@ -364,29 +374,36 @@ class VideoService:
         )
         by_size_and_duration: dict[tuple[int, int | None], list[Video]] = {}
         for video in result.scalars().all():
+            # 上面那条 SQL 已经排除了 file_size 为空的行，这里的判空只是为了让
+            # 键的类型成立——列本身是可空的，静态检查看不到 SQL 里的那个条件。
+            if video.file_size is None:
+                continue
             by_size_and_duration.setdefault(
                 (video.file_size, video.duration), []
             ).append(video)
 
         # Biggest reclaimable group first, so a request that runs out of read
-        # budget spends it on the copies worth deleting.
+        # budget spends it on the copies worth deleting. 组的大小跟着键一起往下传，
+        # 于是后面算浪费空间时不必再从可空的列上读一次。
         candidates = [
-            group for group in by_size_and_duration.values() if len(group) > 1
+            (size, group)
+            for (size, _duration), group in by_size_and_duration.items()
+            if len(group) > 1
         ]
         candidates.sort(
-            key=lambda group: (len(group) - 1) * group[0].file_size, reverse=True
+            key=lambda item: (len(item[1]) - 1) * item[0], reverse=True
         )
-        probed: list[list[Video]] = []
+        probed: list[tuple[int, list[Video]]] = []
         budget = _DUPLICATE_PROBE_MAX
-        for group in candidates:
+        for size, group in candidates:
             if len(group) > budget:
                 continue
             budget -= len(group)
-            probed.append(group)
+            probed.append((size, group))
         if not probed:
             return []
 
-        flat = [video for group in probed for video in group]
+        flat = [video for _, group in probed for video in group]
         await attach_watch_progress(self.session, flat, user_id)
         digests = await asyncio.gather(
             *(asyncio.to_thread(fingerprint, video.filepath) for video in flat)
@@ -394,7 +411,7 @@ class VideoService:
         fingerprints = dict(zip((video.id for video in flat), digests))
 
         groups = []
-        for group in probed:
+        for size, group in probed:
             by_digest: dict[str, list[Video]] = {}
             for video in group:
                 digest = fingerprints.get(video.id)
@@ -404,7 +421,6 @@ class VideoService:
                 if len(members) < 2:
                     continue
                 keep = _keep_candidate(members)
-                size = keep.file_size
                 groups.append(
                     {
                         "file_size": size,
@@ -501,7 +517,7 @@ class VideoService:
             await attach_watch_progress(self.session, [video], user_id)
         return video
 
-    async def update_video(self, video_id: int, user_id: int, **kwargs) -> Video:
+    async def update_video(self, video_id: int, user_id: int, **kwargs: Any) -> Video:
         """Update a video's metadata. The library is shared, so anyone signed in
         edits the same row."""
         video = await self.get_video_by_id(video_id, user_id)

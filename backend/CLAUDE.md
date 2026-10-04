@@ -517,6 +517,15 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 
 同理，测试里改过某行的时间后要看真实结果，用 `await db_session.refresh(row)` 重新读；`expire_all()` 之后靠关系属性懒加载会抛 `MissingGreenlet`。
 
+### 4. 类型检查剩下的两类边界
+
+`mypy src` 现在这 34 项不是"注解还没写完"，是两处刻意保留的形状。别指望总数降到 0，也别为了凑数加 `cast`：
+
+- **端点返回 ORM 对象，而返回注解就是 response 模型**（27 项，全在 `src/api/`）。FastAPI 在序列化时用 `from_attributes` 把 `Video` 变成 `VideoResponse`，静态检查看不到这一步。真要清零只有两条路：每个端点显式 `VideoResponse.model_validate(...)`，或者把注解摘掉改用 `response_model=`——两种都会改到 API 层一贯的写法，属于设计决定，得单独议
+- **service 层往模型实例上挂瞬态属性**（`Video.progress`、`Video.is_new`、`Notification.read`，7 项），为的是响应模型顺手读到"这一部你看到哪了"。SQLAlchemy 2.0.51 不认非 `Mapped` 的类级注解（直接 `MappedAnnotationError`），而这个版本还没有 `Unmapped`，所以在模型侧声明这条路走不通；根治是让这类数据别寄存在模型上
+
+写 SQL 表达式时记一条：`Video.title` 这类 ORM 属性在类型上是 `InstrumentedAttribute[str | None]`，它既不是 `ColumnElement[str]` 也不是 `KeyedColumnElement[str]` 的子类型。要接住它并用 `.ilike`，参数标成裸 `ColumnOperators`（见 `video_service._like`）。
+
 ## 依赖管理
 
 ```bash
@@ -537,5 +546,5 @@ uv run pytest
 
 # 静态检查（在 backend/ 目录下跑，配置在 pyproject.toml）
 .venv/Scripts/ruff.exe check .    # 2026-10-04 起为 0 项，红了就说明是新代码带来的
-.venv/Scripts/mypy.exe src        # 仍有既有欠账，看单文件增量而不是总数
+.venv/Scripts/mypy.exe src        # 2026-10-04 从 95 降到 34，看单文件增量而不是总数
 ```

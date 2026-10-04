@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+
 from sqlalchemy import Connection, inspect, text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -237,7 +239,7 @@ async def _add_missing_columns(conn: AsyncConnection) -> None:
             seen[table].add(column)
 
 
-async def get_session() -> AsyncSession:
+async def get_session() -> AsyncIterator[AsyncSession]:
     """Dependency injection for getting database sessions."""
     async with async_session_maker() as session:
         try:

@@ -1,5 +1,7 @@
 """NotificationService for notification operations."""
-from sqlalchemy import delete, desc, exists, func, select
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, delete, desc, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.notification import Notification
@@ -41,9 +43,12 @@ class NotificationService:
         self, user_id: int, page: int = 1, page_size: int = 20
     ) -> tuple[list[Notification], int]:
         """Get paginated notifications with the caller's read flag attached."""
-        total = await self.session.scalar(
-            select(func.count()).select_from(Notification)
-        )
+        # 同 favorite_service：COUNT 必回一行，scalar_one 直接把 int 交出来。
+        total = (
+            await self.session.execute(
+                select(func.count()).select_from(Notification)
+            )
+        ).scalar_one()
 
         query = (
             select(Notification)
@@ -144,4 +149,6 @@ class NotificationService:
         """Delete every notification and return how many went away."""
         result = await self.session.execute(delete(Notification))
         await self.session.commit()
-        return result.rowcount or 0
+        # rowcount 只在 CursorResult 上，而 execute 的声明是最宽的 Result；
+        # DML 在运行时必然回 CursorResult，所以这里断言一次。
+        return cast(CursorResult[Any], result).rowcount or 0

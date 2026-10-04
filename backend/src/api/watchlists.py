@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.videos import VideoResponse
 from src.database import get_session
 from src.middleware.auth import get_current_user_id
+from src.models.watchlist import Watchlist
 from src.services.video_service import attach_watch_progress
 from src.services.watchlist_service import DuplicateWatchlistNameError, WatchlistService
 
@@ -53,7 +54,9 @@ async def get_watchlist_service(
     return WatchlistService(session)
 
 
-async def _respond(session: AsyncSession, watchlist, user_id: int) -> WatchlistResponse:
+async def _respond(
+    session: AsyncSession, watchlist: Watchlist, user_id: int
+) -> WatchlistResponse:
     """Attach the stored watch position so the queue can say what is left."""
     videos = [item.video for item in watchlist.items if item.video]
     await attach_watch_progress(session, videos, user_id)

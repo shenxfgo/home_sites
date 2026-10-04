@@ -8,6 +8,8 @@ local process can open, FFmpeg cannot seek inside a video, so thumbnails,
 transcode and embedded-subtitle extraction stay gated off (see
 ``Capabilities.local_path``).
 """
+from typing import Any, Iterator
+
 from src.config import settings
 from src.storage.base import (
     CHUNK_SIZE,
@@ -22,7 +24,9 @@ from src.utils.file_scanner import VIDEO_EXTENSIONS
 try:  # S3 支持是可选依赖，没装也不该挡住服务启动
     from botocore.exceptions import ClientError
 except ImportError:  # pragma: no cover - 未安装 .[s3] 时走这里
-    class ClientError(Exception):
+    # 「同一个名字可能是导入、也可能是占位类」正是这段的意图，静态检查只会把它
+    # 当成重复定义，所以就地豁免这一条，而不是把可选依赖变成硬依赖。
+    class ClientError(Exception):  # type: ignore[no-redef]
         """占位类。真正的 S3 调用会先撞到「请安装 .[s3]」那句提示。"""
 
 
@@ -67,12 +71,15 @@ class S3MediaStorage:
 
     # -- client ---------------------------------------------------------
 
-    def _client(self):
+    def _client(self) -> Any:
         """Build once per configuration, not once per process.
 
         The cache has to notice a credential change: a client built under one
         set of keys keeps using them forever, which turns "the user fixed their
         ``.env`` and reloaded" into a request signed with the old pair.
+
+        返回类型是 ``Any``——boto3 不带类型声明（真要检得装 boto3-stubs），
+        这里如实承认客户端是外来的动态对象，而不是伪造一个精确类型。
         """
         key = (
             settings.s3_endpoint_url,
@@ -173,7 +180,7 @@ class S3MediaStorage:
             raise
         return int(head["ContentLength"])
 
-    def iter_range(self, locator: str, start: int, end: int):
+    def iter_range(self, locator: str, start: int, end: int) -> Iterator[bytes]:
         client = self._client()
         bucket, key = split_locator(locator)
         body = client.get_object(

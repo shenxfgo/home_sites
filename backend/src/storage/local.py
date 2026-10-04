@@ -4,6 +4,7 @@
 path by the time the app sees it, and nothing here speaks a mount protocol.
 """
 import os
+from typing import Iterator
 
 from src.storage.base import (
     CHUNK_SIZE,
@@ -46,7 +47,7 @@ class LocalMediaStorage:
         except OSError:
             return None
 
-    def iter_range(self, locator: str, start: int, end: int):
+    def iter_range(self, locator: str, start: int, end: int) -> Iterator[bytes]:
         with open(locator, "rb") as handle:
             handle.seek(start)
             remaining = end - start + 1

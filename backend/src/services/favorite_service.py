@@ -22,11 +22,15 @@ class FavoriteService:
         self, user_id: int, page: int = 1, page_size: int = 20
     ) -> tuple[list[Video], int]:
         """Get paginated favorite videos."""
-        total = await self.session.scalar(
-            select(func.count())
-            .select_from(Favorite)
-            .where(Favorite.user_id == user_id)
-        )
+        # COUNT 聚合永远回一行，所以用 scalar_one 把结果钉成 int；scalar() 的
+        # Optional 是给「可能没有行」的一般查询准备的。
+        total = (
+            await self.session.execute(
+                select(func.count())
+                .select_from(Favorite)
+                .where(Favorite.user_id == user_id)
+            )
+        ).scalar_one()
 
         query = (
             select(Favorite)

@@ -180,7 +180,8 @@ class ScanService:
     @property
     def is_scanning(self) -> bool:
         """Return whether a scan is currently in progress."""
-        return _scan_state["is_scanning"]
+        scanning: bool = _scan_state["is_scanning"]
+        return scanning
 
     async def scan_source(self, source_id: int) -> dict:
         """Scan a single video source for new videos and subtitles.

@@ -1,5 +1,6 @@
 """HistoryService for playback history operations."""
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -106,7 +107,9 @@ class HistoryService:
             seconds_by_day[key] = seconds_by_day.get(key, 0) + seconds
             videos_by_day.setdefault(key, set()).add(video_id)
 
-        daily = []
+        # 这一串是要原样进 JSON 响应的一天统计，值的类型混着 str/int，所以标成
+        # dict[str, Any]；写成 object 的话下面 fromisoformat 那一行就得再 cast 一次。
+        daily: list[dict[str, Any]] = []
         for offset in range(days):
             key = (since + timedelta(days=offset)).date().isoformat()
             daily.append(

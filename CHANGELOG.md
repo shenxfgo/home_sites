@@ -2,6 +2,21 @@
 
 ## 2026-10-04
 
+### 清理：mypy 从 95 项降到 34 项，剩下的 34 项是两类边界，不是漏了注解
+
+- **动因**：和 ruff 那一单同一个理由——总数长期不为零，"报红"就没有信息量。这一单只关"注解真的缺失或写错"的那些，关不掉的按类留下并写清为什么
+- **配置**：`backend/pyproject.toml` 加 `[[tool.mypy.overrides]]`，只对 `apscheduler.*`、`boto3.*`、`botocore.*` 关掉"缺 stub 即报错"。缺的是别人的声明，不是我们的注解；范围钉死在这三个包，其余照旧，`warn_unused_configs` 也不会因此误报
+- **补的是真漏的注解**：存储层两个 `iter_range` → `Iterator[bytes]`、`_client` → `Any`（如实承认 boto3 客户端是外来的动态对象，而不是伪造一个精确类型）、`file_iterator`、`_respond(watchlist: Watchlist)`、`**kwargs: Any`（值是按 `hasattr` 挑着往模型上设的，写死一种只会骗过检查器），以及 `video_service` 里 9 个内部表达式函数的 `ColumnElement[bool]`
+- **三处是写错了，值得单独说**：`_with_videos() -> select` 拿构造函数当类型；`get_session() -> AsyncSession` 其实是个异步生成器（改 `AsyncIterator[AsyncSession]`）；`AuthMiddleware.__init__` 的 `app` 标成 `Callable[..., Awaitable[Response]]`，和 `BaseHTTPMiddleware` 要的 `ASGIApp` 不是一回事——这一处改对之后，`main.py` 那条 `add_middleware` 的报错跟着消失，两条错是一个源头
+- **SQLAlchemy 的类型形状是这单最费探针的地方**：`Video.title` 在类型上是 `InstrumentedAttribute[str | None]`，`ColumnElement[str]` 和 `KeyedColumnElement[str]` 都不收；`TypedColumnElement` 运行时有、mypy 看不见（`sqlalchemy.sql.expression` 与 `.elements` 都试过）。于是 `_like` 收裸 `ColumnOperators`（`.ilike` 真正住的接口），返回的布尔表达式 cast 一次。另外这个 2.0.51 还没有 `Unmapped`（`from sqlalchemy.orm import Unmapped` 直接 ImportError），"在模型上声明瞬态属性"那条路走不通——不是不想，是没有
+- **`warn_return_any` 那几处逐个收窄**：`json.loads` 两处、`getattr` 一处、`_scan_state[...]` 一处、`proc.stdout` 一处。都因为声明比实际宽（`json.loads` 只到 Any），没有一处是为了凑数
+- **顺手改准三处等价写法**：`total` 由 `session.scalar(count)` 改为 `execute(...).scalar_one()`（COUNT 必回一行，`scalar()` 那个 `Optional` 是给"可能没有行"的一般查询准备的）；三处 DML 的 `result.rowcount` cast 成 `CursorResult`（`rowcount` 只在那个类上，且不为这个数字再发一条 count 查询）；watchlist 三个写路径的回读收进 `_read_back`，同一个判空不必各写一遍
+- **全程只加了 1 处 `# type: ignore`**：`src/storage/s3.py` 里"导入失败就用占位类"的 `ClientError`（`no-redef`）。重复定义正是那段的意图，豁免这一条比把可选依赖变成硬依赖便宜得多
+- **这次唯一动了运行时数据形状的地方**：`get_duplicates` 的分组改成 `(file_size, group)` 一路带下去，于是 `wasted_bytes` 用的是分组键而不是再从可空的 `Video.file_size` 上读一次——值相同（同组本就同大小），但这是行为面，重复检测的用例覆盖它
+- **剩下的 34 项不该在这一单里关**：27 项在 `src/api/*`，形态都是"端点的返回注解就是 FastAPI 的 response_model，函数体返回 ORM 对象或 dict，序列化时才由 `from_attributes` 转换"。清零只有两条路：每个端点显式 `XxxResponse.model_validate(...)`，或者把注解摘掉改用 `response_model=`——那都会改到 API 层的写法，是设计决定，不是清理。另外 7 项是挂在模型实例上的瞬态属性（`Video.progress`、`Video.is_new`、`Notification.read`），由 service 层贴上去给响应模型读；真要清，得把这这类数据从模型上挪走
+- **没开 `sqlalchemy.ext.mypy.plugin`**：它能吃掉一部分 Row 推导，但会同时引入一整批待核的新报错，深夜无人复核不合适
+- **验证**：`ruff check .` **0 项**；`mypy src` **34 项**（95→72→34）；后端 PG **621 passed**（2:43）、SQLite **620 passed + 1 skipped**（43s），两套串行跑的；打真后端的 e2e **3 passed**（10.7s，收藏、流式 `Range`、字幕这三条链路正好压在改动上）；前端未触碰
+
 ### 清理：ruff 的 99 项既有欠账归零，改完"lint 红了"才重新成为证据
 
 - **动因**：`ruff check .` 长期报 99 项，于是每次改动只能靠"这个文件改前改后各几条"来判断，"全绿"这个信号对本项目是废的。这一单把它清干净，之后 ruff 报红就只可能是新代码带来的

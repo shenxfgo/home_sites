@@ -8,9 +8,9 @@ import hashlib
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import CursorResult, delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -163,7 +163,9 @@ class AuthService:
             stmt = stmt.where(UserSession.token_hash != keep_token_hash)
         result = await self.session.execute(stmt)
         await self.session.commit()
-        return result.rowcount or 0
+        # DML 在运行时回的是 CursorResult，rowcount 只在那里；execute 的声明写的是
+        # 宽接口 Result，所以断言一次，不为了这个数再发一条 count 查询。
+        return cast(CursorResult[Any], result).rowcount or 0
 
     async def list_sessions(self, user_id: int) -> list[UserSession]:
         """This account's live sessions, newest activity first.
@@ -191,7 +193,7 @@ class AuthService:
             )
         )
         await self.session.commit()
-        return (result.rowcount or 0) > 0
+        return cast(CursorResult[Any], result).rowcount > 0
 
     # ---------- 账号 ----------
 

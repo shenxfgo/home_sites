@@ -66,6 +66,13 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 
+[[tool.mypy.overrides]]
+# 这三家只在自己仓库里带类型信息（boto3 的类型要另装 boto3-stubs），
+# APScheduler 干脆没有 py.typed。缺的是别人的声明，不是我们的注解，
+# 所以只对这几个包关掉"缺 stub 即报错"，其余照旧
+module = ["apscheduler.*", "boto3.*", "botocore.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

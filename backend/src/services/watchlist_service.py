@@ -1,5 +1,7 @@
 """WatchlistService for hand-picked queues such as 今晚看这些."""
-from sqlalchemy import select
+from typing import cast
+
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -7,12 +9,16 @@ from src.models.video import Video
 from src.models.watchlist import Watchlist, WatchlistItem
 
 
-def _with_videos() -> select:
+def _with_videos() -> Select[tuple[Watchlist]]:
     """Load a list together with the videos of every item, in two extra queries.
 
     ``populate_existing`` is what lets the write routes hand back a usable
     queue: the row was just added or removed inside this session, so the copy
     in the identity map still holds the stale collection without it.
+
+    返回类型写 ``Select[tuple[Watchlist]]`` 而不是 ``select``：后者是构造函数，不是
+    类型，拿它当注解 mypy 会直接报 valid-type；``Select`` 的泛型参数是行类型，所以
+    单表查询要包一层一元组。
     """
     return (
         select(Watchlist)
@@ -73,6 +79,15 @@ class WatchlistService:
         )
         return result.scalar_one_or_none()
 
+    async def _read_back(self, user_id: int, watchlist_id: int) -> Watchlist:
+        """Re-read a queue this account has just modified.
+
+        :meth:`get_watchlist` 的 ``Optional`` 是给路由准备的（查不到就答 404）。
+        写路径走到这一步，行是同一个事务里刚提交的、owner 过滤必然命中，所以这里
+        把类型收窄一次，而不是在每个调用点各写一遍判空。
+        """
+        return cast(Watchlist, await self.get_watchlist(user_id, watchlist_id))
+
     async def create(
         self, user_id: int, name: str, description: str | None = None
     ) -> Watchlist:
@@ -83,7 +98,7 @@ class WatchlistService:
         await self.session.commit()
         # Read it back: a just-added row has no loaded item collection, and the
         # routes all answer with one.
-        return await self.get_watchlist(user_id, watchlist.id)
+        return await self._read_back(user_id, watchlist.id)
 
     async def _require_free_name(self, user_id: int, name: str) -> None:
         result = await self.session.execute(
@@ -147,7 +162,7 @@ class WatchlistService:
             self.session.add(WatchlistItem(watchlist_id=watchlist_id, video_id=video_id))
             await self.session.commit()
 
-        return await self.get_watchlist(user_id, watchlist_id)
+        return await self._read_back(user_id, watchlist_id)
 
     async def remove_video(
         self, user_id: int, watchlist_id: int, video_id: int
@@ -163,4 +178,4 @@ class WatchlistService:
                 await self.session.commit()
                 break
 
-        return await self.get_watchlist(user_id, watchlist_id)
+        return await self._read_back(user_id, watchlist_id)

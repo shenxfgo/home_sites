@@ -41,7 +41,7 @@ class TagService:
             .group_by(Tag.id)
             .order_by(Tag.name)
         )
-        return list(result.all())
+        return [(row[0], row[1]) for row in result.all()]
 
     async def update(self, tag_id: int, **kwargs: object) -> Tag:
         """Update a tag."""
@@ -80,10 +80,10 @@ class TagService:
 
     async def add_tags_to_video(self, video_id: int, tag_ids: list[int]) -> None:
         """Add multiple tags to a video."""
-        video = await self.session.execute(
+        result = await self.session.execute(
             select(Video).where(Video.id == video_id).options(selectinload(Video.tags))
         )
-        video = video.scalar_one_or_none()
+        video = result.scalar_one_or_none()
         if not video:
             raise ValueError(f"Video with id {video_id} not found")
 
@@ -96,10 +96,10 @@ class TagService:
 
     async def remove_tag_from_video(self, video_id: int, tag_id: int) -> None:
         """Remove a tag from a video."""
-        video = await self.session.execute(
+        result = await self.session.execute(
             select(Video).where(Video.id == video_id).options(selectinload(Video.tags))
         )
-        video = video.scalar_one_or_none()
+        video = result.scalar_one_or_none()
         if not video:
             raise ValueError(f"Video with id {video_id} not found")
 
