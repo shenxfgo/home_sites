@@ -1,6 +1,7 @@
 # tests/test_backup.py
-"""备份核心的四条底线：口令不外泄、读不回来的文件不算备份、轮转只碰自己的文件、非 PG 直接拒。
+"""备份核心的底线：口令不外泄、读不回来的文件不算备份、轮转只碰自己的文件、非 PG 直接拒。
 
+``is_stale`` 守的是另一头：多久没有 dump 就算这个库失去了保险，启动时该补一趟。
 子进程全部由 ``_run`` 这一个口子出去，用例替它演一套 pg_dump/pg_restore：
 断言的是**真实调用出去的 argv 和环境变量**，因为「口令有没有进命令行」这件事
 只有在这里能被锁住——真跑一次 pg_dump 反而看不出来。
@@ -16,6 +17,7 @@ from src import backup
 from src.backup import (
     BackupError,
     is_postgres,
+    is_stale,
     latest_backup,
     parse_target,
     parse_time_of_day,
@@ -262,6 +264,39 @@ def test_password_is_left_out_of_the_repr():
     assert PASSWORD not in repr(parse_target(PG_URL))
 
 
+def test_the_database_is_insured_until_the_nightly_window_passes(tmp_path):
+    """``is_stale`` 的线要落在"一夜加一段缓冲"之外，否则每晚的健康备份都会被当成出事。"""
+    dump = tmp_path / "home_sites_20261004T033000Z.dump"
+    dump.write_bytes(b"x")
+
+    # 03:30 备份成功，04:00 起来问一遍：不陈旧。
+    _set_age_hours(dump, 0.5)
+    assert is_stale(str(tmp_path), now=NOW) is False
+
+    # 同一份文件，25 小时后（当晚那一趟没跑成）还不算——留的是一整夜的重试余量。
+    _set_age_hours(dump, 25)
+    assert is_stale(str(tmp_path), now=NOW) is False
+
+    # 越过 36 小时：连续两晚没有了，这才是"保不住了"。
+    _set_age_hours(dump, 37)
+    assert is_stale(str(tmp_path), now=NOW) is True
+
+
+def test_no_dump_at_all_is_stale(tmp_path):
+    """空目录和缺目录都算陈旧——第一次启动就该补一趟，而不是等第一个 03:30。"""
+    assert is_stale(str(tmp_path), now=NOW) is True
+    assert is_stale(str(tmp_path / "还没建"), now=NOW) is True
+
+    (tmp_path / "home_sites_manual_before_cleanup.dump").write_bytes(b"x")
+    # 手工快照不参与判断，和轮转"只认自己写出来的那个名字"是同一条规矩。
+    assert is_stale(str(tmp_path), now=NOW) is True
+
+
 def _set_age(path, days: int) -> None:
     when = (NOW - timedelta(days=days)).timestamp()
+    os.utime(path, (when, when))
+
+
+def _set_age_hours(path, hours: float) -> None:
+    when = (NOW - timedelta(hours=hours)).timestamp()
     os.utime(path, (when, when))

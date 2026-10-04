@@ -4,12 +4,16 @@ import logging
 from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 logger = logging.getLogger(__name__)
 
 #: 备份任务的固定 id：每天一条，重新挂载时靠它替换掉旧的。
 BACKUP_JOB_ID = "backup_database"
+
+#: 启动补跑的固定 id：一次性任务，跑完即走，重新挂载时同样靠它替换。
+BACKUP_CATCHUP_JOB_ID = "backup_database_catchup"
 
 
 class ScanScheduler:
@@ -79,8 +83,38 @@ class ScanScheduler:
             trigger=CronTrigger(hour=hour, minute=minute),
             id=BACKUP_JOB_ID,
             replace_existing=True,
+            # 到点没跑成（机器睡着、事件循环被占住）也要在醒来的第一时间补上。
+            # 默认宽限只有 1 秒：晚过一秒这一轮就整轮无声跳过，一天都不备份。
+            misfire_grace_time=None,
+            coalesce=True,
         )
         logger.info("Scheduled daily backup at %02d:%02d", hour, minute)
+
+    def add_backup_catchup_job(self) -> None:
+        """Arm a one-shot backup check that runs as soon as the loop starts.
+
+        The nightly job only fires while the process is alive at that minute, and
+        a *stopped* process never misfires — it just recomputes the next run on
+        boot. This catches the case the grace time can't reach.
+        """
+        from src.scheduler.tasks import backup_catchup_task
+
+        self.remove_backup_catchup_job()
+        self.scheduler.add_job(
+            backup_catchup_task,
+            trigger=DateTrigger(),
+            id=BACKUP_CATCHUP_JOB_ID,
+            replace_existing=True,
+            misfire_grace_time=None,
+        )
+        logger.info("Armed database backup catch-up check at startup")
+
+    def remove_backup_catchup_job(self) -> None:
+        """Drop the startup catch-up check, if it is armed."""
+        try:
+            self.scheduler.remove_job(BACKUP_CATCHUP_JOB_ID)
+        except Exception:
+            pass  # Job doesn't exist
 
     def remove_backup_job(self) -> None:
         """Drop the daily backup job, if it is armed."""

@@ -33,6 +33,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 备份只在 PostgreSQL 上挂载：pg_dump 备不了 SQLite，装了也是每晚一条失败通知。
     if settings.backup_enabled and backup.is_postgres(settings.database_url):
         scheduler.add_backup_job(settings.backup_time)
+        # 错过的每晚一条都不会补：进程不在的时候 APScheduler 连"错过"都不知道。
+        scheduler.add_backup_catchup_job()
 
     scheduler.start()
 

@@ -97,7 +97,7 @@ backend/
 │   │   ├── time.py      # 把库里读出的时刻统一收成带 UTC 时区（SQLite 读回来永远不带 tz）
 │   │   └── name_parser.py  # 文件名解析（片名、系列、季集、字幕组）
 │   ├── scheduler/         # 定时任务
-│   │   ├── scan_scheduler.py  # 源扫描（interval）+ 每日备份（cron）共用这一个调度器
+│   │   ├── scan_scheduler.py  # 源扫描（interval）+ 每日备份（cron）+ 启动补跑（一次性），共用这一个调度器
 │   │   └── tasks.py       # 任务体：失败才写通知，成功不吭声
 │   ├── database/          # 数据库配置
 │   │   ├── base.py        # SQLAlchemy 基类
@@ -340,11 +340,11 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 真后端 e2e 的现场由 `src/e2e_seed.py` 一手准备，前端只负责把它串在 uvicorn 之前起（`frontend/CLAUDE.md` 的「打真后端的端到端测试」）。这里有两道闸门，理由和 `db_transfer` 一样——"连哪个库""清哪个目录"都只看一条环境变量，所以判据不能靠调用方自觉：库名必须以 `_test` 结尾才允许 TRUNCATE，非 PostgreSQL 方言直接拒收（这套用例要证明的就是和生产同一个方言）；媒体目录必须落在 `backend/data/e2e` 之下才允许整目录删除，否则报错发生在任何删除之前。**媒体夹具在这个进程里写，不放在前端的 Playwright 配置里写**：那个配置文件会被执行好几遍（主进程 + 每个 worker），写在配置里的副作用会在播种之后把 `data/e2e` 再清一次，留下的现象是库里的封面路径指向一个不存在的文件。扫描产物同样只核对不解释：1 部片子、1 条字幕、1 张封面，对不上就在起步时失败，而不是让三条用例各炸一次——封面这一项是为了 FFmpeg 不在 PATH 上时报"ffmpeg 抽不出封面"，而不是报一个看不出根因的图片加载失败。
 
-每日备份在 `src/backup.py`，挂载在 `main.py` 的 lifespan 里，走的是应用自己的 APScheduler（`add_backup_job`，和扫描同一个调度器——两个调度器会让每个任务各跑一遍）。核心是 `run_backup()`：从 `settings.database_url` 拆出连接参数，起 `pg_dump -Fc --no-owner`，然后 `pg_restore -l` 把清单读回来，读不回的文件**当场删掉**。三个约束是这块的意义所在，改之前先看用例：
+每日备份在 `src/backup.py`，挂载在 `main.py` 的 lifespan 里，走的是应用自己的 APScheduler（`add_backup_job` 是每天那条 cron，`add_backup_catchup_job` 是启动时那条一次性检查，两者和扫描共用同一个调度器——两个调度器会让每个任务各跑一遍）。核心是 `run_backup()`：从 `settings.database_url` 拆出连接参数，起 `pg_dump -Fc --no-owner`，然后 `pg_restore -l` 把清单读回来，读不回的文件**当场删掉**。三个约束是这块的意义所在，改之前先看用例：
 
 - **口令只进子进程的 `PGPASSWORD`，绝不进 argv**（命令行在进程列表里是明文），也不进日志——`PgTarget` 把口令排除在 `repr` 外，`BackupError` 的文案只带 pg_dump 自己的 stderr。用例是 `tests/test_backup.py::test_password_only_travels_in_the_child_environment`，它断言的是真实 argv/env，真跑一次 pg_dump 反而证不了这件事。
 - **轮转按文件名形状认领**（`home_sites_<UTC 到秒>.dump`），不是按前缀：`data/pg-backups/` 里本来就躺着手工快照 `home_sites_post_account_cleanup_20261004_154215.dump`，按前缀认亲会在七天后把某次改动唯一的现场备份清掉。`BACKUP_KEEP_DAYS=0` 是"不轮转"，不是"全清"。
-- **只在 PG 上挂载**，且成功不发通知（#85 定的"变了才说"），失败发一条 `backup_error`。可见性因此是单向的：悄悄停掉的备份没人报，只能靠 `backup.latest_backup()` 或看一眼目录，这条权衡写进 README 的「每日备份」。
+- **只在 PG 上挂载**，且成功不发通知（#85 定的"变了才说"），失败发一条 `backup_error`（标题分「每日」和「补跑」，看得出是哪一趟炸的）。"悄悄停掉的备份没人报"这一条已经补上，靠的是两个口子：`add_backup_job` 带 `misfire_grace_time=None`（默认 1 秒——到点时进程睡着/事件循环正忙，醒来就把这一轮**无声跳过**，一天就这么没了；实测把 next_run_time 挪到 5 小时前，默认配置直接 skip，带上这条才跑）；`add_backup_catchup_job` 是启动时的一次性检查，用 `backup.is_stale()` 问"最新一份还在 36 小时内吗"，不是就当场补 dump（进程压根没开着的那一轮不存在 misfire，只能靠这个）。36 小时故意比 24 小时长一截，否则昨夜好好的时候启动会误判成出事。
 
 `pg_dump`/`pg_restore` 由 `pg_binary()` 找：`PG_BINDIR` 指目录（Windows 上服务端的 bin 默认不在 `PATH`，本机的值写在 `backend/.env`，不进版本库），留空按 `PATH` 找；两边都找不到就直接失败并把办法写进错误里——凌晨三点没人看见的"找不到 pg_dump"等于没有备份。
 
@@ -538,10 +538,10 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 - 别拿单文件百分比当"这里没测"的证据去补用例，先看 `tests/` 里到底有没有走过那条路径
 - 别为了让报告好看抬高 `fail_under`：80 在未修正的读数上就还有余量，修正后余量更大，动它只会把历史数字弄丢
 
-下面那份薄位置清单是**修正后**重测的（SQLite 全量 698 passed + 1 skipped，TOTAL 91.49%）：
+下面那份薄位置清单是**修正后**重测的（SQLite 全量 706 passed + 1 skipped，TOTAL 92%）：
 
 - `utils/ffmpeg.py` **23%**——转码要真 FFmpeg 和真片子才跑得动，桩不出真形状没有意义
-- `scheduler/tasks.py` **57%**——缺的是 `scan_source_task` / `scan_all_active_task` 两个包装的函数体（自己开会话、把异常变成一条 `scan_error` 通知）；测试和被调的定时任务都是直接走 `ScanService`，只有 `backup_database_task` 是端到端测过的
+- `scheduler/tasks.py` **62%**（2026-10-05 补上启动补跑之后重量的，此前 57%）——缺的还是 `scan_source_task` / `scan_all_active_task` 两个包装的函数体（自己开会话、把异常变成一条 `scan_error` 通知）；测试和被调的定时任务都是直接走 `ScanService`，只有两条备份任务（每晚 + 启动补跑）是端到端测过的
 - `src/e2e_seed.py` **57%**——一次性库的播种与重置，主要活在打真后端的 e2e 那个进程里，pytest 进程只 import 和调其中一部分
 - `api/settings.py` **71%**——批量改配置和单键读写两条端点没人调（界面走的是另一套偏好接口）
 - `api/stream.py` **72%**——整文件直读那两个分支和"封面文件不在"的兜底；`Range` 分段由打真后端的 e2e 覆盖，不在这份读数里

@@ -241,6 +241,33 @@ def latest_backup(backup_dir: str) -> str | None:
     return max(dumps, key=lambda p: os.path.getmtime(p))
 
 
+def is_stale(
+    backup_dir: str,
+    *,
+    now: datetime | None = None,
+    stale_after: timedelta = timedelta(hours=36),
+) -> bool:
+    """True when no restorable dump in ``backup_dir`` is newer than ``stale_after``.
+
+    A missing directory, an empty one, and one holding only hand-named snapshots
+    all count as stale: the question this answers is "is the database insured
+    right now?", not "did a previous run fail?". ``stale_after`` is deliberately
+    longer than the 24h cron — otherwise every healthy night would look like an
+    incident on the morning the machine wakes late.
+
+    Unstatable files are treated as stale rather than raising; this runs at
+    startup, where a dangling entry must not take the app down.
+    """
+    newest = latest_backup(backup_dir)
+    if newest is None:
+        return True
+    try:
+        modified = datetime.fromtimestamp(os.path.getmtime(newest), tz=timezone.utc)
+    except OSError:
+        return True
+    return (now or datetime.now(timezone.utc)) - modified > stale_after
+
+
 def _discard(path: str) -> None:
     with contextlib.suppress(OSError):
         os.remove(path)

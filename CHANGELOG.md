@@ -2,6 +2,19 @@
 
 ## 2026-10-05
 
+### 修复：漏掉的每晚备份不再无声消失——醒来补跑，启动时按目录补一趟
+
+- **动因**：`03:30` 那条 cron 只在"那个分钟进程正好活着"时执行。机器睡着、进程被占用，APScheduler 默认只给 **1 秒**宽限，过了就把这一轮丢掉，只在日志里留一行；而备份成功本来就不发通知（#85 定的"变了才说"），于是"备份已经停了三天"和"备份一直健康"看起来一模一样。`tasks.py` 里原先写着"失败通知是人们得知备份停了的唯一途径"——这个假设正是这一单要纠正的
+- **机制是实测出来的，不是读文档读的**：临时脚本把这条 cron 的 `next_run_time` 推到 5 小时前。默认配置打出 `Run time of job "backup_database_task" was missed by 5:00:00.000878`，函数一次都没进；换成 `misfire_grace_time=None` 之后同一份脚本立刻跑出 dump。另一半是**进程压根没开着**的那种漏：没有 misfire 可言，APScheduler 重启时直接把下次执行算到明天，所以宽限救不了它，只能靠启动时主动看一眼目录
+- **`backup.is_stale()`**：最新的 dump 超过 **36 小时**（或目录空、目录不存在、里面只有手工命名的快照）就算陈旧。线故意比 24 小时长一截——否则昨夜健康、今天 04:00 重启一次服务，也会被当成出了事；stat 拿不到文件时间按陈旧算而不是抛，这条跑在启动路径上，一条悬空记录不该把服务带倒
+- **启动补跑挂成一次性任务**（`add_backup_catchup_job`：`DateTrigger` + 独立 job id，先拆后装，跑完自己从任务表里消失），和每晚那条用同一个闸门（`BACKUP_ENABLED` 且 URL 是 PostgreSQL）一起装；任务体只做一件事——陈旧就 dump，成功照旧一声不吭
+- **失败通知现在分得清是哪一趟**：每日那条还是「每日数据库备份失败」，补跑那条是「补跑数据库备份失败」（`data.kind` 也带上了）。两条 dump 走的是同一个 `_dump_and_notify`，不再各写一遍异常处理
+- **先红**：`tests/test_backup.py` 在 HEAD 上跑到的是 `ImportError: cannot import name 'is_stale'`，`tests/test_scheduler_backup.py` 是 `ImportError: cannot import name 'BACKUP_CATCHUP_JOB_ID'`（用一份 `git worktree` 的 HEAD 检出验的，验完删掉）；补完实现后两个文件 18 + 11 全绿
+- **端到端复核**：一次性脚本把 cron 那一轮推到 5 小时前再启动调度器，跑出两趟 dump（misfire 的每晚 + 空目录的启动补跑），catch-up 任务随后自己消失，每晚那条的 `next_run_time` 正常落到明天 03:30。脚本用完即删，没有留在仓库里
+- **一个故意不铺的守卫**：进程活着但被卡住超过 36 小时时，醒来那一趟和启动那一趟会各 dump 一次。两份都是可恢复的备份、轮转照旧，多一次 pg_dump 不值得为它加一层跨任务状态
+- **验证**：`ruff check .` **0 项**、`mypy src` **34 项**（与前一单同数，这一单没有新增，也没有落在改过的文件上）；SQLite 全量 **706 passed + 1 skipped**、PostgreSQL 全量 **707 passed**（两套串行）；前端单测 **279 passed**、桩 e2e **82 passed**、打真后端的 e2e **3 passed**；`src/backup.py` 在这两份用例下是 **95%**（剩 6 行：pg_dump 的几条兜底和 `is_stale` 里 stat 失败的分支）
+- **生效条件**：这些都在进程启动时挂载，正在跑的后端要重启才会带上新的宽限配置和补跑任务
+
 ### 修正：coverage 一直在少算异步代码，配上 `concurrency = ["greenlet", "thread"]` 之后薄位置重测了一遍
 
 - **是怎么撞出来的**：上一单给标签接口补完 26 条用例，报告说 `api/tags.py` 只有 76%、`tag_service.py` 只有 37%，可这些用例明明就是从 `create()` / `update()` 的函数体走出去的。去对照 `watchlists`（74% / 45%）才发现不是标签一处的怪事——**全仓的异步代码都被少算**，缺的行整齐地都排在某个 `await` 之后

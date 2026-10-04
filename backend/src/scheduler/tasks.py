@@ -59,9 +59,29 @@ async def backup_database_task() -> None:
     """Daily ``pg_dump``, run off the event loop.
 
     Success is silent — a notification every night would be the heartbeat #85
-    just removed. Failure is the change worth announcing, and it is the only way
-    anyone learns the backups stopped: the dump files themselves look fine.
+    just removed. Failure is worth announcing; that "nothing was announced" and
+    "nothing ever ran" look the same is what :func:`backup_catchup_task` is for.
     """
+    await _dump_and_notify("每日")
+
+
+async def backup_catchup_task() -> None:
+    """One dump at startup when the database has gone without one for too long.
+
+    The nightly cron fires only if the process is alive at that minute, and a
+    process that was simply *off* never even misfires — it recomputes tomorrow's
+    run on boot. Nothing says "there has been no backup for four days" louder
+    than a fresh dump, or the failure to produce one.
+
+    Only armed on PostgreSQL (see ``main.py``), so no dialect check here.
+    """
+    if not backup.is_stale(settings.backup_dir):
+        return
+    await _dump_and_notify("补跑")
+
+
+async def _dump_and_notify(kind: str) -> None:
+    """Run one backup; announce only the failure, prefixed by which job ran it."""
     try:
         await asyncio.to_thread(
             backup.run_backup,
@@ -71,14 +91,14 @@ async def backup_database_task() -> None:
             pg_bindir=settings.pg_bindir,
         )
     except Exception as e:
-        logger.exception("Scheduled database backup failed")
+        logger.exception("Database backup failed (%s)", kind)
         try:
             async with async_session_maker() as session:
                 await NotificationService(session).create(
                     type="backup_error",
-                    title="每日数据库备份失败",
+                    title=f"{kind}数据库备份失败",
                     message=f"PostgreSQL 备份没有完成: {e}",
-                    data={"error": str(e)},
+                    data={"error": str(e), "kind": kind},
                 )
         except Exception:
             logger.exception("Failed to create the backup error notification")
