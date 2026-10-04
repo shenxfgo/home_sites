@@ -24,7 +24,8 @@ const PY = `"${pythonPath()}"`
 export default defineConfig({
   testDir: './e2e/real',
   testMatch: '**/*.real.spec.ts',
-  // 三条用例共用一个库，一起跑会互相清掉对方的行；一次 e2e 也就十几秒。
+  // 一条播种链喂着所有用例：大家共用同一个库，而且有用例会自己往库里新写一行（片单
+  // 那条要新建一条片单），所以既不能并发、也不能单独调换顺序——一次 e2e 也就十几秒。
   fullyParallel: false,
   workers: 1,
   retries: 0,

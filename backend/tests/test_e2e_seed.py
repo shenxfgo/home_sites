@@ -96,3 +96,40 @@ def test_media_reset_refuses_paths_outside_the_sandbox(
         e2e_seed.prepare_media(str(outside))
 
     assert keep_me.read_bytes() == b"not yours to delete"
+
+
+async def test_personal_rows_come_from_the_same_writers_the_site_uses(
+    db_session, user_id
+):
+    """夹具的 `completed` 必须由 `is_completed()` 说了算，不是由播种脚本猜一个。
+
+    这一条守的是整套真后端 e2e 的地基：继续观看那条轨只读 `completed == False` 的
+    行。如果这里改成手写 INSERT 并把 completed 拍成 False，那么 `is_completed` 的
+    容差一改（它是按时长比例算的），夹具就变成"库里说看完了、界面上还在轨里"或者
+    反过来，而两边看着都自洽——只有把写入交回服务本身，规则改了夹具才跟着改。
+    """
+    from sqlalchemy import func, select
+
+    from src.models.history import PlayHistory
+    from src.models.watch_event import WatchEvent
+    from src.models.watchlist import Watchlist, WatchlistItem
+    from tests.support import ensure_video
+
+    video = await ensure_video(db_session)  # duration=120，18 秒显然没看完
+    stats = await e2e_seed.seed_user_stats(db_session, user_id, video.id)
+
+    assert stats["progress"] == e2e_seed.WATCHED_SECONDS
+    assert stats["watchlist_id"] > 0
+
+    row = (await db_session.execute(select(PlayHistory))).scalar_one()
+    assert (row.progress, row.completed) == (e2e_seed.WATCHED_SECONDS, False)
+    assert await db_session.scalar(select(func.count(WatchEvent.id))) == 1
+
+    listed = (await db_session.execute(select(Watchlist))).scalar_one()
+    assert (listed.name, listed.description) == (
+        e2e_seed.DEFAULT_WATCHLIST_NAME,
+        e2e_seed.DEFAULT_WATCHLIST_DESCRIPTION,
+    )
+
+    queued = (await db_session.execute(select(WatchlistItem))).scalars().all()
+    assert [item.video_id for item in queued] == [video.id]

@@ -1,8 +1,10 @@
 """给真后端 e2e 准备一次性库：造媒体、清干净、建一个 owner、扫一遍临时目录。
 
-账号用 ``AuthService`` 建、影片行走 ``ScanService`` 扫，**不手写 INSERT**：e2e 断言之
-下的数据因此和真实站点是同一条代码路写出来的。手搓的种子行会跟着模型与扫描规则的
-漂移一起过时（标题解析、季集角标、字幕 sidecar 都是扫描的产物），扫出来的不会。
+账号用 ``AuthService`` 建、影片行走 ``ScanService`` 扫、"看过但没看完"那条历史与片单
+走 ``VideoService`` / ``WatchlistService``，**全部不手写 INSERT**：e2e 断言之下的数据因
+此和真实站点是同一条代码路写出来的。手搓的种子行会跟着模型与扫描规则的漂移一起过时
+（标题解析、季集角标、字幕 sidecar 都是扫描的产物；``completed`` 更是由 ``is_completed()``
+按时长算出来的），扫出来、写出来的不会。
 
 媒体夹具也在**这个进程里**落盘，而不是由前端的 Playwright 配置来写：那个配置文件会被
 求值好几遍（主进程一次、每个 worker 一次），任何写在配置里的副作用都会在播种之后把
@@ -25,16 +27,21 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import src.models  # noqa: F401  # 只为把全部模型注册进 Base.metadata
 from src.config import BACKEND_ROOT, settings
 from src.database import async_session_maker, engine, init_db
 from src.database.migrations import business_tables
+from src.models.history import PlayHistory
 from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
 from src.models.video import Video
+from src.models.watchlist import WatchlistItem
 from src.services.auth_service import AuthService
 from src.services.scan_service import ScanService
+from src.services.video_service import VideoService
+from src.services.watchlist_service import WatchlistService
 
 #: 测试账号。它只活在马上要被 TRUNCATE 的库里，所以字面值进版本库不是泄密——
 #: 真正的判据是下面 ``assert_disposable`` 保证这个库永远不是真库。
@@ -59,11 +66,22 @@ SIDECAR_SRT = (
 )
 
 #: 媒体目录由本脚本每次重建，内容固定是一部片子加一条 sidecar。计数对不上说明夹具
-#: 坏了，与其让三条用例各炸一次，不如在起步时就失败。
+#: 坏了，与其让每条用例各炸一次，不如在起步时就失败。
 EXPECTED_VIDEOS = 1
 EXPECTED_SUBTITLES = 1
 EXPECTED_THUMBNAILS = 1
 
+#: "看过但没看完"现场要播到的秒数。夹具片子 30 秒，18 秒既进得了继续观看那条轨
+#: （`is_completed` 的门槛是 28.5 秒），又让界面上剩 12 秒 = `0:12`，进度条 60%。
+WATCHED_SECONDS = 18
+
+#: 播种建的那条片单。片单页读的就是这一条，所以名字和说明都会被用例断言到。
+DEFAULT_WATCHLIST_NAME = "今晚看这些"
+DEFAULT_WATCHLIST_DESCRIPTION = "真后端 e2e 播的那一条"
+
+#: 播种后每人的历史行数与片单条目数。对不上就起步即失败。
+EXPECTED_HISTORY = 1
+EXPECTED_WATCHLIST_ITEMS = 1
 
 
 class SeedError(RuntimeError):
@@ -131,6 +149,25 @@ async def _truncate_all() -> None:
         await conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
 
 
+async def seed_user_stats(session: AsyncSession, user_id: int, video_id: int) -> dict[str, int]:
+    """用**真的写入路径**造一次"看过但没看完"和一条排好队的片单。
+
+    历史行走 `record_play` + `update_progress`，片单走 `WatchlistService`。手写
+    INSERT 更快，但 `completed` 是 `is_completed()` 从 `duration` 算出来的（尾部容差
+    按时长比例走），而继续观看那条轨只读 `completed == False` 的行：自己抄一份判定
+    规则，规则一改这条夹具就悄悄失真，界面上变成"播过却不进轨"，而库里那行看着完全
+    合理。`update_progress` 还顺手记一条观看事件，统计页读的正是它。
+    """
+    videos = VideoService(session)
+    await videos.record_play(user_id, video_id)
+    await videos.update_progress(user_id, video_id, WATCHED_SECONDS)
+
+    lists = WatchlistService(session)
+    watchlist = await lists.create(user_id, DEFAULT_WATCHLIST_NAME, DEFAULT_WATCHLIST_DESCRIPTION)
+    await lists.add_video(user_id, watchlist.id, video_id)
+    return {"progress": WATCHED_SECONDS, "watchlist_id": watchlist.id}
+
+
 async def seed(*, password: str, media_dir: str, username: str = DEFAULT_USERNAME) -> dict:
     """重建库内容，返回一份可以直接打进 stdout 的摘要。"""
     assert_disposable(settings.database_url)
@@ -173,6 +210,31 @@ async def seed(*, password: str, media_dir: str, username: str = DEFAULT_USERNAM
             or 0
         )
 
+        # 个人数据走服务层，不走手写 INSERT：见 seed_user_stats 的说明。影片 id 在这里
+        # 就取成整数，别把这个循环整个塞进 seed_user_stats——那样它既碰视频又碰历史，
+        # 就没法单独测试了。
+        video_ids = [row.id for row in (await session.scalars(select(Video).order_by(Video.id)))]
+        if videos != EXPECTED_VIDEOS:
+            # 个人那两行得挂在影片行上，所以这里先停：不然下一行抛的是 IndexError，
+            # 现场看不出根因是"扫描没写出片子"，而那句判断本来就在下面的核对里。
+            raise SeedError(
+                f"seeded {videos} video(s), expected {EXPECTED_VIDEOS} from {media_dir}"
+            )
+        stats = await seed_user_stats(session, user.id, video_ids[0])
+
+        # 落库之后**重新查一遍**，读回的是服务真写进去的东西。同一个会话里那些实例刚被
+        # commit 过，直接读 ORM 属性拿到的是内存里的值而不是库里的值（异步会话在
+        # expire_on_commit=False 下不会自动失效，这条进程正是这么配的）。这里干脆只选
+        # 列不选实体：列没有身份映射，也就没有"读过期实例"这一说。
+        history_count = await session.scalar(select(func.count(PlayHistory.id))) or 0
+        row_progress = list(
+            await session.scalars(select(PlayHistory.progress).order_by(PlayHistory.id))
+        )
+        completed = list(
+            await session.scalars(select(PlayHistory.completed).order_by(PlayHistory.id))
+        )
+        items = await session.scalar(select(func.count(WatchlistItem.id))) or 0
+
     if videos != EXPECTED_VIDEOS or subtitles != EXPECTED_SUBTITLES:
         raise SeedError(
             f"seeded {videos} video(s) and {subtitles} subtitle(s), "
@@ -184,6 +246,20 @@ async def seed(*, password: str, media_dir: str, username: str = DEFAULT_USERNAM
             "the scan could not run ffmpeg (check it is on PATH) or could not write "
             f"into {settings.thumbnail_path!r}"
         )
+    if history_count != EXPECTED_HISTORY:
+        raise SeedError(
+            f"seeded {history_count} history row(s), expected {EXPECTED_HISTORY}"
+        )
+    if row_progress != [WATCHED_SECONDS] or completed != [False]:
+        raise SeedError(
+            f"the seeded history row reads progress={row_progress} "
+            f"completed={completed}, expected [{WATCHED_SECONDS}] / [False] — "
+            "the rail would then show a title that is not really unfinished"
+        )
+    if items != EXPECTED_WATCHLIST_ITEMS:
+        raise SeedError(
+            f"seeded {items} watchlist item(s), expected {EXPECTED_WATCHLIST_ITEMS}"
+        )
 
     return {
         "database": settings.database_url.rsplit("/", 1)[-1],
@@ -194,6 +270,12 @@ async def seed(*, password: str, media_dir: str, username: str = DEFAULT_USERNAM
         "videos": videos,
         "subtitles": subtitles,
         "thumbnails": thumbnails,
+        # 界面上"共 1 个视频"和剩多少秒都押在这几个数上，摘要里带着它们，e2e 就不必
+        # 再各自抄一份期望值。
+        "history": history_count,
+        "progress": stats["progress"],
+        "watchlist_id": stats["watchlist_id"],
+        "watchlist_items": items,
     }
 
 

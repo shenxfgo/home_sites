@@ -2,6 +2,19 @@
 
 ## 2026-10-05
 
+### 新增：真后端 e2e 从 3 条加宽到 5 条——继续观看那条轨和片单页也到真库签了字
+
+- **动因**：#81 立起"打真后端"那条缝时只压了三条链路（登录、字幕/流式、收藏），其余页面仍是前端对着手抄的替身响应自己绿。这一单挑的两条，共同点是**界面上那个数是另一张表算出来的**：继续观看的"剩 0:12"和进度条宽度来自 `PlayHistory.progress` 被抄到影片对象上（`history_service.py:78`），片单里那条"已看 0:18"是 `api/watchlists.py:62` 现查的 `attach_watch_progress`。替身夹具给不给这一列，前端都不会红；只有真后端不给才会红。
+- **播种侧新增 `seed_user_stats`（`src/e2e_seed.py`）**：一次观看进度（`record_play` + `update_progress` 到 18 秒）加一条带说明的片单，全部走**服务层本身**，不手写 INSERT。理由是 `completed` 由 `is_completed()` 按 `duration` 的尾部容差算（30 秒的片子门槛是 28.5 秒），而那条轨只读 `completed == False` 的行——夹具自己抄一份判定，容差规则一改就悄悄失真成"库里说看完了、界面上还在轨里"，两边看着都自洽。落库之后**只选列不选实体**地重查一遍（这个进程是 `expire_on_commit=False`，读刚 commit 过的 ORM 实例拿到的是内存值不是库里的值），再加四道闸门：历史行数、`[progress]`/`[completed]` 的具体形状、片单条目数，对不上就起步即失败。
+- **用例 4（继续观看）**：先 `GET /api/history/continue` 拿真行，断言 `progress` 非空且 `0 < progress < duration`；首页 `.resume-rail` 的"1 部没看完"、`剩 …` 文案、进度条内联宽度（读样式串里的百分比，不拿 px 比）全部用**后端那一行**算出来的期望值去比，期望值不往用例里抄第二个 18；点进去落到 `/videos/1`，`/history` 上同一行的 `.continue-card` 也读得到。
+- **用例 5（片单）**：`GET /api/watchlists/1` 的 `items[0].progress` 不为 null（这条最容易被替身糊过去），页首「1 个片单 · 1 条排队」、`.list-desc` 正是播种写的那句说明、`.queue-meta` 含「已看 …」；再从详情页的弹窗新建「周末再看」并把这部片子放进去，页首变「2 个片单 · 2 条排队」，并向 `GET /api/watchlists` 回读核对条目总数确实是 2——不是前端把刚点那一下乐观地留在内存里。
+- **红在先（这两条对着 HEAD 本来就是绿的：它们钉的是既有契约而不是修复，所以用变异来证明能红）**：去掉 `history_service.py:78` 那句 `record.video.progress = record.progress` → 用例 4 红在 `expect(row.progress).not.toBeNull()`；跳过 `api/watchlists.py:62` 的 `attach_watch_progress(...)` → 用例 5 红在 `expect(list.items[0].progress).not.toBeNull()`。两次各恰好 1 例红、其余 4 例照绿，改回后 `git diff --stat` 只剩本单要交的文件、`grep DEBUG-` 无残留。
+- **顺手修的夹具缺陷**：扫描没写出影片行时，`video_ids[0]` 会先抛 `IndexError`，把"扫描没产出片子"这个根因盖成一句看不懂的栈——现在把那条计数核对挪到写入之前，报的仍是同一句话。这段只有坏夹具才走得到，要真 PG + 真媒体目录 + 真 FFmpeg，pytest 侧没有为它单独立例，也没做变异证明。
+- **顺序成了约定**：用例 5 自己会往库里新建一条片单，所以"只核对 1 个片单"的那一段必须排在它前面。`playwright.real.config.ts` 里那句"三条用例共用一个库"的注释改成了这件事（`workers: 1` + 非并发的理由也从"互相清行"更正为"共用一次播种、后写的会改前一条的计数"）。
+- **文档同步**：`README.md`、`CLAUDE.md`、`frontend/CLAUDE.md`（覆盖面那句按新读法重写）、`backend/CLAUDE.md`（播种为什么走服务层、`src/e2e_seed.py` 覆盖率 57% → **58%**、薄位置清单的复量时间）四处从"3 条"改成"5 条"。
+- **验证**：打真后端的 e2e **5 passed**（串行单 worker，约 16 秒）；`tests/test_e2e_seed.py` **9 passed**（新增那条要求 `completed` 归 `is_completed()` 说了算、片单名与说明都落库）；后端 PostgreSQL 全量 **718 passed**（3:44）、真 SQLite **717 passed + 1 skipped**（1:16，`TEST_DATABASE_URL=` 那套，判据见上一单），两套串行；带覆盖率的 SQLite 全量 **TOTAL 92%**；前端单测 **279 passed**、桩 e2e **82 passed**、`typecheck:test` 绿；`ruff check .` **0 项**、`mypy src` **34 项**（与上一单同数，改过的文件零新增）
+- **覆盖面现状（别把这条读成"缺口关上了"）**：85 条浏览器用例里打真库的是 **5** 条，其余 80 条继续对着 `e2e/fixtures.ts` 的替身。用户管理、视频源、观影统计、设置这几页的读路径仍然没有签字。
+
 ### 更正：此前几单报的"SQLite 全量"跑的其实是 PostgreSQL——判据在 `backend/.env` 里，不在命令行上
 
 - **撞出来的经过**：这一晚连着几单都在末尾写"SQLite N passed + 1 skipped / PostgreSQL N+1 passed"，两边数字只差那条 PG-only 的搬迁用例。核对上一单的原始输出时才发现，被标成 SQLite 的那一套里根本没有 skip 行——它跑的就是 PG。命令一模一样（`python -m pytest`），差别只在环境变量
