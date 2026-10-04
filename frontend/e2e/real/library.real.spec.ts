@@ -311,3 +311,55 @@ test('成员账号撞的是真中间件：管理面连读都 403，库级写 403
   expect(ownerLists.map((entry) => entry.name)).toEqual(['今晚看这些', '周末再看'])
   expect(JSON.parse((await fetchInPage(page, '/api/favorites')).text).total).toBe(1)
 })
+
+/** `/api/history/stats` 的响应里这条用例真正在用的那几项。 */
+type WatchStats = {
+  days: number
+  window_seconds: number
+  videos_watched: number
+  daily: { date: string; seconds: number; videos: number }[]
+}
+
+type AdminUser = { username: string; role: string; signed_in_devices: number }
+
+test('管理面那两页的数是后台算出来的：窗口按 days 零填充，设备数来自真登录', async ({ page }) => {
+  // 替身夹具里 `daily` 是前端抄的几天，`days` 这个查询参数它甚至可以不理；用户管理那格的
+  // `signed_in_devices` 在替身里是个常数。这两句只有打真库才签得到。
+  const month = JSON.parse((await fetchInPage(page, '/api/history/stats?days=30')).text) as WatchStats
+  expect(month.days).toBe(30)
+  // 零填充是真后台的承诺：窗口里每一天都得有一格，哪怕那天什么都没看（播种只写了今天）
+  expect(month.daily).toHaveLength(30)
+  expect(new Set(month.daily.map((entry) => entry.date)).size).toBe(30)
+  expect(month.daily.filter((entry) => entry.seconds > 0).length).toBeGreaterThan(0)
+
+  await page.goto('/stats')
+  await expect(page.locator('.bar-cell')).toHaveCount(30)
+  await expect(
+    page.locator('.stat-card', { hasText: '看过影片' }).locator('.stat-value'),
+  ).toHaveText(`${month.videos_watched} 部`)
+
+  // 换窗口要后端真的重算：7 天窗口是 30 天窗口的子集，总时长只会更小或相等。前端自己
+  // 数那 30 格永远发现不了"days 被忽略"这件事。
+  await page.locator('.window-btn', { hasText: '近 7 天' }).click()
+  await expect(page.locator('.bar-cell')).toHaveCount(7)
+  const week = JSON.parse((await fetchInPage(page, '/api/history/stats?days=7')).text) as WatchStats
+  expect(week.days).toBe(7)
+  expect(week.daily).toHaveLength(7)
+  expect(week.window_seconds).toBeLessThanOrEqual(month.window_seconds)
+
+  await page.goto('/users')
+  const rows = page.locator('.users-table .el-table__row')
+  await expect(rows).toHaveCount(2)
+  const accounts = JSON.parse((await fetchInPage(page, '/api/users')).text) as AdminUser[]
+  expect(accounts.map((entry) => entry.username).sort()).toEqual(['e2e_member', 'e2e_owner'])
+  // owner 此刻就登录在这台浏览器上，所以那一格至少是 1：它是中间件每次登录写下的会话行，
+  // 不是接口里的默认值（`signed_in_devices: int = 0` 那个 0 就是给"没人登录"准备的）
+  const owner = accounts.find((entry) => entry.username === 'e2e_owner')
+  expect(owner?.signed_in_devices).toBeGreaterThanOrEqual(1)
+  // 表格里「登录设备」那一列（第四格）就是接口那一个数
+  for (const entry of accounts) {
+    await expect(
+      rows.filter({ hasText: entry.username }).first().locator('td').nth(3),
+    ).toHaveText(String(entry.signed_in_devices))
+  }
+})
