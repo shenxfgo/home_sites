@@ -2,6 +2,23 @@
 
 ## 2026-10-04
 
+### 新增：PostgreSQL 每日自动备份，外加一份不含口令的建库模板
+
+- **动因**：真库切到 PG 之后，片库、账号、收藏、历史只有一个出处——`home_sites` 那个库，盘掉了就全没。此前唯一的备份是搬家当天手工敲的那两次 `pg_dump`
+- **触发选了应用内 APScheduler 每日任务**，不是系统的计划任务：扫描本来就挂在同一个 `AsyncIOScheduler` 上，备份跟着后端进程走，部署时不用维护第二套排程。代价说清楚——后端没跑的那一晚就不备份
+- **`backend/src/backup.py`（新增）**：`pg_dump -Fc --no-owner` 写完，**立刻用 `pg_restore -l` 把归档读回来**；读不回、或 pg_dump 报成功但文件是 0 字节，就删掉那个文件再抛错。留一份读不回来的 dump 比不备份更危险——出事那天你以为它有
+- **口令只进子进程的环境变量**（`PGPASSWORD`），一个字节都不进 argv：argv 在 Windows 上是任何进程都能读到的。`PgTarget.password` 标了 `field(repr=False)`，异常文本只带 pg_dump 自己的 stderr（截 400 字）。用例直接断言命令里没有任何一项含口令
+- **轮转只认自己写出来的那个文件名**：`home_sites_\d{8}T\d{6}Z\.dump`。按前缀认亲会误伤——`data/pg-backups/` 里本来就躺着手工快照 `home_sites_post_account_cleanup_20261004_154215.dump`，一周后"轮转"会把某次改动唯一的现场备份删掉。轮转用例就是拿这两个真实手工文件名跑的
+- **通知沿用 #85 定的"变了才说"**：备份成功一条都不写，失败写一条 `backup_error`（界面里进红色告警图标）。可见性的代价写在 README 里——悄悄停掉的备份只能靠目录本身或红色通知发现，`GET /api/scheduler/jobs` 能看出作业挂没挂上
+- **配置五个**：`BACKUP_ENABLED` / `BACKUP_DIR` / `BACKUP_KEEP_DAYS` / `BACKUP_TIME`（默认 03:30）/ `PG_BINDIR`。`backup_time` 在 `Settings` 的 validator 里校验 `HH:MM`，让它**在启动时炸**而不是凌晨三点炸；`backup_dir` 和 `thumbnail_path` 复用同一条锚定到 `backend/` 的规则。挂载前有方言闸门，SQLite 库整条路不挂
+- **`pg_binary` 的存在是因为这台机器**：`pg_dump.exe` 在 `D:/Program Files/PostgreSQL/18/bin`，不在 PATH 上。给了 `PG_BINDIR` 就按 `stem` 和 `stem + ".exe"` 两种拼法找（Windows 上不补 `.exe` 会静默找不到），没给才回落 `shutil.which`，都没有就报一条点名 `PG_BINDIR` 的错
+- **建库模板入版本库**：`backend/deploy/pg-provision.example.sql`，口令写 `__REPLACE_ME__` 占位，填好的那份留本地 `data/`。模板里两个库的 `LC_COLLATE` 钉死 `C`，理由写在注释里
+- **测试**：后端 590 → SQLite **612 passed + 1 skipped**（45s）、PG **613 passed**（2:58）。新增 23 例：`tests/test_backup.py` 16（口令只在 env、URL→argv 映射、文件名形状、读不回就删文件、0 字节拒绝、pg_dump 失败原话上抛、轮转保住手工快照、`keep_days=0` 不轮转、SQLite 在动手前就被拒、缺二进制点名 PG_BINDIR、时间解析矩阵…）、`tests/test_scheduler_backup.py` 5（重复挂载只留一个作业、失败恰好写一条通知、成功**一条都不写**、通知写不进去也不把异常抛回调度器）、`tests/test_config.py` 2。前端 278 → **279 passed**
+- **红在先**：`backup.py` 的三条护栏各做一次变异——口令改进行进 argv、轮转改成按前缀认领、去掉读回校验，每次都恰好 1 例红，改回后 `sha256sum` 复核原样；前端那一例对着 HEAD 的 `NotificationCenter.vue` 跑过是红的
+- **真机跑过一次**：另起一次性 uvicorn（127.0.0.1:8015、`BACKUP_TIME=19:56`、备份写到临时目录），到点产出 `home_sites_20261004T115600Z.dump`，51,257 字节，`pg_restore -l` 数出 160 行 TOC / 38 个 TABLE，通知表里 `backup_error` **0** 条、原有通知一行没多。随后杀掉进程、删掉临时产物，:8000 的后端已重启到新代码（`/health` 200、`/api/videos` 仍 401、启动日志无异常）
+- **lint / mypy**：`ruff` 对 8 个后端文件在 HEAD 与改动后同为 **7 条既有项**且逐项同源，三个新文件零项；`mypy` 4 → 5，多的那条是 `apscheduler.triggers.cron` 缺 stub 的 `import-untyped`，不是本次代码的类型问题
+- **没做**：不带手动触发的端点或 CLI 子命令（超出本单）。想知道"库今天有没有被保"，看 `backup.latest_backup()` 和 `GET /api/scheduler/jobs`
+
 ### 修复：删掉记录之后，应用生成的封面永远留在盘上
 
 - **症状**：删影片与删整个视频源的级联只删数据库行，`videos.thumbnail_path` 指的那张 jpg 无人过问，且重扫会按同一条派生规则再落一张，盘上只会越攒越多。真库清点：7 行影片对 23 个封面文件，按文件名核对**至少 6 张**已无任何行引用（`5f5fb38` 改名之前的老命名也计在内，所以 6 是下限）

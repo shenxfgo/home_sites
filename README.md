@@ -275,6 +275,13 @@ AUTH_COOKIE_SECURE=false     # 只在 https 访问时改 true，否则 Cookie �
 LOGIN_MAX_FAILURES=5         # 连续失败几次锁定
 LOGIN_LOCKOUT_MINUTES=10     # 锁定多久
 
+# 数据库备份（只在 DATABASE_URL 是 PostgreSQL 时挂载，见"数据库 → 每日备份"）
+BACKUP_ENABLED=true
+BACKUP_DIR=./data/pg-backups   # 相对路径按 backend/ 锚定
+BACKUP_KEEP_DAYS=7             # 旧备份保留天数，0 = 不轮转
+BACKUP_TIME=03:30              # 每天几点跑（服务器本地时区）
+PG_BINDIR=                     # Windows 上指向 PostgreSQL 的 bin 目录；留空按 PATH 找
+
 # 对象存储（只在添加 S3/MinIO 类型视频源时需要，见使用指南第 9 节）
 S3_ENDPOINT_URL=             # 留空即连 AWS；自建 MinIO/RustFS 填 http://192.168.1.10:9000
 S3_REGION=us-east-1
@@ -287,7 +294,7 @@ S3_ADDRESSING_STYLE=auto     # 自建 MinIO 用域名寻址失败时改 path
 
 真库跑在 **PostgreSQL** 上（`postgresql+asyncpg://`），SQLite 作为另一种方言仍然可用。表结构的唯一出处是 Alembic（`backend/alembic/`，基线修订 `0001`）：启动流程只负责选路线——空库建基线、有表没版本号的老库补齐后认领基线、已版本化的库只补挂着的修订——不再往启动里加建表 SQL。
 
-建库要超级用户执行 `backend/data/pg-provision.sql`（在 `data/` 里，带应用角色口令，**不进版本库**）：角色 `home_sites_app` 只有 LOGIN，两个库 `home_sites`（真库）和 `home_sites_test`（测试专用），排序规则钉死 `LC_COLLATE=C`——C 就是 UTF-8 字节序，和 SQLite 一直在用的 `BINARY` 一致，换成 ICU 规则的话切换当天整个片库的 `ORDER BY title` 会静默重排一遍。
+建库要超级用户执行 `backend/deploy/pg-provision.example.sql`（模板进版本库，里面**没有口令**）：把两处 `__REPLACE_ME__` 换成一个真口令后再跑，换好的那份留在 `backend/data/` 里（整目录 gitignore），别提交。角色 `home_sites_app` 只有 LOGIN，两个库 `home_sites`（真库）和 `home_sites_test`（测试专用），排序规则钉死 `LC_COLLATE=C`——C 就是 UTF-8 字节序，和 SQLite 一直在用的 `BINARY` 一致，换成 ICU 规则的话切换当天整个片库的 `ORDER BY title` 会静默重排一遍。表结构不在这里建，由 Alembic 基线在首次启动时建。
 
 ### 从 SQLite 搬家
 
@@ -302,16 +309,37 @@ uv run python -m src.db_transfer --from <老库> --to <新库>             # 正
 
 搬迁在一个事务里完成，按外键拓扑序插入，**同一次事务内**把每张表的摘要和目标库读回来的内容重算比对，对不上就整体回滚，所以不存在"搬了一半"的库。自增序列会跟着推到当前最大值，`sessions` 整张表跳过（会话是登录态，不是数据）。目标库必须已经建好表且是空的，否则直接中止。
 
+### 每日备份
+
+后端进程自己每天 `BACKUP_TIME`（默认 03:30，服务器本地时区）跑一次 `pg_dump -Fc`，落到 `BACKUP_DIR`（默认 `backend/data/pg-backups/`，相对路径按 `backend/` 锚定），文件名是 `home_sites_<UTC 时间戳>.dump`。这是 APScheduler 里的一条 cron 任务，和扫描任务共用同一个调度器——一个进程开两个调度器会让每个任务各跑一遍，其中一份就是多余的 pg_dump。
+
+几处刻意的设计：
+
+- **写完立刻读回来**：每个 dump 都要过 `pg_restore -l`，读不回清单的文件当场删掉。备份失败最坏的形式不是报错，而是目录里躺着一堆打不开的文件。
+- **口令只走子进程的环境变量**（`PGPASSWORD`），不进命令行——命令行在任务管理器/`ps` 里是明文可见的；也不会出现在任何日志或通知里（连接对象把口令排除在 `repr` 之外）。
+- **轮转只认自己的文件名**（带 UTC 到秒的那个形状），按 `BACKUP_KEEP_DAYS` 删旧的。手工留在同一目录里的快照（`home_sites_post_account_cleanup_*.dump` 这类）不会被"轮转"掉；`BACKUP_KEEP_DAYS=0` 是不轮转，不是清空历史。
+- **成功不吭声，失败发通知**：通知中心里是一条红色的「每日数据库备份失败」。每晚都播报"备份成功"就是刚被删掉的那种心跳噪音；代价是"备份悄悄停了"只能靠失败通知或自己看一眼目录，所以顶栏图标对 `*_error` 一律标红。
+- **只在 PostgreSQL 上挂载**：`DATABASE_URL` 是 SQLite 时这条任务根本不会装上（pg_dump 备不了 SQLite，装了只会每晚一条失败通知）。
+- 关掉它：`BACKUP_ENABLED=false`，或者把 `BACKUP_TIME` 改到你不介意的时刻。
+
+Windows 上 PostgreSQL 的 `bin` 默认不在 `PATH` 里，要显式指过去，否则 03:30 那次会以"找不到 pg_dump"失败：
+
+```env
+PG_BINDIR="D:/Program Files/PostgreSQL/18/bin"   # 留空则按 PATH 找 pg_dump / pg_restore
+```
+
 ### 回滚
 
 老 SQLite 文件切换后原样留在 `backend/data/videos.db`，没有被改动过，所以退回去只要一行配置：
 
 ```bash
-pg_dump -Fc home_sites > backup-before-rollback.dump   # 先备份，切换之后产生的新数据只在这里
+# 先拿最近一份备份（或直接现做一份）：切换之后产生的新数据只在这里
+ls -t backend/data/pg-backups/*.dump | head -1
+pg_dump -Fc home_sites > backup-before-rollback.dump
 # 把 .env 里的 DATABASE_URL 换回 sqlite+aiosqlite:///./data/videos.db，重启后端
 ```
 
-这样回到的是**切换那一刻**的状态，切换之后新增的播放记录、收藏、账号都不在那份老文件里。想把增量一起带回去，就反向再搬一次：先拿一个新文件名启动一次后端（空库会走基线把表建齐），再 `uv run python -m src.db_transfer --from <PG 连接串> --to sqlite+aiosqlite:///<新文件>`，核对摘要通过后把 `DATABASE_URL` 指过去。两个方向用的是同一套脚本，序列重置对两种方言都做了。
+恢复回去是 `pg_restore --no-owner -d home_sites <那份 .dump>`（库和角色用上面的模板重建，表结构在 dump 里）。这样回到的是**备份那一刻**的状态，之后新增的播放记录、收藏、账号都不在那份文件里。想把增量一起带回去，就反向再搬一次：先拿一个新文件名启动一次后端（空库会走基线把表建齐），再 `uv run python -m src.db_transfer --from <PG 连接串> --to sqlite+aiosqlite:///<新文件>`，核对摘要通过后把 `DATABASE_URL` 指过去。两个方向用的是同一套脚本，序列重置对两种方言都做了。
 
 ## 🌐 公网部署注意事项
 

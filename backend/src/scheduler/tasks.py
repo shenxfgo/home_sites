@@ -1,6 +1,9 @@
-"""Scheduled tasks for scanning."""
+"""Scheduled tasks: source scans and the daily database backup."""
+import asyncio
 import logging
 
+from src import backup
+from src.config import settings
 from src.database import async_session_maker
 from src.services.scan_service import ScanService
 from src.services.notification_service import NotificationService
@@ -50,3 +53,32 @@ async def scan_all_active_task() -> None:
                 )
             except Exception:
                 logger.exception("Failed to create error notification for full scan")
+
+
+async def backup_database_task() -> None:
+    """Daily ``pg_dump``, run off the event loop.
+
+    Success is silent — a notification every night would be the heartbeat #85
+    just removed. Failure is the change worth announcing, and it is the only way
+    anyone learns the backups stopped: the dump files themselves look fine.
+    """
+    try:
+        await asyncio.to_thread(
+            backup.run_backup,
+            database_url=settings.database_url,
+            backup_dir=settings.backup_dir,
+            keep_days=settings.backup_keep_days,
+            pg_bindir=settings.pg_bindir,
+        )
+    except Exception as e:
+        logger.exception("Scheduled database backup failed")
+        try:
+            async with async_session_maker() as session:
+                await NotificationService(session).create(
+                    type="backup_error",
+                    title="每日数据库备份失败",
+                    message=f"PostgreSQL 备份没有完成: {e}",
+                    data={"error": str(e)},
+                )
+        except Exception:
+            logger.exception("Failed to create the backup error notification")

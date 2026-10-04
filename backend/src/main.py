@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
+from src import backup
 from src.config import settings
 from src.database import init_db, async_session_maker
 from src.middleware.auth import AuthMiddleware
@@ -28,6 +29,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         sources = list(result.scalars().all())
         for source in sources:
             scheduler.add_source_job(source.id, source.scan_interval)
+
+    # 备份只在 PostgreSQL 上挂载：pg_dump 备不了 SQLite，装了也是每晚一条失败通知。
+    if settings.backup_enabled and backup.is_postgres(settings.database_url):
+        scheduler.add_backup_job(settings.backup_time)
 
     scheduler.start()
 

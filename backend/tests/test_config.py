@@ -17,6 +17,33 @@ def test_load_default_settings():
     assert "sqlite" in settings.database_url
 
 
+def test_backup_defaults():
+    """备份默认每晚开、留一周，且只在 PostgreSQL 上才会被挂载（挂载条件见 main）。"""
+    from src.config import BACKEND_ROOT, Settings
+
+    settings = Settings(_env_file=None)
+
+    assert settings.backup_enabled is True
+    assert settings.backup_keep_days == 7
+    assert settings.backup_time == "03:30"
+    assert settings.pg_bindir == ""
+    # 相对目录和封面一样按 backend/ 锚定，否则会随 uvicorn 的启动位置漂移。
+    assert settings.backup_dir == os.path.normpath(
+        str(BACKEND_ROOT / "data" / "pg-backups")
+    )
+
+
+def test_a_bad_backup_time_fails_at_startup(monkeypatch):
+    """时刻写错必须在启动时炸：静默的备份等于没有备份。"""
+    from src.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, backup_time="3am")
+
+    # 补零、也接受不带前导 0 的写法
+    assert Settings(_env_file=None, backup_time="3:05").backup_time == "03:05"
+
+
 def test_load_settings_from_env(monkeypatch):
     """Test that settings load from environment variables"""
     monkeypatch.setenv("API_PORT", "9000")

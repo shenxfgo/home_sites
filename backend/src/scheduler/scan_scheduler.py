@@ -1,15 +1,24 @@
-"""Scan scheduler using APScheduler."""
+"""Periodic jobs inside the app process: source scans and the daily backup."""
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.jobstores.memory import MemoryJobStore
 
 logger = logging.getLogger(__name__)
 
+#: 备份任务的固定 id：每天一条，重新挂载时靠它替换掉旧的。
+BACKUP_JOB_ID = "backup_database"
+
 
 class ScanScheduler:
-    """Scheduler for automatic video scanning."""
+    """Scheduler for the app's periodic work.
+
+    The name says "scan" because scanning came first; the backup job lives here
+    too on purpose. Two ``AsyncIOScheduler`` instances in one process would each
+    fire their own copy of every job, and one of them would be a pg_dump.
+    """
 
     def __init__(self) -> None:
         self.scheduler = AsyncIOScheduler()
@@ -55,6 +64,28 @@ class ScanScheduler:
         try:
             self.scheduler.remove_job(job_id)
             logger.info("Removed scan job for source %d", source_id)
+        except Exception:
+            pass  # Job doesn't exist
+
+    def add_backup_job(self, time_of_day: str) -> None:
+        """Arm the daily database backup at ``HH:MM`` (server local time)."""
+        from src.backup import parse_time_of_day
+        from src.scheduler.tasks import backup_database_task
+
+        hour, minute = parse_time_of_day(time_of_day)
+        self.remove_backup_job()
+        self.scheduler.add_job(
+            backup_database_task,
+            trigger=CronTrigger(hour=hour, minute=minute),
+            id=BACKUP_JOB_ID,
+            replace_existing=True,
+        )
+        logger.info("Scheduled daily backup at %02d:%02d", hour, minute)
+
+    def remove_backup_job(self) -> None:
+        """Drop the daily backup job, if it is armed."""
+        try:
+            self.scheduler.remove_job(BACKUP_JOB_ID)
         except Exception:
             pass  # Job doesn't exist
 

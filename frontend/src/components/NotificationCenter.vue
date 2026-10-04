@@ -137,20 +137,26 @@ async function handleClearAll() {
   unreadCount.value = 0
 }
 
+/** 失败类通知（scan_error / transcode_error / backup_error）共用一副面孔：
+ *  后端新增一种失败通知时前端不用改，也不会有"备份失败了但看起来像条普通消息"。 */
+function isErrorType(type: string): boolean {
+  return type === 'error' || type.endsWith('_error')
+}
+
 function getIcon(type: string) {
+  if (isErrorType(type)) return Warning
   const icons: Record<string, any> = {
     scan_complete: CircleCheck,
     new_video: InfoFilled,
-    error: Warning,
   }
   return icons[type] || InfoFilled
 }
 
 function getIconColor(type: string): string {
+  if (isErrorType(type)) return '#f56c6c'
   const colors: Record<string, string> = {
     scan_complete: '#67c23a',
     new_video: '#409eff',
-    error: '#f56c6c',
   }
   return colors[type] || '#909399'
 }

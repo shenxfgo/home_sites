@@ -97,12 +97,13 @@ backend/
 │   │   ├── time.py      # 把库里读出的时刻统一收成带 UTC 时区（SQLite 读回来永远不带 tz）
 │   │   └── name_parser.py  # 文件名解析（片名、系列、季集、字幕组）
 │   ├── scheduler/         # 定时任务
-│   │   ├── scan_scheduler.py
-│   │   └── tasks.py
+│   │   ├── scan_scheduler.py  # 源扫描（interval）+ 每日备份（cron）共用这一个调度器
+│   │   └── tasks.py       # 任务体：失败才写通知，成功不吭声
 │   ├── database/          # 数据库配置
 │   │   ├── base.py        # SQLAlchemy 基类
 │   │   ├── migrations.py  # 驱动 Alembic 的那三只函数（upgrade_head / stamp_head / current_revision）
 │   │   └── session.py     # 会话管理 + init_db 选路 + 老库的一次性补齐
+│   ├── backup.py          # 每日 pg_dump：口令只走子进程环境、写完用 pg_restore -l 验一次、按文件名形状轮转
 │   ├── cli.py             # 账号管理命令行（create-user / list-users / set-role / revoke-sessions）
 │   ├── db_audit.py        # 换数据库前的只读审计（`uv run python -m src.db_audit`）
 │   ├── db_transfer.py     # 搬家：一个事务内插完并对账，对不上就整体回滚（`uv run python -m src.db_transfer --from <老库> --to <新库>`）
@@ -111,10 +112,14 @@ backend/
 ├── alembic/               # schema 的出处（版本化迁移）
 │   ├── env.py             # 连接串从 settings 取；应用启动时经 config.attributes 复用同一条连接
 │   └── versions/          # 0001 是基线，此后一律新增修订
+├── deploy/                # 运维脚本模板：进版本库，但里面永远不该有口令
+│   └── pg-provision.example.sql  # 建角色和两个库，__REPLACE_ME__ 由用的人换掉
 ├── tests/                 # 测试文件
 │   ├── conftest.py        # 共享 fixtures：db_session / anon_client / client（已登录）+ make_user / user_id / make_signed_in_client
 │   ├── support.py         # ensure_source / ensure_video：PG 真执行外键，子行必须先有父行
 │   ├── test_api/          # API 测试
+│   ├── test_backup.py     # 备份用例：假子进程演 pg_dump/pg_restore，断言真实 argv/env、读不回即删、轮转只认自己的文件名
+│   ├── test_scheduler_backup.py # 挂载与通知：重新挂载只留一条任务；失败写 backup_error，成功一条都不写
 │   ├── test_db_audit.py   # 审计用例：造一个每类问题各一条的脏库，证明检查还活着
 │   ├── test_db_transfer.py # 搬家用例：空库闸门、对账失败即回滚、时间戳跨方言不偏、报告与审计同一个数
 │   ├── test_migrations.py # Alembic 三条启动路线：空库、老库、已版本化
@@ -289,7 +294,7 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 ### PostgreSQL
 
-`DATABASE_URL` 指哪就连哪，SQLite 与 PostgreSQL 两种方言都支持（PG 用 `postgresql+asyncpg://`）。建库脚本 `backend/data/pg-provision.sql`（在 `data/` 里，不进版本库，带应用角色的口令）：角色 `home_sites_app` 只有 LOGIN，两个库 `home_sites`（真库）与 `home_sites_test`（测试专用），`ENCODING=UTF8`、`LC_COLLATE`/`LC_CTYPE` 钉死 `C`。
+`DATABASE_URL` 指哪就连哪，SQLite 与 PostgreSQL 两种方言都支持（PG 用 `postgresql+asyncpg://`）。建库模板 `backend/deploy/pg-provision.example.sql`（进版本库，口令位置是 `__REPLACE_ME__`，用的人自己换成真口令；换好之后的那份另存到 `data/` 里，别提交）：角色 `home_sites_app` 只有 LOGIN，两个库 `home_sites`（真库）与 `home_sites_test`（测试专用），`ENCODING=UTF8`、`LC_COLLATE`/`LC_CTYPE` 钉死 `C`。表结构不在模板里建，由 `0001` 基线在首次启动时建。
 
 - **为什么是 C**：C 的排序就是 UTF-8 字节序，正好等于 SQLite 一直在用的 `BINARY`。换成 `en_US.UTF-8` 之类的 ICU 规则，切换当天整个片库的 `ORDER BY title` 会静默重排一遍。
 - **测试库**：`settings.test_database_url`（写在 `backend/.env` 的 `TEST_DATABASE_URL`）指定；不设就回落到 SQLite 内存库（老路子）。`tests/conftest.py` 和搬家脚本的 PG 用例读的是同一个出处。PG 上每个用例靠 `TRUNCATE ... RESTART IDENTITY CASCADE` 隔离，`RESTART IDENTITY` 保证第一个自增 id 还是 1，用例里写死的 id 不用跟着改。schema 只在第一次用例前建一次，走的就是 `0001` 基线。
@@ -309,7 +314,7 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 删行之外还带走封面：`delete_videos_cascade` 把这些行的 `thumbnail_path` 返回给调用方，调用方**提交之后**再调 `delete_cover_files` 落盘删除（顺序反了的话，回滚的删除会留下"行还在、图没了"的影片）。封面只由 `scan_service` 生成在本地磁盘，S3 源在 `scan_service.py:256` 的 `local_path` 闸门上根本不会生成，所以清理走服务层的 `os.remove` 就够了，**没有**给 `MediaStorage` 加 `delete()`——那个 seam 是只读的，而且 UI 明说删记录不动磁盘上的视频，一个能删对象的口子比它要修的孤儿文件更危险。
 
-通知只有一个写入方：`ScanService.scan_source` 发 `scan_complete`，`TranscodeService` 发 `transcode_complete`/`transcode_error`，`src/scheduler/tasks.py` 只在异常时补一条 `scan_error`。调度任务**不再**对同一个结果再播一条——曾经两处各写一份，六个源跑一轮就是 12 条。另一半规则是"变了才说"：`new_videos`、`subtitles_found`、`is_missing` 翻转（`missing_flips`）三个计数全为零就不写，因为一轮定时扫描的常态就是"什么都没变"，而扫过没扫过本来就记在 `video_sources.last_scan_at` 上，不需要通知当心跳。这条规则由 `tests/test_services/test_scan_service.py` 末尾四例钉住（一轮只播一次 / 零变化不播 / 文件消失要播 / 新增字幕要播）。后两例是防止静得太狠：文件消失和新加字幕都不体现在 `new_videos` 上，只看新增计数会把它们一起静掉。
+通知只有一个写入方：`ScanService.scan_source` 发 `scan_complete`，`TranscodeService` 发 `transcode_complete`/`transcode_error`，`src/scheduler/tasks.py` 只在异常时补一条——扫描炸了是 `scan_error`，每日备份炸了是 `backup_error`。调度任务**不再**对同一个结果再播一条——曾经两处各写一份，六个源跑一轮就是 12 条。另一半规则是"变了才说"：`new_videos`、`subtitles_found`、`is_missing` 翻转（`missing_flips`）三个计数全为零就不写，因为一轮定时扫描的常态就是"什么都没变"，而扫过没扫过本来就记在 `video_sources.last_scan_at` 上，不需要通知当心跳。这条规则由 `tests/test_services/test_scan_service.py` 末尾四例钉住（一轮只播一次 / 零变化不播 / 文件消失要播 / 新增字幕要播）。后两例是防止静得太狠：文件消失和新加字幕都不体现在 `new_videos` 上，只看新增计数会把它们一起静掉。备份这边同理：成功每晚一次、说的都是同一句话，所以 `tests/test_scheduler_backup.py` 里"成功时 notifications 为空"是刻意保住的一条。
 
 `settings` 与 `user_preferences` 是两张不同的表，别混：前者全家一份（扫描间隔、缩略图尺寸、默认转码格式），改一次所有人的播放都受影响，读写都限 owner；后者一人一份（`user_id` 主键 + `prefs` JSON），走 `/api/preferences`，成员改自己的主题不该碰着别人的屏幕。写入是按键合并（`save_prefs` 只覆盖 patch 里非空的键），响应字段由 API 层的 Pydantic 模型限定，所以加一项偏好只是加一个字段，不必改表。JSON 列的坑：原地 `row.prefs["k"]=v` SQLAlchemy 看不见，必须换一个新 dict 赋回去。
 
@@ -329,7 +334,15 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 换数据库之前先跑 `uv run python -m src.db_audit`（`src/db_audit.py`）。它只以 `mode=ro` 打开库文件，拿模型的 `Base.metadata` 和库里的实际 schema 对账，报九类问题：schema 漂移、库里没落实的外键约束、孤儿行、值类型不对、VARCHAR 超长、整数超出 PG 的 32 位 `integer`、NOT NULL 列里的 NULL、解析不了的日期与 JSON，并给每张表算一个方言无关的内容摘要（布尔→true/false、时间→UTC ISO、JSON→键排序，整表排序后哈希），搬完在目标库上再算一遍对得上才算搬全。之所以要有这么个脚本而不是"迁过去看报不报错"：SQLite 的类型亲和、不检查长度、不执行外键这三件事会让一批数据在 SQLite 里存得很好，到 PG 那边要么被拒要么被静改写；而只存在于库里的列（如认领后剩下的 `viewed`/`read`）会不会丢数据，只有数一遍非空值才知道。报告写到 `data/migration-audit-<日期>.md`（`data/` 不进版本库），stdout 只打 ASCII——控制台是 cp936。用例在 `tests/test_db_audit.py`，那里造了一个每类问题都有一条的脏库；真库跑出来的"一切正常"证明不了检查还活着。
 
-搬家的顺序：审计（`db_audit`）→ 目标库建空（`pg-provision.sql`，schema 由 `0001` 基线建，别手工建表）→ `db_transfer --from <老库> --to <新库> --dry-run` 预演 → 去掉 `--dry-run` 正式搬。`--dry-run` 会一路跑到对账通过再整体回滚，新库不留一行，所以它和正式搬用的是同一条代码路，预演过了才算过。目标库必须已建表且为空，否则直接中止。搬的时候 `sessions` 整表跳过（旧 token 到了新库也不该还能用），`alembic_version` 也不搬；自增序列会推到当前最大值。方向是双向的：回滚到 SQLite 就把它当目标库再搬一次，`_reset_sequences` 两种方言都实现了。
+搬家的顺序：审计（`db_audit`）→ 目标库建空（`deploy/pg-provision.example.sql`，schema 由 `0001` 基线建，别手工建表）→ `db_transfer --from <老库> --to <新库> --dry-run` 预演 → 去掉 `--dry-run` 正式搬。`--dry-run` 会一路跑到对账通过再整体回滚，新库不留一行，所以它和正式搬用的是同一条代码路，预演过了才算过。目标库必须已建表且为空，否则直接中止。搬的时候 `sessions` 整表跳过（旧 token 到了新库也不该还能用），`alembic_version` 也不搬；自增序列会推到当前最大值。方向是双向的：回滚到 SQLite 就把它当目标库再搬一次，`_reset_sequences` 两种方言都实现了。
+
+每日备份在 `src/backup.py`，挂载在 `main.py` 的 lifespan 里，走的是应用自己的 APScheduler（`add_backup_job`，和扫描同一个调度器——两个调度器会让每个任务各跑一遍）。核心是 `run_backup()`：从 `settings.database_url` 拆出连接参数，起 `pg_dump -Fc --no-owner`，然后 `pg_restore -l` 把清单读回来，读不回的文件**当场删掉**。三个约束是这块的意义所在，改之前先看用例：
+
+- **口令只进子进程的 `PGPASSWORD`，绝不进 argv**（命令行在进程列表里是明文），也不进日志——`PgTarget` 把口令排除在 `repr` 外，`BackupError` 的文案只带 pg_dump 自己的 stderr。用例是 `tests/test_backup.py::test_password_only_travels_in_the_child_environment`，它断言的是真实 argv/env，真跑一次 pg_dump 反而证不了这件事。
+- **轮转按文件名形状认领**（`home_sites_<UTC 到秒>.dump`），不是按前缀：`data/pg-backups/` 里本来就躺着手工快照 `home_sites_post_account_cleanup_20261004_154215.dump`，按前缀认亲会在七天后把某次改动唯一的现场备份清掉。`BACKUP_KEEP_DAYS=0` 是"不轮转"，不是"全清"。
+- **只在 PG 上挂载**，且成功不发通知（#85 定的"变了才说"），失败发一条 `backup_error`。可见性因此是单向的：悄悄停掉的备份没人报，只能靠 `backup.latest_backup()` 或看一眼目录，这条权衡写进 README 的「每日备份」。
+
+`pg_dump`/`pg_restore` 由 `pg_binary()` 找：`PG_BINDIR` 指目录（Windows 上服务端的 bin 默认不在 `PATH`，本机的值写在 `backend/.env`，不进版本库），留空按 `PATH` 找；两边都找不到就直接失败并把办法写进错误里——凌晨三点没人看见的"找不到 pg_dump"等于没有备份。
 
 ### 模型定义
 

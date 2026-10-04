@@ -87,6 +87,28 @@ describe('NotificationCenter', () => {
     expect(popper()?.textContent).toContain('发现 3 个新视频')
   })
 
+  it('把任何失败通知标红，不认识的类型也只当普通消息', async () => {
+    // 备份失败是每晚没人盯着的那类消息：灰色信息点和"一切正常"看不出区别。
+    const wrapper = await mountOpened(
+      [
+        notification({ id: 1, type: 'backup_error', title: '每日数据库备份失败' }),
+        notification({ id: 2, type: 'scan_error', title: '定时扫描失败' }),
+        notification({ id: 3, type: 'scan_complete' }),
+        notification({ id: 4, type: 'some_future_type' }),
+      ],
+      4,
+    )
+
+    const colors = Array.from(popper()?.querySelectorAll('.notification-icon') ?? []).map((node) =>
+      node.getAttribute('style'),
+    )
+    expect(colors[0]).toContain('#f56c6c')
+    expect(colors[1]).toContain('#f56c6c')
+    expect(colors[2]).toContain('#67c23a')
+    expect(colors[3]).toContain('#909399')
+    wrapper.unmount()
+  })
+
   it('marks a single notification as read when clicked', async () => {
     await mountOpened([notification({ id: 12 })], 2)
 
