@@ -20,6 +20,7 @@ import {
   getVideo,
   updateVideo,
   deleteVideo,
+  streamUrl,
   thumbnailUrl,
 } from '@/api/videos'
 import {
@@ -69,13 +70,6 @@ const newWatchlistName = ref('')
 const showWatchlistDialog = ref(false)
 
 const videoId = computed(() => Number(route.params.id))
-
-/** Get the video stream URL. */
-function getVideoUrl(): string {
-  if (!video.value) return ''
-  // Vite proxy forwards /api to backend
-  return `/api/videos/${video.value.id}/stream`
-}
 
 /** Format duration in seconds to HH:MM:SS or MM:SS. */
 function formatDuration(seconds: number | null): string {
@@ -308,7 +302,7 @@ onMounted(() => {
         <div v-if="isPlaying" class="player-area">
           <VideoPlayer
             :video-id="video.id"
-            :video-url="getVideoUrl()"
+            :video-url="streamUrl(video.id)"
             :start-at="video.progress"
             @ended="handlePlayerEnded"
             @error="handlePlayerError"

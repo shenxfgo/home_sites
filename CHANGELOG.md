@@ -2,6 +2,17 @@
 
 ## 2026-10-05
 
+### 把浏览器自己取的那四类地址也钉到路由表上（#124，接着 #123 的遗留）
+
+- **动因**：#123 交出时把「三个返回字符串的 URL 构造器」记成遗留，但没实测过它们到底瞎到什么程度。这次先量：6 个变异跑全套，`subtitles/embedded/` → `embed`、详情页流地址 → `/videostream`、详情页流地址 → `/thumbnail` 三个**全绿**；另外三个（`thumbnail` 的两个变体、字幕 `/stream` → `/vtt`）会红，可红的原因是 `tests/api/videos.spec.ts:33` / `tests/components/VideoCard.spec.ts:22` / `tests/views/History.spec.ts` / `tests/components/VideoPlayer.spec.ts` 里各抄了一份字面量——那是"源码和抄本一起改"才会响的铃，不是契约。另外发现 #123 那句"这一类关掉了"说过头了：`VideoDetail.vue:74` 的 `/api/videos/${video.value.id}/stream` 还在视图里，而那份守卫只盯默认导入 axios 实例的文件，看不见裸字面量。
+- **改了什么**：那条流地址搬进 `src/api/videos.ts` 成为 `streamUrl(id)`，模板改读 `streamUrl(video.id)`——原来 `if (!video.value) return ''` 是死分支，播放器整块就挂在 `v-if="video"` 里面。`openapi-contract.spec.ts` 的遍历器现在除了适配器记录的 axios 请求，还把**只返回字符串**的构造器按 GET 补记一条（浏览器取封面、取流、取 `.vtt` 走的正是 GET），并用 `viaClient` 把两类分开各设下限，防止哪一类静默归零还被总数蒙过去。新增 `tests/api/builder-urls.spec.ts` 4 条用互不相等的哨兵值（11 / 22）钉住"哪个实参落在哪一段"。守卫 `inline-requests.spec.ts` 加第二条规则：`src/api/` 之外不许出现 `/api/` 字面量，比对前先刮掉 `/* */`、`<!-- -->`、`//`，不然 `src/types/auth.ts` 里那句文档注释会被当成请求。
+- **为什么必须是两层，一层不够**（这两条都是实测出来的，不是推的）：
+  - **路由表管不了落点**。字幕那条模板声明成 `/api/videos/{video_id}/subtitles/{subtitle_id}/stream`，两个参数都是 integer，把实参写反照样命中；把 `streamUrl` 改成返回封面地址也仍是一条已声明的路由。这两个变异对表全绿，只有哨兵断言抓到（字幕那个还顺带红了 `VideoPlayer.spec.ts`）。
+  - **手抄管不了两边一起错**。把 `backend/openapi.json` 里的封面路由临时改名为 `/poster`（模拟后端改名，前端一行没动），红的只有 `openapi-contract.spec.ts` 那一条，三处手抄期望全绿——手抄能响"构造器改了"，永远响不了"构造器和它的抄本一起对着一个已经不存在的接口"。
+- **红过没有**（Red before green，六个变异全部跑 `npx vitest run` 全套，跑完按 md5 校验还原字节）：搬之前 3 绿 3 红（如上）；搬之后六个各红 1~2 份文件——`embedded`→`embed` 与字幕落点写反各红 2 份，详情页地址重新内联红守卫那 1 份，`streamUrl` 改回封面地址红 `builder-urls` 1 份，路由表改名红 `openapi-contract` 1 份，把补记那段关掉红新下限 1 份。
+- **验证**：`npx vitest run` **302 passed / 32 files**（原 296 / 31）；`tests/api` **41 条 / 10 份**（原 35 / 9）；被钉住的地址从 72 次 `client` 调用扩到 **76** 条（+4 构造器）；`vue-tsc --noEmit` 干净；`npm run build` ✓ 786ms；stub e2e 82 条 30.8s、真后端 e2e 16 条 1.2m 全绿（`VideoDetail.vue` 是真改了的界面文件，播放器的 `src` 换了来源）。后端没重跑：`backend/src/` 一行没碰，`backend/openapi.json` 只在那个改名变异里临时动过，还原后 md5 `253253cd…` 与提交版本一致。
+- **遗留**：静态层只剩一条——调用方自己传进来的 `params` 键名仍在遍历器之外（模块里写死的那部分已经钉住）。真后端 e2e 那 16 条仍然只在被点到时才覆盖这些地址。
+
 ### 把 Sources / Transcode 两视图里就地拼的 7 条 URL 搬进 `src/api/`（#123，账是从 #122 的遗留里翻出来的）
 
 - **动因**：#122 的路由表钉子只看得见经过 `client` 的调用，而 `Sources.vue` / `Transcode.vue` 里有 7 条 URL 是在视图函数体里用字符串拼出来的，`tests/api/` 两份规格对它们完全瞎。这不是推测：搬之前把 7 条逐条改坏（改单复数、改路径段、改方法）再跑 `npx vitest run tests/api`，**33 条用例全绿**；视图规格里断言的 URL 又是手抄的第二份字面量，源码写错它照着抄错，照样绿。等于这 7 条是仓库里唯一一批"改错了没人报警"的请求。

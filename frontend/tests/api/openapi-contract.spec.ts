@@ -15,6 +15,11 @@ import client from '@/api/client'
  * 模板与方法。段名拼错（`/auth/session` 少一个 `s`）在这里会一个候选模板都没有，而形状规则
  * 完全放它过去——那正是 #121 承认钉不住的一类。
  *
+ * #124 起，遍历器还记 `src/api/` 里那几个**只返回字符串**的构造器：`<img>`/`<video>`/`<track>`
+ * 的 src 走的就是它们，一次 axios 都不经过，所以适配器那条路子天生看不见。现在它们按 GET
+ * 对同一张路由表核对。此前这一半是彻底的盲区——实测改坏 `subtitles/embedded/` 或详情页的
+ * 流地址，31 份测试全绿。
+ *
  * 这份 schema 由 `python -m src.export_openapi` 生成，`backend/tests/test_openapi_snapshot.py`
  * 保证它与代码一致。两半缺一条都不成立。
  */
@@ -57,6 +62,8 @@ interface Recorded {
   url: string
   query: string[]
   module: string
+  /** 这条是 axios 真发出去的，还是只返回字符串的构造器补记的。 */
+  viaClient: boolean
 }
 
 const calls: Recorded[] = []
@@ -98,6 +105,7 @@ client.defaults.adapter = (config) => {
       // 不能整条丢掉——丢了就把"查询名拼错"这一类一起放过去了（实测变异 ③ 因此演成绿的）。
       .map((pair) => pair.split('=')[0].split('%5B')[0]),
     module: currentModule,
+    viaClient: true,
   })
   return Promise.resolve({ data: anyData, status: 200, statusText: 'OK', headers: {}, config })
 }
@@ -126,7 +134,13 @@ async function walkAll(): Promise<void> {
         if (typeof member === 'function') {
           // 三个参数都给数字：路径里的 id 段必须是数字才谈得上"类型收得下"，而第二个参数
           // 在各模块里都只是请求体（对象还是数字不影响 URL）。
-          await (member as (...args: unknown[]) => Promise<unknown>)(1, 2, 3)
+          const returned = await (member as (...args: unknown[]) => unknown)(1, 2, 3)
+          // 浏览器自己取地址的那几个函数（`<img>`/`<video>`/`<track>` 的 src）只返回字符串，
+          // 一次 axios 都不走，所以适配器记不到它们 —— #122 承认的那半盲区。这里按它们
+          // 在浏览器里的真实方法（GET）补记一条，让下面两条路由表规则也能管到。
+          if (typeof returned === 'string' && returned.startsWith('/')) {
+            calls.push({ method: 'GET', url: returned, query: [], module: currentModule, viaClient: false })
+          }
         }
       }
     }
@@ -219,10 +233,21 @@ describe('api URLs against the backend route table', () => {
 
   it('walks the modules and reaches the real /api prefix', async () => {
     await walkAll()
-    // #121 实测 12 份共 66 次请求
-    expect(calls.length).toBeGreaterThanOrEqual(60)
+    // #123 实测 12→14 份模块共 72 次请求；#124 又记上 4 条不经过 axios 的构造器，共 76 次。
+    // 下限挡的是"遍历器换形状了却没发现"：构造器那一段要是哪天不再返回字符串，
+    // 记数会静默掉下来，所以这里同时钉住两者各自的数量。
+    expect(calls.length).toBeGreaterThanOrEqual(74)
     const wrongPrefix = calls.filter((call) => !call.url.startsWith('/api/'))
     expect(wrongPrefix.map(label)).toEqual([])
+  })
+
+  it('records the browser-side builders, which never touch axios', async () => {
+    await walkAll()
+    // 经过 client 的请求由适配器记录；构造器是函数返回值，靠 walkAll 里那一段补记。
+    // 两类分开计数，任何一类静默归零都会红，而不是"总数还够"就混过去。
+    const built = calls.filter((call) => !call.viaClient)
+    expect(built.length).toBeGreaterThanOrEqual(4)
+    expect(built.every((call) => call.method === 'GET')).toBe(true)
   })
 
   it('resolves every recorded URL against a declared path and method', async () => {

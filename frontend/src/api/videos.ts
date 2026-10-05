@@ -35,6 +35,11 @@ export function thumbnailUrl(id: number): string {
   return `/api/videos/${id}/thumbnail`
 }
 
+/** Build the address a `<video>` element streams from. */
+export function streamUrl(id: number): string {
+  return `/api/videos/${id}/stream`
+}
+
 /** Update video information. */
 export function updateVideo(id: number, data: VideoUpdate): Promise<Video> {
   return client.put<Video>(`/videos/${id}`, data).then((r) => r.data)
