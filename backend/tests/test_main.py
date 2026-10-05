@@ -1,19 +1,33 @@
 """Tests for FastAPI main application."""
-from fastapi.testclient import TestClient
+import httpx
+import pytest_asyncio
+
+from src.main import app
+
+
+@pytest_asyncio.fixture
+async def public_client():
+    """A client for the routes that stay open before login.
+
+    Deliberately built here rather than from ``conftest``'s ``anon_client``: that
+    one patches the session factory and the DB dependency, and none of the three
+    routes below touch either.
+    """
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as ac:
+        yield ac
 
 
 def test_app_creation():
     """Test that FastAPI app can be created."""
-    from src.main import app
-
     assert app is not None
     assert app.title == "Video Platform API"
 
 
 def test_cors_middleware():
     """Test that CORS middleware is configured."""
-    from src.main import app
-
     cors_middleware = None
     for middleware in app.user_middleware:
         if middleware.cls.__name__ == "CORSMiddleware":
@@ -23,32 +37,23 @@ def test_cors_middleware():
     assert cors_middleware is not None
 
 
-def test_health_check():
+async def test_health_check(public_client):
     """Test health check endpoint."""
-    from src.main import app
-
-    client = TestClient(app)
-    response = client.get("/health")
+    response = await public_client.get("/health")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
-def test_api_docs():
+async def test_api_docs(public_client):
     """Test that API docs are available."""
-    from src.main import app
-
-    client = TestClient(app)
-    response = client.get("/docs")
+    response = await public_client.get("/docs")
 
     assert response.status_code == 200
 
 
-def test_redoc_available():
+async def test_redoc_available(public_client):
     """Test that ReDoc is available."""
-    from src.main import app
-
-    client = TestClient(app)
-    response = client.get("/redoc")
+    response = await public_client.get("/redoc")
 
     assert response.status_code == 200

@@ -2,6 +2,16 @@
 
 ## 2026-10-05
 
+### FastAPI 升级评估（#111）：工单的前提在仓库里找不到出处，顺手把全量套件里最后一个告警消掉
+
+- **动因**：#111 写着"编辑器反复告警 `fastapi==0.112.0` 已过时，当前 `pyproject` 是 `>=0.109.0`、锁到 0.112.0"。先量再动：拿 `.venv/Scripts/python.exe` 用 `importlib.metadata` 逐包读已装版本，对着 `backend/uv.lock` 比，10 个关键包**零漂移**——fastapi 0.140.0 / starlette 1.3.1 / pydantic 2.13.4 / pydantic-core 2.46.4 / uvicorn 0.51.0 / anyio 4.14.2 / python-multipart 0.0.32 / alembic 1.20.0 / sqlalchemy 2.0.51 / httpx 0.28.1，Python 3.13.5；`uv lock --check` 退出码 0（锁与 `pyproject` 也同步）。
+- **0.112.0 不属于这个仓库**：`git log --diff-filter=A -- backend/uv.lock` 显示这份锁是 2026-07-27 的 `1d77281` 才加进来的，从第一天起就写 0.140.0，此后四次改动一次没动过 fastapi；`git grep "0\.112"` 在所有被跟踪文件里零命中，也没有任何 `requirements*.txt`。那条告警来自仓库之外的解释器。**工单的前提是过时的，按它改依赖会改错东西。**
+- **我自己在这条上量错过一次**：那张对照表第一版是拿**系统 python** 跑的，读出 fastapi 0.115.6 / starlette 0.41.3 / pydantic 2.10.3，看着像"环境与锁严重漂移"；换成 `.venv/Scripts/python.exe` 后差异全部消失。凡是核对版本，先钉死解释器。
+- **真要升的话面有多小**（实测 `uv pip install --dry-run fastapi==0.142.2 --python .venv/Scripts/python.exe`）：只动两个 wheel——fastapi 本身，外加新拖进来的 `opentelemetry-api==1.45.0`（来自 0.142.0 的"原生 OpenTelemetry 支持"）；starlette 留 1.3.1、pydantic 不动，所以不是框架换代。0.141.0 / 0.142.0 的 release notes 各只有一条 feature（`app.frontend(check_dir="auto")`、OpenTelemetry），无 breaking 条目；0.142.1 修的恰好是 "included routers 重复包装端点"，就在 `_IncludedRouter` 那条我们依赖的路上，但改的是路由内部结构，而两处全路由扫面读的是 `app.openapi()["paths"]`、不是 `app.routes`，够不着断言的输入。
+- **工单点名要复核的那条警告到今天仍然成立**：`app.routes` 顶层实测 21 条（16 `_IncludedRouter` + 4 `Route` + 1 `APIRoute`），`_IncludedRouter` 依旧没有 `.path`——所以"别改走 `app.routes`"那句不是历史包袱，是当前行为。复核清单（三处）与上面这些数字都落在 `backend/CLAUDE.md`「依赖管理」新增的两节里。
+- **决定：不换，也没动任何依赖版本**。这是依赖变更、要用户点头；而且没有紧迫理由——当前 0.140.0 栈上全量后端 **730 passed**（2026-10-05 实测 3:21 与 9:14 各一次，两次都绿；后者与别的进程同跑，耗时不作为基线引用）。
+- **顺手消掉的一条**：那次全量唯一的告警是 `from fastapi.testclient import TestClient` 在 starlette 1.3.1 上**导入即告警**（`StarletteDeprecationWarning: ... install httpx2 instead`），而 `TestClient` 只剩脚手架期的 `tests/test_main.py` 在用它测 `/health`、`/docs`、`/redoc`。改成与其余用例同一条 `httpx.ASGITransport` 路：这三条都落在中间件"非 `/api` 直接放行"的分支上、不碰库，所以在本文件自建一个不带会话替身的 `public_client`，而不是复用 `anon_client`（后者会 monkeypatch session factory 并拖进 `db_session`）。改完 `tests/test_main.py` 5 条 0.06s 绿、全量**零告警**；`ruff check` 干净；`mypy` 口径仍是 `mypy src`（`tests/` 不在里面，且原文件同样报 5 条缺注解，改成 6 条是新增那个 fixture 的），没有新增债务。
+
 ### 把浏览器自己取的那四类地址也钉到路由表上（#124，接着 #123 的遗留）
 
 - **动因**：#123 交出时把「三个返回字符串的 URL 构造器」记成遗留，但没实测过它们到底瞎到什么程度。这次先量：6 个变异跑全套，`subtitles/embedded/` → `embed`、详情页流地址 → `/videostream`、详情页流地址 → `/thumbnail` 三个**全绿**；另外三个（`thumbnail` 的两个变体、字幕 `/stream` → `/vtt`）会红，可红的原因是 `tests/api/videos.spec.ts:33` / `tests/components/VideoCard.spec.ts:22` / `tests/views/History.spec.ts` / `tests/components/VideoPlayer.spec.ts` 里各抄了一份字面量——那是"源码和抄本一起改"才会响的铃，不是契约。另外发现 #123 那句"这一类关掉了"说过头了：`VideoDetail.vue:74` 的 `/api/videos/${video.value.id}/stream` 还在视图里，而那份守卫只盯默认导入 axios 实例的文件，看不见裸字面量。

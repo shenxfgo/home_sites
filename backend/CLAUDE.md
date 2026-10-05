@@ -3,7 +3,7 @@
 ## 技术栈
 
 - Python 3.11+
-- FastAPI 0.109+
+- FastAPI 0.109+（`pyproject` 里只是下限，实际锁在 `uv.lock`：0.140.0，见「依赖管理 → 版本到底锁在哪」）
 - SQLAlchemy 2.0+（异步模式）+ Alembic（schema 的唯一出处，两种方言都走它）
 - aiosqlite（SQLite 异步驱动）/ asyncpg（PostgreSQL 异步驱动，`[postgres]` 可选依赖）
 - APScheduler（定时任务）
@@ -595,3 +595,16 @@ uv run pytest
 # 覆盖率（闸门在 [tool.coverage.report] 的 fail_under=80，只有带 --cov 才生效）
 TEST_DATABASE_URL= .venv/Scripts/pytest.exe -q --cov=src   # 全量跑，2026-10-05 实测 91%（greenlet 修正后的读数）
 ```
+
+### 版本到底锁在哪（#111 实测，别按编辑器告警改依赖）
+
+- **`pyproject.toml` 的 `fastapi>=0.109.0` 只是下限**，真正决定装什么的是 `uv.lock`。实测（2026-10-05）：锁与 `.venv` 里 10 个关键包**零漂移**——fastapi 0.140.0 / starlette 1.3.1 / pydantic 2.13.4 / pydantic-core 2.46.4 / uvicorn 0.51.0 / anyio 4.14.2 / python-multipart 0.0.32 / alembic 1.20.0 / sqlalchemy 2.0.51 / httpx 0.28.1，Python 3.13.5；`uv lock --check` 退出码 0（锁与 pyproject 也是同步的）。
+- **#111 写的"锁到 0.112.0"在仓库里找不到出处**：`backend/uv.lock` 是 2026-07-27 的 `1d77281` 才加进来的，从第一天起就是 0.140.0，此后四次改动一次没动过 fastapi；`git grep "0\.112"` 在所有被跟踪的文件里零命中。那个版本号来自仓库之外的解释器，不是我们的锁。
+- **量版本必须用 `.venv/Scripts/python.exe`**：同一张对照表拿系统 python 跑，读出来是另一个环境的 fastapi 0.115.6 / starlette 0.41.3，会凭空得出一张"锁与环境漂移"的假表（这次就误读过一次，才发现差异全在解释器）。
+
+### 升到 0.142 要动的面（评估结论：面很小，但这是依赖变更，等用户确认）
+
+- `uv pip install --dry-run fastapi==0.142.2 --python .venv/Scripts/python.exe` 实测只动两件事：fastapi 0.140.0→0.142.2，外加新拖进一个 `opentelemetry-api==1.45.0`（来自 0.142.0 的"原生 OpenTelemetry 支持"）。starlette 保持 1.3.1、pydantic 不动，所以不是框架换代，是两个 wheel。
+- 0.141.0 / 0.142.0 的 release notes 各只有一条 feature（`app.frontend(check_dir="auto")`、OpenTelemetry），没有 breaking 条目。0.142.1 修的恰好是 "included routers 重复包装端点"，就在 `_IncludedRouter` 那条路上——但改的是路由的内部结构，而我们两处全路由扫面读的是 `app.openapi()["paths"]`、不是 `app.routes`（见「OpenAPI 快照」），够不着断言的输入。
+- **真要换版本，复核这三处就够**：① `app.routes` 的顶层条数与 `_IncludedRouter` 是否仍无 `.path`（实测 0.140.0 是 16 `_IncludedRouter` + 4 `Route` + 1 `APIRoute` = 21 条，与本文那条警告一致）；② `tests/test_main.py` 用 `app.user_middleware` 验 CORS；③ `tests/test_openapi_snapshot.py` 对上提交进来的 `openapi.json`（65 路径 / 84 操作）。当前 0.140.0 栈上全量后端 730 条绿，3 分 21 秒。
+- 换版本之外唯一实打实告过的一条：`from fastapi.testclient import TestClient` 在 starlette 1.3.1 上是**导入即告警**（`StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated; install httpx2 instead`），而 `TestClient` 只有历史遗留的 `test_main.py` 在用。它已改成与其余用例同一条 `httpx.ASGITransport` 路（`/health`、`/docs`、`/redoc` 都在中间件的"非 `/api` 直接放行"分支上，不需要 `db_session`，所以这里自建一个不带替身的 `public_client`），现在全量跑**零告警**。
