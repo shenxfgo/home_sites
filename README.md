@@ -110,6 +110,7 @@ home_sites/
 │   │   ├── middleware/     # 鉴权中间件（默认拒绝）
 │   │   ├── scheduler/      # 定时任务
 │   │   └── database/       # 数据库配置
+│   ├── openapi.json        # 路由表快照（提交在仓库里，python -m src.export_openapi 离线生成）
 │   ├── tests/              # 测试文件
 │   └── pyproject.toml
 ├── frontend/                # 前端应用
@@ -373,6 +374,12 @@ uv run pytest --cov=src
 # 想让整套用例跑在 PostgreSQL 上（迁移主线用的那种方言），在 backend/.env 里填
 # TEST_DATABASE_URL=postgresql+asyncpg://...:5432/home_sites_test
 # 填了它，搬家脚本的 PG 用例也跟着启用；留空则是原来的内存 SQLite。
+# 但判据是环境不是命令：.env 里带着它，裸 `uv run pytest` 跑的就是 PG。要真·SQLite
+# 得显式清空：TEST_DATABASE_URL= uv run pytest（报通过数前先确认方言）。
+
+# 接口清单快照：改完后端路由要重跑，否则后端快照钉子与前端的契约用例会红在快照上
+uv run python -m src.export_openapi          # 写 backend/openapi.json（离线，不需要起服务）
+uv run python -m src.export_openapi --check  # 只检查是否落后，落后退出码 1
 
 # 前端单元测试（Vitest + jsdom）
 cd frontend

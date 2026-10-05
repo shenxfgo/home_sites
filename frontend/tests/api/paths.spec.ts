@@ -20,27 +20,21 @@ vi.mock('@/api/client', () => {
 
 /**
  * `src/api/` 里除 `client.ts`（它就是被上面那份替身换掉的那个 axios 实例）之外的**全部**
- * 请求模块。少列一份不是"少测一个函数"，而是那一整份的 URL 从此没有任何静态钉子——#119
- * 量到这里只覆盖 12 份里的 8 份，auth / preferences / users / watchlists 四份连"别把
- * baseURL 已经带的 `/api` 再写一遍"（#10 那一类）都翻不出来。
+ * 请求模块。
+ *
+ * 清单从文件系统推导，不手写——#121 之前这里是一份手写的 12 个字符串，而它的前身声称
+ * "遍历所有 api 模块"实际只列了 8 份（auth / preferences / users / watchlists 四份连
+ * "别把 baseURL 已经带的 `/api` 再写一遍"——#10 那一类——都没有钉子）。手写清单的失效方式
+ * 是"漏一份不会红"，所以干脆不让它存在。`openapi-contract.spec.ts` 用的是同一个 glob，
+ * 两份测试因此永远对着同一批模块。
  */
-const MODULES = [
-  '@/api/videos',
-  '@/api/subtitles',
-  '@/api/sources',
-  '@/api/history',
-  '@/api/favorites',
-  '@/api/tags',
-  '@/api/settings',
-  '@/api/notifications',
-  '@/api/auth',
-  '@/api/preferences',
-  '@/api/users',
-  '@/api/watchlists',
-]
+const loaders = import.meta.glob('../../src/api/*.ts')
+const MODULES = Object.keys(loaders)
+  .filter((key) => !key.endsWith('client.ts'))
+  .sort()
 
-async function invokeEveryExport(path: string): Promise<void> {
-  const module = (await import(path)) as Record<string, unknown>
+async function invokeEveryExport(load: () => Promise<unknown>): Promise<void> {
+  const module = (await load()) as Record<string, unknown>
   for (const value of Object.values(module)) {
     const members =
       typeof value === 'function'
@@ -57,16 +51,16 @@ async function invokeEveryExport(path: string): Promise<void> {
 }
 
 /** 跑一份模块，返回它**新增**的那几次调用——按模块归账才数得出"哪一份没走到 client"。 */
-async function invokeModule(path: string): Promise<string[]> {
+async function invokeModule(load: () => Promise<unknown>): Promise<string[]> {
   const before = recorded.calls.length
-  await invokeEveryExport(path)
+  await invokeEveryExport(load)
   return recorded.calls.slice(before)
 }
 
 async function invokeAll(): Promise<Map<string, string[]>> {
   const byModule = new Map<string, string[]>()
-  for (const path of MODULES) {
-    byModule.set(path, await invokeModule(path))
+  for (const key of MODULES) {
+    byModule.set(key, await invokeModule(loaders[key]))
   }
   return byModule
 }
@@ -77,6 +71,8 @@ describe('api request paths', () => {
   })
 
   it('exercise every exported api function', async () => {
+    // glob 什么都没匹配到时，这份测试会变成一份什么都不做的绿——先把清单本身钉住。
+    expect(MODULES.length).toBeGreaterThanOrEqual(12)
     const byModule = await invokeAll()
     // 空的那一份= 这份模块里的函数没有一个真正打到 client（改成了不请求、或者整个模块
     // 被 rewrite 成走缓存）。只看总数测不到它：12 份实测共 66 次，整份停掉也还剩 64 次。

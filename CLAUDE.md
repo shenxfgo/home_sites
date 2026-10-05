@@ -166,11 +166,13 @@ chore: 构建/工具
 - 所有 API 必须有集成测试
 - 测试覆盖率 > 80%：这条由 `[tool.coverage.report] fail_under = 80` 强制，但只在 `uv run pytest --cov=src`（全量）上生效——故意不写进 `addopts`，否则"只跑一个文件"也会因总量不足报红，和"测试坏了"分不清。读数依赖 `[tool.coverage.run] concurrency = ["greenlet", "thread"]`：少了它，SQLAlchemy async 引擎里落在 `await` 之后的行会被报成"没执行"，全量少算约 5 个点（2026-10-05 前后的 86% 与 91% 就是这个差别，用例通过数一致）
 - 新增 `/api/*` 端点不必另写鉴权用例：`tests/test_middleware/test_auth.py` 会遍历 openapi 里每个非白名单端点断言匿名 401，`test_roles.py` 同样扫面断言 member 一律 403 —— 两张表（`MEMBER_WRITE_PATHS` / `OWNER_ONLY_READ_PATHS`）漏登记时红的是测试，不是线上
+- **路由表是提交进仓库的产物**：`backend/openapi.json` 由 `python -m src.export_openapi` 生成，`tests/test_openapi_snapshot.py` 断言它和 `app.openapi()` 逐键相等（改接口忘了重跑导出 → 红），`frontend/tests/api/openapi-contract.spec.ts` 再拿它核对前端 12 份请求模块真正请求到的地址（路径 / 方法 / 路径参数类型 / query 键名）。这条链存在的原因是形状校验看不出段名拼错：`/videos/duplicates` 少个 `s` 在旧钉子下全绿，只有对着真路由表才红
 - 碰到"某个人的数据"的读写必须有隔离用例（`tests/test_services/test_isolation.py`、`tests/test_api/test_isolation.py`）：A 的列表里查不到 B 的行，A 按 B 的 id 改删要变成 404/报错；fixture 用 `make_user`/`user_id`（service 层）与 `make_signed_in_client`（再要一个登录客户端）
 
 **前端：**
 - 关键组件有单元测试
 - E2E 测试覆盖主要流程
+- `src/api/*.ts` 的每一份都会被自动遍历（`import.meta.glob`，不需要登记）：`tests/api/paths.spec.ts` 钉 URL 形状，`tests/api/openapi-contract.spec.ts` 钉它是否真的存在于后端路由表上
 
 ## 运行命令
 
@@ -186,6 +188,8 @@ uv run python -m src.cli revoke-sessions # 踢下线（省略 --username 则清�
 uv run python -m src.db_audit            # 换数据库前的只读审计（报告写进 data/）
 uv run python -m src.db_transfer --from <老库> --to <新库> --dry-run  # 搬迁预演，不落一行
 uv run python -m src.db_transfer --from <老库> --to <新库>            # 正式搬迁（新库必须已建表且为空）
+uv run python -m src.export_openapi      # 改完接口重跑：把路由表写进 backend/openapi.json（离线，不用起服务）
+uv run python -m src.export_openapi --check  # 只检查快照是否落后，落后退出码 1
 ```
 
 ### 前端
@@ -207,6 +211,8 @@ npm run typecheck:test     # 只检查测试代码类型
 启动后端后访问：
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
+
+同一份路由表还以 `backend/openapi.json` 的形式提交在仓库里（离线生成：`python -m src.export_openapi`，不用起服务）。它有两个下游：后端的快照钉子防止它落后于代码，前端的契约用例拿它核对每个请求地址。看接口清单不必 clone 后端跑起来，直接读这个文件。
 
 ## 环境变量
 

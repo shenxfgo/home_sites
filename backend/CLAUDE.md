@@ -108,6 +108,7 @@ backend/
 │   ├── db_audit.py        # 换数据库前的只读审计（`uv run python -m src.db_audit`）
 │   ├── db_transfer.py     # 搬家：一个事务内插完并对账，对不上就整体回滚（`uv run python -m src.db_transfer --from <老库> --to <新库>`）
 │   ├── e2e_seed.py        # 真后端 e2e 的一次性现场：造媒体 → TRUNCATE → 建 owner + member → 走真扫描（`python -m src.e2e_seed`，由前端的 test:e2e:real 调用）
+│   ├── export_openapi.py  # 生成/校验 `backend/openapi.json`（`python -m src.export_openapi [--check]`，离线）
 │   ├── config.py          # 配置管理
 │   └── main.py            # 应用入口
 ├── alembic/               # schema 的出处（版本化迁移）
@@ -115,6 +116,7 @@ backend/
 │   └── versions/          # 0001 是基线，此后一律新增修订
 ├── deploy/                # 运维脚本模板：进版本库，但里面永远不该有口令
 │   └── pg-provision.example.sql  # 建角色和两个库，__REPLACE_ME__ 由用的人换掉
+├── openapi.json           # 提交在仓库里的路由表快照（由 src.export_openapi 生成，前端契约用例直接读这个文件）
 ├── tests/                 # 测试文件
 │   ├── conftest.py        # 共享 fixtures：db_session / anon_client / client（已登录）+ make_user / user_id / make_signed_in_client
 │   ├── support.py         # ensure_source / ensure_video：PG 真执行外键，子行必须先有父行
@@ -125,6 +127,7 @@ backend/
 │   ├── test_db_transfer.py # 搬家用例：空库闸门、对账失败即回滚、时间戳跨方言不偏、报告与审计同一个数
 │   ├── test_e2e_seed.py  # 播种闸门：库名不带 _test 就拒绝、整目录删除只允许发生在 backend/data/e2e 之下、媒体字节没被搬坏
 │   ├── test_migrations.py # Alembic 三条启动路线：空库、老库、已版本化
+│   ├── test_openapi_snapshot.py # 快照钉子：`backend/openapi.json` 和 `app.openapi()` 对不上就红（改了接口忘重跑导出就是这个）
 │   ├── test_storage/      # 存储接缝用例：本地 locator 逐字节不变、S3（moto 在内存里演一个桶）、扫描走接缝
 │   ├── test_middleware/   # 鉴权中间件测试（两张全路由扫面：匿名必 401、member 打管理面必 403）
 │   ├── test_services/     # 服务测试
@@ -253,6 +256,8 @@ app.include_router(examples_router)
 新路由一注册就落在 `AuthMiddleware` 后面，匿名请求拿到的就是 401，不需要（也不应该）自己往依赖里挂鉴权。确实要公开的话得改 `PUBLIC_API_PATHS`，目前只有登录与登录页的状态探测在里面。路由内部取当前用户用 `Depends(get_current_user)`，要知道自己这枚会话就用 `Depends(get_session_token)`。
 
 角色同理，而且**新加接口要动的地方在中间件，不在路由上**：成员该能写的接口必须登记进 `MEMBER_WRITE_PATHS`，否则成员一律 403（忘了登记会立刻被 `test_roles.py` 的扫面用例和使用者发现，这正是想要的失败方向）；管理面（账号、系统配置）连读都限 owner 的话写进 `OWNER_ONLY_READ_PATHS`。只有确实需要拿到操作者 `User` 对象的路由（改角色、停用、重置密码）才额外挂 `Depends(require_owner)`。`/api/users` 那一组是**两道都拦**（每个端点都要 `actor` 来做"不能停用/降级自己"那几条护栏，所以它们本来就挂），而两道回的 403 连 `detail` 都一模一样——从外面完全分不出是哪一层拦的。这不叫冗余，契约是"成员读不到管理面"而不是"哪一层拦的"，但记着它：只摘一道，打真后端的 e2e 也不会红（这一单实测过一次全绿的变异）。
+
+**注册完的最后一步是重跑 `uv run python -m src.export_openapi`**：路由表以 `backend/openapi.json` 的形式提交在仓库里，前端 12 份请求模块的 URL 是对着这份文件核对的。忘了重跑不会让后端用例失败在"接口不存在"上，而是让快照钉子和前端契约用例一起红在快照上——红是对的，只是原因在你的工作目录里，不在调用方。
 
 ### 5. 编写测试
 
@@ -413,6 +418,16 @@ class Video(Base):
 - **封面跟着记录走**：删影片或删整个视频源时，`delete_videos_cascade` 把被删行的 `thumbnail_path` 交给调用方，提交成功后由 `delete_cover_files` 从磁盘移除；漏了这一步就是永久孤儿文件（删行不碰磁盘，重扫又会按同一个派生名新建一张，盘上只会越攒越多）。视频本体**永远不删**——那是用户的片，不是应用生成的。细节见「数据模型」一节
 
 `boto3` 是可选依赖（`.[s3]`），不装也能起服务，真去读对象存储时才提示「请安装 .[s3]」；`moto`（在 `.[dev]` 里）在内存中演一个桶来测 S3 实现，不碰网络——它证明的是客户端接线正确，不代表真服务器就这么答，端点行为仍要人肉验一次。两个包都没装时相关用例 `importorskip` 跳过而不是报错。
+
+## OpenAPI 快照（`openapi.json`）
+
+前端有 12 份手写请求模块，形状规则（不带 `/api`、不以 `/` 结尾、没有 `//`）能挡住双前缀和拼接错位，但**挡不住段名写错**：`/videos/duplicates` 少写一个 `s` 在形状上完全合法，前端单测全绿，打到后端才发现是 404。所以路由表本身要有一份可核对的落盘产物。
+
+- **`python -m src.export_openapi` 生成/更新根目录的 `openapi.json`**（`--out` 换目标路径，`--check` 只比较不写盘，不一致就退出码 1）。产物是 `json.dumps(..., indent=2, sort_keys=True)` + 尾换行：键排序、缩进固定，diff 里才会只出现接口本身的变化。当前 65 条路径 / 84 个操作、5575 行。
+- **导出不需要起服务**：`app.openapi()` 是离线构建的（实测把 `DATABASE_URL` 指到一个没人监听的端口照样出 65 条路径）。别顺手写"先启动 uvicorn 再抓 `/openapi.json`"的流程。
+- **改了接口就要重跑一次导出**，否则红的是快照而不是调用方。`tests/test_openapi_snapshot.py` 是防腐钉子（比 `--check` 更严：直接把提交的文件和 `app.openapi()` 逐键比对象，注释、格式差异不会造成假红），删掉提交文件里的任何一条路径都会让它红——实测删 `/api/auth/sessions` 时 3 条用例红 2 条。
+- **这份快照有个下游消费者**：`frontend/tests/api/openapi-contract.spec.ts` 拿它核对前端真正会请求的地址（路径 + 方法 + 路径参数类型 + query 键名）。它读的是磁盘上的 JSON，不 import 后端，所以跨语言、不需要后端进程；代价就是上面那条——快照滞后，那边红的是快照。
+- **别指望 `app.routes` 能枚举路由表**（这条在「共享的 HTTP fixtures」一节也写过）：这版 FastAPI 把 include 进来的路由存成 `_IncludedRouter` 对象，没有 `.path`，只列得到顶层 21 条。想核对"声明的路径确实注册了"，走 `app.openapi()`，不要走 `app.routes`。
 
 ## 测试规范
 
