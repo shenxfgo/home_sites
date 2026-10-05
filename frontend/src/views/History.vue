@@ -48,6 +48,15 @@ async function loadHistory() {
   loading.value = true
   try {
     const result = await listHistory(currentPage.value, pageSize.value)
+    // 和 Home.vue、Favorites.vue 同一件事：删掉最后一页仅剩的那一条以后，`total` 正好
+    // 落到 `pageSize`，页码却还停在原来那一页——空的一页会渲染成「暂无观看历史。」，
+    // 而分页条的条件此刻也不成立，整个消失。钳回还存在的那一页再读一次。
+    const lastPage = Math.max(1, Math.ceil(result.total / pageSize.value))
+    if (result.items.length === 0 && result.total > 0 && currentPage.value > lastPage) {
+      currentPage.value = lastPage
+      await loadHistory()
+      return
+    }
     historyItems.value = result.items
     total.value = result.total
   } catch (err: unknown) {

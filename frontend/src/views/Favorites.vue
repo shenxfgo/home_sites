@@ -40,6 +40,15 @@ async function loadFavorites() {
   loading.value = true
   try {
     const result = await listFavorites(currentPage.value, pageSize.value)
+    // 移除操作会让"当前这一页"本身失效：最后一页只剩一个收藏，移掉它以后 total 正好
+    // 等于 pageSize，越界的那一页回的是空 items——而分页条的条件此刻也不再成立，页面上
+    // 只剩一句「暂无收藏视频。」和一个刷新才能出去的死角。和 Home.vue 同一件事。
+    const lastPage = Math.max(1, Math.ceil(result.total / pageSize.value))
+    if (result.items.length === 0 && result.total > 0 && currentPage.value > lastPage) {
+      currentPage.value = lastPage
+      await loadFavorites()
+      return
+    }
     videos.value = result.items
     total.value = result.total
   } catch (err: unknown) {

@@ -5,7 +5,7 @@ import History from '@/views/History.vue'
 import { deleteHistory, getContinueList, listHistory } from '@/api/history'
 import type { HistoryItem } from '@/api/history'
 import { makeVideo } from '../factories'
-import { CONFIRMED } from '../helpers'
+import { buttonByText, CONFIRMED } from '../helpers'
 
 const push = vi.hoisted(() => vi.fn())
 
@@ -30,6 +30,9 @@ function item(overrides: Partial<HistoryItem> = {}): HistoryItem {
     ...overrides,
   }
 }
+
+/** 每页 20 条是这两个视图自己的默认值，夹具按它排，不去动页大小选项。 */
+const PAGE_SIZE = 20
 
 async function mountHistory(items: HistoryItem[], continueVideos: ReturnType<typeof makeVideo>[] = []) {
   vi.mocked(listHistory).mockResolvedValue({ items, total: items.length, page: 1, page_size: 20 })
@@ -112,6 +115,71 @@ describe('History view', () => {
     const wrapper = await mountHistory([])
 
     expect(wrapper.text()).toContain('暂无观看历史')
+    wrapper.unmount()
+  })
+
+  /**
+   * 一页一页可服务的历史：`serve` 按 page/page_size 切片，`remove` 真的删掉那一行。
+   * 默认的 `mountHistory` 把 `total` 写死成 `items.length`，那种夹具翻不出"页码越界"
+   * 这件事——它永远只有第 1 页。
+   */
+  async function mountPaged(count: number) {
+    const rows = Array.from({ length: count }, (_, i) => item({ id: i + 1, video_id: i + 1 }))
+    vi.mocked(listHistory).mockImplementation((page = 1, pageSize = PAGE_SIZE) => {
+      const start = (page - 1) * pageSize
+      return Promise.resolve({
+        items: rows.slice(start, start + pageSize),
+        total: rows.length,
+        page,
+        page_size: pageSize,
+      })
+    })
+    vi.mocked(deleteHistory).mockImplementation(async (id: number) => {
+      rows.splice(rows.findIndex((row) => row.id === id), 1)
+    })
+    vi.mocked(getContinueList).mockResolvedValue([])
+    const wrapper = mount(History)
+    await flushPromises()
+    return wrapper
+  }
+
+  /** 分页条上那个数字是唯一的换页入口，所以它本身也是被测的一环。 */
+  async function gotoPage(wrapper: ReturnType<typeof mount>, page: number) {
+    const pager = wrapper.findAll('.el-pager li').find((node) => node.text() === String(page))
+    if (!pager) throw new Error(`分页条上没有第 ${page} 页可以点`)
+    await pager.trigger('click')
+    await flushPromises()
+    expect(vi.mocked(listHistory)).toHaveBeenLastCalledWith(page, PAGE_SIZE)
+  }
+
+  /**
+   * 删掉最后一页仅剩的那一条：`total` 正好落到 `pageSize`，页码却还停在第 2 页。后端
+   * 照实回空的一页，前端于是同屏渲染「暂无观看历史。」和分页条上那句「共 20 条记录」，
+   * 而分页条自己的条件 `total > pageSize` 此刻不成立、整个消失——只剩刷新一条出路。
+   * 和 #113 在 `Home.vue` 上踩过的是同一件事，触发方式换成页面上那颗「删除」。
+   */
+  it('clamps back to a page that still exists when the last record on the last page is deleted', async () => {
+    const wrapper = await mountPaged(21)
+
+    await gotoPage(wrapper, 2)
+    await buttonByText(wrapper, '删除').trigger('click')
+    await flushPromises()
+
+    // 第 1 页、第 2 页、删完又读第 2 页（那页此刻是空的），然后钳回第 1 页。
+    expect(vi.mocked(listHistory).mock.calls.map(([page]) => page)).toEqual([1, 2, 2, 1])
+    expect(wrapper.text()).not.toContain('暂无观看历史')
+    wrapper.unmount()
+  })
+
+  it('keeps the user on the same page when that page still has records left', async () => {
+    const wrapper = await mountPaged(45)
+
+    await gotoPage(wrapper, 3) // 第 3 页只有 5 条
+    await buttonByText(wrapper, '删除').trigger('click')
+    await flushPromises()
+
+    // 这一条挡的是"顺手回第 1 页"那种改法：用户的阅读位置不是 bug。
+    expect(vi.mocked(listHistory).mock.calls.map(([page]) => page)).toEqual([1, 3, 3])
     wrapper.unmount()
   })
 })

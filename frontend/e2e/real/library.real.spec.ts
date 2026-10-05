@@ -23,7 +23,7 @@ import { join, sep } from 'node:path'
 import { E2E_DIR, E2E_MEMBER_USERNAME, E2E_USERNAME, MEDIA_DIR } from './env'
 // 登录、带 cookie 发请求这两件事现在住在 `support.ts`，因为打真后端的 spec 已经有两份了：
 // 一个页面改了，两处都该跟着红，而不是只红一份。但钩子必须各自注册（理由见 `support.ts` 文件头）。
-import { CSRF, coverFingerprints, fetchInPage, scanSource, signIn } from './support'
+import { CSRF, coverFingerprints, fetchInPage, requestJson, scanSource, signIn } from './support'
 
 test.beforeEach(async ({ page }) => {
   await signIn(page)
@@ -113,6 +113,19 @@ test('收藏写进真库，刷新后仍在，收藏页读得到同一行', async
   // 后端那侧的计数和页面看到的是同一个数，说明页面读的就是库里那一行
   const list = await fetchInPage(page, '/api/favorites')
   expect(JSON.parse(list.text).total).toBe(1)
+
+  // 越界那一页的形状：200、空的一页、诚实的 total、原样回显的页码。不是 404，也不是
+  // 服务端偷偷把页码改成还存在的那一页。收藏页那句「移掉最后一页的最后一个收藏就把
+  // 页码钳回去」全靠这个形状才成立——`total` 说真话前端才算得出最后一页，`page` 回显
+  // 才看得出它确实按请求的那一页答了。这一页在替身夹具里翻不出来：`fixtures.ts` 那份
+  // `/api/favorites` 处理器根本不读 `page`。
+  const beyond = await requestJson<{
+    items: unknown[]
+    total: number
+    page: number
+    page_size: number
+  }>(page, '/api/favorites?page=2&page_size=20')
+  expect([beyond.items.length, beyond.total, beyond.page, beyond.page_size]).toEqual([0, 1, 2, 20])
 })
 
 /** 和 `Home.vue` 里那份 `formatDuration` 同形：不足一小时写 `M:SS`。 */
