@@ -2,6 +2,16 @@
 
 ## 2026-10-05
 
+### 加宽真后端 e2e（#126）：让 ffmpeg 真失败一次——那句原因原先只有 monkeypatch 的假字符串签过字
+
+- **缝在哪**：失败那一路不是全空，是**半层假**。`backend/tests/test_services/test_transcode_service.py` 那条 `test_failed_job_keeps_the_error_message` 把 `transcode_video` 换成一个返回 `(False, "boom")` 的假函数，所以"错误字段跟着作业走"这一句是证的；但 `transcode_video` 里那个 20 行的 stderr 尾巴（`other_output`）到底从真子进程捞回了什么、闸门放行之后一个失败的任务在界面上长成什么样、后台任务发出去的到底是 `transcode_complete` 还是 `transcode_error`——三处没有一个字签过，而 82 条桩用例那份 `POST /api/transcode/{id}` 处理器永远不会失败。
+- **现场**：往媒体目录写一个 `e2e_broken.mp4`——后缀在扫描器白名单里，内容是一行文本。扫描只认后缀（`extract_video_info` 探针失败回的是默认值），所以库里确实建得起一行，而那一行的 `duration` 和 `thumbnail_path` 都是 null。然后从界面上选 `webm` → 开始转码 → 不刷新，轮询到「失败」。
+- **`progress` 钉 0 靠的是那个 null 时长**：`_run` 拿到 `duration=None`，`on_progress` 一次都不会被调用。这和第 15 条里"avi 那一路容器最后报到 28 秒"是两回事，注释里把两句分开了。
+- **三层各一个变异，实测三个红**（每趟跑完按 md5 还原）：M1 把失败分支那句 `" ".join(other_output) or f"ffmpeg exited..."` 换成常量 → 红在 `toContain('moov atom not found')`；M2 把 `type="transcode_complete" if completed else "transcode_error"` 改成永远 complete → 红在通知那条 `toMatchObject`；M3 把页面 `{{ transcodeStatus.error }}` 换成常量「转码失败」→ 红在"页面那一段与接口字段逐字相等"那一句，也就是 #74 那一族的形状。
+- **量到一件一直没核实的事**：`transcode_video` 只在 cancel 分支 `unlink` 输出文件，失败分支不删。这一趟磁盘上之所以干净，是因为 ffmpeg **连输入都没打开**（实测 `rc=183`，`e2e_broken.webm` 压根不存在），不是"失败不留产物"的通用保证。用例里那句注释只说这一种失败模式；**没有顺手把删除补上**——那是行为变更，等用户点头。
+- **自己踩到的一个数**：通知基线原先取在用例开头，于是多数出一条——那一趟扫描自己也发一条（库真变了才发，第 9 条钉的就是它）。改成扫描**之后**取基线。
+- **编号跟着挪**：本文件那条新用例是执行顺序里的**第 16 条**，`video-delete.real.spec.ts` 从"第 16 条"改口为"第 17 条"；`README.md`、`CLAUDE.md`、`frontend/CLAUDE.md` 三处计数 16 → 17；`frontend/CLAUDE.md` 那份 `-g` 名单加一条，并把 `-g 转码` 换成 `-g 三种拒绝`（前者从本单起会同时命中成功和失败两条）。`backend/CLAUDE.md` 里那条 coverage 注记写的"第 14 用例"是旧编号，一并改成"那两条：第 15 条 / 第 16 条"。
+- 验证：新用例单独跑 5.0 秒绿；全套真后端 e2e **17 条 1.3 分钟绿**（删除影片那条排在最后仍然数得出 `files_found=2 / new_videos=1`，说明这一条把自己造的现场收干净了）；`npm run typecheck:test` 干净；Vitest **302 / 32 文件**绿（本单没动 `src/`，那一遍是防回归）。
 ### 加宽真后端 e2e（#125）：转码表里 mkv 那一行也补一次真产物——顺带纠正 #117 说过头的一句
 
 - **起点是 #117 留在 spec 注释里的一句话**：「四行配方只有这两行有产物可查：`mp4` 造不出产物（源文件本身就是 mp4，同格式覆盖被闸门拒绝），这条用例也不产 mkv」。后半句不是事实，是我自己给自己设的限制——同格式那道闸门是 `Path(input_path).with_suffix(f".{fmt}") == Path(input_path)`，四种格式里只有 `mp4` 那一行真被挡住，`mkv` 从 #115 起就可以转。于是 `mkv` 那半张配方（`-c:v libx264 -c:a aac`）到 #125 之前都没有一个真进程签过字。
