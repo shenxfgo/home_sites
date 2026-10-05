@@ -179,6 +179,40 @@ async def test_update_video_empty_body(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_an_explicit_null_rating_is_rejected_instead_of_500(client, db_session):
+    """`videos.rating` 是 NOT NULL，而 `VideoUpdate.rating` 标的是 `int | None`。
+
+    显式 null 因此是一个"请求模型收得下、列和响应模型都吐不出"的形状：它在闸口放行，
+    到 `UPDATE videos SET rating=NULL` 才由数据库拒绝，`ValueError` 那条 except 接不住
+    `IntegrityError`，真服务器上就是 500。和 #112 同一条规矩——**写得进去的必须读得出来**。
+    """
+    source = await _create_source(db_session)
+    video = await _create_video(db_session, source_id=source.id)
+
+    response = await client.put(f"/api/videos/{video.id}", json={"rating": None})
+
+    assert response.status_code == 422, response.text
+    # 拒绝发生在写库之前：那一行还是播种时的 0 分
+    assert (await client.get(f"/api/videos/{video.id}")).json()["rating"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_null_title_is_still_allowed(client, db_session):
+    """反面那一半：标题那一列**可以**为空，所以同样的 null 必须照旧放行。
+
+    少了这条，上面那个 422 可以靠"rating 那类字段一律不许为 null"甚至"整个 body 不许有
+    null"蒙绿，而清空标题是界面上做得到的事（`VideoDetail.vue` 把空文本框发成 null）。
+    """
+    source = await _create_source(db_session)
+    video = await _create_video(db_session, source_id=source.id)
+
+    response = await client.put(f"/api/videos/{video.id}", json={"title": None})
+
+    assert response.status_code == 200, response.text
+    assert (await client.get(f"/api/videos/{video.id}")).json()["title"] is None
+
+
+@pytest.mark.asyncio
 async def test_delete_video(client, db_session):
     """Test deleting a video."""
     source = await _create_source(db_session)

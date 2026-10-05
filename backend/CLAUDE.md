@@ -328,6 +328,9 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 `settings` 那一面有两道校验，别只做一半：键名走 `SYSTEM_SETTING_KEYS` 白名单，值走 `_check_setting_value`。第二道存在的理由是第一道挡不住——`GET /api/settings` 把三个数字键 `int(...)` 回来，而单键 `PUT` 收的是裸字符串，于是"写进去一个读不回来的值"会把整个设置页永久打成 500（整份 `PUT` 有 Pydantic 挡着，从来没这个问题）。校验规则就一条：**写进去的值必须能被读回来的那条路径解析**。范围（负数、0）刻意不管：那三个键目前没有任何消费者，定时扫描读的是源级别的 `scan_interval`，等真有消费者了再按它的约束收口。
 
+同一类闸口的另一半是**可空性**：请求模型里标 `X | None` 的字段，那一列必须真的收 `NULL`。`VideoUpdate.rating` 从前标的是 `int | None`（意思是"不填就不改"），而 `videos.rating` 那一列是 NOT NULL，于是 `{"rating": null}` 是一条一路好走的请求——Pydantic 放行、服务层 `setattr` 照单写库、asyncpg 在 `UPDATE videos SET rating=NULL` 上顶回来才炸成 500，而响应模型 `rating: int` 本来就从来发不出 null，那一半契约是假的。收口放在请求模型的 `field_validator` 上（得到一个 422 加一句原话），不放在服务层：这是**表示层的形状**，不是业务规则，而且 422 那套 `detail` 结构前端已经有统一处理。反面那一半同样要钉住——`title` / `description` 那两列可以为空，同样的 null 照旧 200，否则一次修复会顺手把合法输入一起挡在门外（用例：`tests/test_api/test_videos.py` 的 `test_an_explicit_null_rating_is_rejected_instead_of_500` 与 `test_an_explicit_null_title_is_still_allowed`；界面那一侧在 `frontend/e2e/real/video-edit.real.spec.ts`）。Pydantic v2 的口径量清楚过：`field_validator` **不跑**在"根本没提供"的字段上（`VideoUpdate().model_dump(exclude_unset=True)` 实测是 `{}`），只会跑在显式给进来的值上，所以"不填不改"和"填 null"这两件事天然分得开，闸口不必自己判 `model_fields_set`。
+
+
 从 `settings.theme` 迁到 `user_preferences` 靠 `session.py` 里两条幂等 SQL：`INHERIT_THEME_IN_PREFERENCES` 把全家共用的那个老值发给每个还没有偏好行的账号（写入条件写成 `WHERE NOT EXISTS`，重复启动不会覆盖任何人改过的值），`DROP_SHARED_THEME_SETTING` 再删掉 `settings` 里的 `theme` 行。顺序不能反，反了所有人的选择就凭空变成默认浅色。
 
 老库升级后的第一次 `create-user --role owner` 会顺手认领：`AuthService.claim_legacy_rows` 把 `user_id IS NULL` 的行交给这个账号，并把旧的 `new_videos.viewed` / `notifications.read` 一次性翻译成两张 `_reads` 表的记录（列已不存在就跳过）。这一步不做，升级后收藏与历史看起来就像被清空了。

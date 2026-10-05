@@ -2,7 +2,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,6 +70,20 @@ class VideoUpdate(BaseModel):
     description: str | None = None
     rating: int | None = Field(None, ge=0, le=5)
     tag_ids: list[int] | None = None
+
+    @field_validator("rating")
+    @classmethod
+    def _rating_cannot_be_cleared(cls, value: int | None) -> int:
+        """`videos.rating` 是 NOT NULL，所以这一列的 null 只能收在闸口。
+
+        放行它会走到 `UPDATE videos SET rating=NULL`，数据库报 NotNullViolation，而路由那句
+        `except ValueError` 接不住 SQLAlchemy 的 IntegrityError——真服务器上就是一次 500。
+        界面上"清空评分"本来就是点回 0 星，不是一个缺值状态。标题和简介那一列可以为空，
+        所以那两列照旧收 null。
+        """
+        if value is None:
+            raise ValueError("评分不能留空：要清空请填 0")
+        return value
 
 
 class VideoListResponse(BaseModel):

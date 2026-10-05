@@ -2,6 +2,17 @@
 
 ## 2026-10-05
 
+### 加宽真后端 e2e（#127）：编辑影片那一路打通真库——顺带修掉一个 `rating: null` 炸成 500 的形状
+
+- **缝在哪**：`PUT /api/videos/{video_id}` 是库面最后一个从没在真后端签过字的写接口。服务层 `update_video` 有单测，但那 82 条桩用例里"改完刷新还在"是 `frontend/e2e/fixtures.ts` 自己那份手写响应表说了算；另一半是 `backend/src/services/scan_service.py:157` 那句 docstring——"a title or tag set someone curated by hand is left alone"——从写下那天起没有任何一条用例在 HTTP 之上核过它。
+- **量出来一个真缺陷**：`VideoUpdate.rating` 标的是 `int | None`（意思是"不填就不改"），而 `videos.rating` 那一列是 NOT NULL。于是 `{"rating": null}` 是一条一路好走的请求：Pydantic 放行、服务层 `setattr(video, "rating", None)` 照写、asyncpg 在 `UPDATE videos SET rating=NULL` 上顶回来 → **500**；而 `VideoResponse.rating: int` 从来发不出 null，那一半契约根本不成立。按老规矩先对着修复前的 HEAD 红一次（实测 `sqlalchemy.exc.IntegrityError: null value in column "rating" of relation "videos" violates not-null constraint`），再收闸口。
+- **修在表示层，不收在服务层**：`VideoUpdate` 上加一个 `@field_validator("rating")`，把显式 null 变成 422 一句原话「评分不能留空：要清空请填 0」。这是 #112 那条"写进去的值必须能被读回来的那条路径解析"的另一半：列不接受的值不该进请求模型，而界面上"清空评分"本来就是点回 0 星、不是一个缺值状态。Pydantic v2 的口径顺带量清楚了：`field_validator` **不跑**在"根本没提供"的字段上（`VideoUpdate().model_dump(exclude_unset=True)` 实测 `{}`），所以"不填不改"和"填 null"天然分得开，闸口不必自己判 `model_fields_set`。
+- **反面那一半也钉住了**：`title` / `description` 那两列**可以**为空，同样的 null 照旧 200（`test_an_explicit_null_title_is_still_allowed`），页面上片名退回文件名。没有这一条，"所有 null 都不许进"也算修好了。
+- **第 18 条用例签的三件事**：① 三个控件真点击写进真库，`GET /api/videos/1`、列表查询里那一行、页面本身三路读回同一个答案，`updated_at` 由列上的 `onupdate` 推新（替身夹具压根没有这一列），`thumbnail_path` 不许动；② 紧接着对**同一个源**再扫一遍，片名、简介、评分一个字都不许被文件名解析覆盖（`files_found=1 / new_videos=0`），那句 docstring 从此有了真身；③ 片名的**下游**：`backend/src/api/history.py:91` 那个 `video_title` 是读时联表现算的、不是历史行里的快照，改名之后 `/api/history/continue`、首页那条轨的 `.rail-caption`、`/history` 的 `.continue-title` 和搜索必须一起改口，而改名**之前**先把基线钉成旧名字——否则这一整段拿"处处都是 null"也能过。外加三条 422 各自的 Pydantic `type`、空 body 的 400、`99999` 的 404，和 member 两头（界面上数不出「编辑」那颗按钮、硬发 PUT 撞的是真中间件那句 403）。
+- **五个变异，五个红**（每个单独跑、跑完按 md5 还原）：M1 把 `update_video` 里的 `setattr` 换成 `pass` → 红在页面那句新片名（spec:107）；M2 把 validator 的 `if value is None` 换成 `if value is False` → 红成 500，现场就是修复前那个 `NotNullViolationError`；M3 去掉 `updated_at` 列上的 `onupdate=` → 红在时间戳那句（spec:122）；M4 把 `video_title=record.video.title if record.video else None` 换成 `video_title=None` → 红在改名**之前**那条基线（spec:92），这一条最能证明用例核的是联表而不是常量；M5 往 `MEMBER_WRITE_PATHS` 里加一条 `/api/videos/{id}` → 红在 member 那一步的 403（spec:215）。
+- **顺带纠正 #126 留下的编号陈账**：`frontend/CLAUDE.md` 那条顺序说明里的「第 15 条（转码）排在倒数第二条」「第 16 条（删除影片）…也就是整跑的最后」「第 15、16 条要用它登录」「后两个由第 13 条和第 16 条共用」四处按新编号全部改口；另外「删除影片是这一轮里唯一会改变库里影片数的一条」从 #126 起就不再成立——第 16 条那个非法容器同样会建出一行，只是它自己在 `finally` 里收干净了。
+- 验证：新用例单独 `-g 编辑影片` 7.3 秒绿；全套真后端 e2e **18 条 1.4 分钟绿**；后端全量 **732 passed**（3:01，PG）；`npm run typecheck:test` 干净；`ruff check` 干净；`mypy src` 仍是那条 34 项基线，没有新增；`backend/openapi.json` **不用重生成**——`field_validator` 不动 JSON Schema，`tests/test_openapi_snapshot.py` 原样绿。
+
 ### 加宽真后端 e2e（#126）：让 ffmpeg 真失败一次——那句原因原先只有 monkeypatch 的假字符串签过字
 
 - **缝在哪**：失败那一路不是全空，是**半层假**。`backend/tests/test_services/test_transcode_service.py` 那条 `test_failed_job_keeps_the_error_message` 把 `transcode_video` 换成一个返回 `(False, "boom")` 的假函数，所以"错误字段跟着作业走"这一句是证的；但 `transcode_video` 里那个 20 行的 stderr 尾巴（`other_output`）到底从真子进程捞回了什么、闸门放行之后一个失败的任务在界面上长成什么样、后台任务发出去的到底是 `transcode_complete` 还是 `transcode_error`——三处没有一个字签过，而 82 条桩用例那份 `POST /api/transcode/{id}` 处理器永远不会失败。
