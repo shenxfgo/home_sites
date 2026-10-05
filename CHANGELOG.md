@@ -2,6 +2,17 @@
 
 ## 2026-10-05
 
+### 把 Sources / Transcode 两视图里就地拼的 7 条 URL 搬进 `src/api/`（#123，账是从 #122 的遗留里翻出来的）
+
+- **动因**：#122 的路由表钉子只看得见经过 `client` 的调用，而 `Sources.vue` / `Transcode.vue` 里有 7 条 URL 是在视图函数体里用字符串拼出来的，`tests/api/` 两份规格对它们完全瞎。这不是推测：搬之前把 7 条逐条改坏（改单复数、改路径段、改方法）再跑 `npx vitest run tests/api`，**33 条用例全绿**；视图规格里断言的 URL 又是手抄的第二份字面量，源码写错它照着抄错，照样绿。等于这 7 条是仓库里唯一一批"改错了没人报警"的请求。
+- **改了什么**：新增 `src/api/scan.ts`（`scanAll` / `scanSource`）和 `src/api/transcode.ts`（`listTranscodeFormats` / `getTranscodeStatus` / `startTranscode` / `cancelTranscode`）。模块边界跟着后端 router 走，不跟页面直觉走：两条 scan 路由都定义在 `backend/src/api/scan.py`，所以放进 `scan.ts` 而不是看着像源列表就塞进 `sources.ts`。`Transcode.vue` 里三份手抄的 `interface`（`FormatInfo` / `Video` / `TranscodeStatus`）删掉，换成新增的 `src/types/transcode.ts`、`src/types/scan.ts` 和已有的 `getVideo`；两个点击处理器改名 `handleStartTranscode` / `handleCancelTranscode`，免得和导入的同名函数互相遮蔽。
+- **顺带把这一类关掉**：新增 `tests/api/inline-requests.spec.ts`，静态扫 `src/` 下 `api/` 之外的每个 `.ts`/`.vue`，只要默认导入了 axios 实例就算违规——默认导入才是"拿到实例、可以就地拼 URL"的形状，`router` 那种具名导入不发请求。同文件里还有一条"至少扫到 25 个源文件"的下限：扫描器自己的路径写错时会扫到空目录，然后以"零违规"的名义通过，这条下限就是防这个的。
+- **视图规格一行没动**：`tests/views/*.spec.ts` 继续 `vi.mock('@/api/client')`。因为 `src/api/*.ts` 只是 `client` 的薄包装，mock 掉 `client` 同时就在喂数据和记录 URL，搬之前搬之后 mock 看到的 URL 集合一模一样——这本身就是"包装层没有引入第二处真相"的证据。
+- **红过没有**（Red before green：逐条改坏就跑，跑完按 md5 校验还原字节）：搬完之后同样的变异，6 条 URL 变异 + 4 条方法变异各让 `openapi-contract.spec.ts` 红 1 条，其中 `/transcode/formats` 改成 `/transcode/format` 报的是这批里最有信息量的一句——`形状相符的模板有 /api/transcode/{video_id}，但方法或路径参数类型不成立`；改坏 `videos.ts` 红 2 条；改坏 guard 自己的正则让它漏检，红 1 条。搬之前这些全绿。
+- **验证**：`npx vitest run` 296 passed / 31 files（原 294 / 30）；`tests/api` 35 条 / 9 份文件（原 33 / 8）；被钉子记录下来的 client 调用从 66 次涨到 72 次（临时翻转下限断言实测出来的，不是估的）；`vue-tsc --noEmit` 干净；`npm run build` ✓ 810ms；stub e2e 82 条 33.8s、真后端 e2e 16 条 1.2m 全绿。后端没重跑：`backend/src/` 一行没碰。
+- **我自己踩的两个坑**：变异脚本第一版用 `read_text()` + `write_text(newline='')`，把 `Sources.vue` 的 173 行 CRLF 全写成了 LF，`git status` 还显示干净（autocrlf 归一化把差异吃掉了）——是靠脚本 `finally` 里那句 md5 断言才发现的，此后凡是动仓库文件的脚本一律走字节。第二个：cp936 控制台上打印 vitest 的 `❯` 直接 `UnicodeEncodeError`，得给**父进程**也带 `PYTHONIOENCODING=utf-8`（或只打 ASCII），只给子进程设没用。
+- **遗留**：`thumbnailUrl` / `subtitleTrackUrl` / `embeddedSubtitleTrackUrl` 这三个返回字符串的 URL 构造器现在确实住在 `src/api/` 里了，但它们不经过 `client`，两份 api 规格还是看不见；要钉住得换一条路（直接拿模板对 `openapi.json` 校验），另开一张。另外调用方自己传进来的 `params` 对象的键名也仍然在钉子外面。
+
 ### 新增：路由表提交进仓库（`backend/openapi.json`），前端每份请求模块的 URL 从此对着真接口核对（补 #121 自己交代的那条"钉不住段名"）
 
 - **动因**：#121 收尾时列的未覆盖面就是本单的立身之本——形状规则（不带 `/api`、以 `/` 开头、没有 `//` 也没有尾斜杠）**看不出段名拼错**：`/videos/duplicates` 少一个 `s`、`/auth/sessions` 写成单数，在 12 份模块的任何一层钉子下都是全绿，只有界面真点到那条路由才撞出 404。要签它得有一份可比对的路由表。顺带推翻 #121 当时写的那句"生成它要先起着后端"：`app.openapi()` 是离线构建的（实测把 `DATABASE_URL` 指到一个没人监听的端口照样出 65 条路径 / 84 个操作），没有任何服务、没有网络。

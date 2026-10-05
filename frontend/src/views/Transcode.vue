@@ -3,38 +3,22 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { VideoPlay } from '@element-plus/icons-vue'
-import api from '@/api/client'
-
-interface FormatInfo {
-  format: string
-  codec: string
-  extension: string
-}
-
-interface Video {
-  id: number
-  title: string | null
-  filepath: string
-  format: string | null
-  duration: number | null
-}
-
-interface TranscodeStatus {
-  video_id: number
-  is_transcoding: boolean
-  status: string
-  progress: number
-  target_format: string | null
-  output_path: string | null
-  error: string | null
-}
+import { getVideo } from '@/api/videos'
+import {
+  cancelTranscode,
+  getTranscodeStatus,
+  listTranscodeFormats,
+  startTranscode,
+} from '@/api/transcode'
+import type { TranscodeFormat, TranscodeStatus } from '@/types/transcode'
+import type { Video } from '@/types/video'
 
 const route = useRoute()
 const router = useRouter()
 const videoId = ref(Number(route.params.id))
 
 const video = ref<Video | null>(null)
-const formats = ref<FormatInfo[]>([])
+const formats = ref<TranscodeFormat[]>([])
 const selectedFormat = ref('')
 const transcodeStatus = ref<TranscodeStatus | null>(null)
 const statusFetchError = ref<string | null>(null)
@@ -79,8 +63,7 @@ const statusTagType = computed(() => {
 
 const fetchVideo = async () => {
   try {
-    const response = await api.get(`/videos/${videoId.value}`)
-    video.value = response.data
+    video.value = await getVideo(videoId.value)
   } catch (error) {
     ElMessage.error(`获取视频信息失败：${errorReason(error) ?? '未知原因'}`)
     router.push('/')
@@ -89,8 +72,7 @@ const fetchVideo = async () => {
 
 const fetchFormats = async () => {
   try {
-    const response = await api.get('/transcode/formats')
-    formats.value = response.data
+    formats.value = await listTranscodeFormats()
   } catch (error) {
     // 格式列表空着，页面上既选不了目标格式也没有一句解释，比报错更难查
     ElMessage.error(`获取格式列表失败：${errorReason(error) ?? '未知原因'}`)
@@ -99,8 +81,7 @@ const fetchFormats = async () => {
 
 const fetchStatus = async () => {
   try {
-    const response = await api.get(`/transcode/${videoId.value}/status`)
-    transcodeStatus.value = response.data
+    transcodeStatus.value = await getTranscodeStatus(videoId.value)
     statusFetchError.value = null
     if (transcodeStatus.value?.status === 'completed' && pollTimer) {
       ElMessage.success('转码完成')
@@ -137,7 +118,7 @@ function startPolling() {
   }, 1500)
 }
 
-const startTranscode = async () => {
+const handleStartTranscode = async () => {
   if (!selectedFormat.value) {
     ElMessage.warning('请选择目标格式')
     return
@@ -151,9 +132,7 @@ const startTranscode = async () => {
     )
 
     transcoding.value = true
-    await api.post(`/transcode/${videoId.value}`, {
-      target_format: selectedFormat.value
-    })
+    await startTranscode(videoId.value, selectedFormat.value)
 
     ElMessage.success('转码任务已启动')
     await fetchStatus()
@@ -168,7 +147,7 @@ const startTranscode = async () => {
   }
 }
 
-const cancelTranscode = async () => {
+const handleCancelTranscode = async () => {
   try {
     await ElMessageBox.confirm(
       '确定要取消当前转码任务吗？',
@@ -176,7 +155,7 @@ const cancelTranscode = async () => {
       { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
     )
 
-    await api.post(`/transcode/${videoId.value}/cancel`)
+    await cancelTranscode(videoId.value)
     ElMessage.success('转码已取消')
     stopPolling()
     await fetchStatus()
@@ -256,7 +235,7 @@ onUnmounted(stopPolling)
               :icon="VideoPlay"
               :loading="transcoding"
               :disabled="transcodeStatus?.is_transcoding"
-              @click="startTranscode"
+              @click="handleStartTranscode"
             >
               开始转码
             </el-button>
@@ -264,7 +243,7 @@ onUnmounted(stopPolling)
             <el-button
               v-if="transcodeStatus?.is_transcoding"
               type="danger"
-              @click="cancelTranscode"
+              @click="handleCancelTranscode"
             >
               取消转码
             </el-button>

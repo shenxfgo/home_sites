@@ -5,7 +5,7 @@ import { Plus, Search } from '@element-plus/icons-vue'
 import SourceCard from '@/components/SourceCard.vue'
 import SourceForm from '@/components/SourceForm.vue'
 import DuplicateChecker from '@/components/DuplicateChecker.vue'
-import api from '@/api/client'
+import { scanAll, scanSource } from '@/api/scan'
 import {
   listSources,
   createSource,
@@ -80,8 +80,8 @@ async function handleDelete(source: Source) {
 async function handleScanAll() {
   scanning.value = true
   try {
-    const result = await api.post('/scan/all')
-    ElMessage.success(`扫描完成: 发现 ${result.data.total_files} 个文件, ${result.data.total_new_videos} 个新视频`)
+    const result = await scanAll()
+    ElMessage.success(`扫描完成: 发现 ${result.total_files} 个文件, ${result.total_new_videos} 个新视频`)
     await loadSources()
   } catch (err: unknown) {
     ElMessage.error(`扫描失败: ${err instanceof Error ? err.message : err}`)
@@ -92,8 +92,8 @@ async function handleScanAll() {
 
 async function handleScanSource(source: Source) {
   try {
-    const result = await api.post(`/sources/${source.id}/scan`)
-    ElMessage.success(`扫描 "${source.name}" 完成: 发现 ${result.data.files_found} 个文件, ${result.data.new_videos} 个新视频`)
+    const result = await scanSource(source.id)
+    ElMessage.success(`扫描 "${source.name}" 完成: 发现 ${result.files_found} 个文件, ${result.new_videos} 个新视频`)
     await loadSources()
   } catch (err: unknown) {
     ElMessage.error(`扫描失败: ${err instanceof Error ? err.message : err}`)

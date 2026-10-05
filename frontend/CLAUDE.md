@@ -106,6 +106,8 @@ frontend/
 │   │   ├── videos.ts      # 视频 API
 │   │   ├── subtitles.ts   # 字幕 API（列表/登记/删除 + WebVTT 地址）
 │   │   ├── sources.ts     # 视频源 API
+│   │   ├── scan.ts        # 扫描 API（扫一个源 / 扫全部；两条路由共用 `ScanResultResponse`，所以只有一份返回类型，聚合字段按路由各填一半）
+│   │   ├── transcode.ts   # 转码 API（格式清单 / 状态轮询 / 启动 / 取消）
 │   │   ├── settings.ts    # 系统配置 API（owner 才看得见这一页）
 │   │   ├── users.ts       # 账号管理 API（仅 owner 调用）
 │   │   ├── preferences.ts # 个人偏好 API（主题按人存）
@@ -140,6 +142,8 @@ frontend/
 │   │   ├── video.ts
 │   │   ├── auth.ts         # UserRole / AuthUser / AuthStatus / AuthDevice（我的设备的一行）
 │   │   ├── subtitle.ts
+│   │   ├── scan.ts        # ScanResult（两条扫描路由共用一份，四个聚合字段只有 scan-all 填）
+│   │   ├── transcode.ts   # TranscodeFormat / TranscodeStatus / TranscodeResult
 │   │   └── source.ts
 │   ├── styles/             # 全局样式
 │   │   ├── global.css
@@ -633,7 +637,7 @@ tests/
 
 - 页面/组件依赖 `useRouter`、`useRoute` 时按文件 `vi.mock('vue-router', ...)`，不要安装真实路由。
 - 测路由守卫要 `vi.mock('@/api/auth')` 控制登录态，并在每个用例前 `useAuth().forget()`——`useAuth` 的状态是模块级 ref，不清就会跨用例串味。
-- 视图里的请求走 `@/api/client`，用 `vi.hoisted` + `vi.mock('@/api/client')` 记录 `url`，再断言路径**不带 `/api` 前缀**（`baseURL` 已经是 `/api`）；`tests/api/paths.spec.ts` 做三条形状校验：不带 `/api`、以 `/` 开头、既没有 `//` 也没有尾斜杠，并且**按模块归账**——某一份一次 `client` 都没打到就算红（实测 12 份共 66 次调用，整份停掉还剩 64，所以只数总数永远看不出）。两份 api 用例（`paths.spec.ts` / `openapi-contract.spec.ts`）都用 `import.meta.glob('../../src/api/*.ts')` **自己数出模块清单**，新增一份 `src/api/*.ts` 不需要登记；清单本身只设 `>= 12` 的下限，用来防"glob 什么都没匹配到 → 整份用例空跑还全绿"。#121 之前这里是手写数组，它的失效方式是**漏一份不会红**（auth / preferences / users / watchlists 四份连"别把 `baseURL` 已经带的 `/api` 再写一遍"都没翻出来过），所以干脆不让这种清单存在。
+- **视图里不写请求**：一份 `src/api/*.ts` 都没有的 URL 在两层 api 钉子（`paths.spec.ts` / `openapi-contract.spec.ts`）眼里是不存在的，`tests/api/inline-requests.spec.ts` 因此扫一遍 `src/`，凡是 `src/api/` 之外默认导入 axios 实例（`import api from '@/api/client'`）的文件都算违规。#123 之前 `Sources.vue` 与 `Transcode.vue` 就是这么各写各的，7 条 URL 全在钉子外面——实测把其中任何一条改成不存在的路径（`/scan/everything`、`/transcode/format`），`tests/api/` 那 33 条照样全绿。视图用例仍然 `vi.mock('@/api/client')` 记录 `url`：请求模块只是把 `client` 转手一层，替身换掉 `client` 就同时喂了数据并记了账，所以搬运之后 `tests/views/Sources.spec.ts` / `Transcode.spec.ts` 一条断言都不用改（`env.get` 记录的还是 `/transcode/7/status` 这种完整相对路径）。`tests/api/paths.spec.ts` 做三条形状校验：不带 `/api`、以 `/` 开头、既没有 `//` 也没有尾斜杠，并且**按模块归账**——某一份一次 `client` 都没打到就算红（实测 14 份共 72 次调用，整份停掉只会少掉那一份的那几次，只数总数看不出来）。两份 api 用例（`paths.spec.ts` / `openapi-contract.spec.ts`）都用 `import.meta.glob('../../src/api/*.ts')` **自己数出模块清单**，新增一份 `src/api/*.ts` 不需要登记；清单本身只设 `>= 12` 的下限，用来防"glob 什么都没匹配到 → 整份用例空跑还全绿"。#121 之前这里是手写数组，它的失效方式是**漏一份不会红**（auth / preferences / users / watchlists 四份连"别把 `baseURL` 已经带的 `/api` 再写一遍"都没翻出来过），所以干脆不让这种清单存在。
 - 只测 api 模块本身时改用 `client.defaults.adapter` 拦截。注意 **adapter 里 `config.url` 还是原始相对路径**（实测 `/videos/new`，`baseURL` 是另一个字段，拼接发生在 axios 自己的 adapter 里），要拿到真实请求地址得调公开方法 `client.getUri(config)`；别信"adapter 能顺带看到完整地址"这种说法。请求体到这里已被 axios 序列化过，要 `JSON.parse(String(config.data))` 再断言字段名。`getUri` 对 `params` 是非对象会抛 `TypeError: target must be an object`，遍历时要丢掉。
 - `tests/api/openapi-contract.spec.ts` 是**第四层钉子**：它读 `backend/openapi.json`（真路由表，见 `backend/CLAUDE.md`「OpenAPI 快照」），把 `client.getUri` 拼出的完整地址逐条核对到 schema 的 `path + method` 上，还校验路径参数**类型对得上**（`{video_id}` 声明 `integer`，就得是纯数字）和 query 键名**在 schema 里声明过**。这两条不是锦上添花，是实测出来的：少了类型规则，把 `/videos/duplicates` 写成 `/videos/duplicate` 会撞上 `/api/videos/{video_id}` 而"看起来合法"；少了 query 规则，`page_size` 写成 `size` 会被过滤 `%5B` 的那步一起放过。跑这条用例不需要后端进程，但**需要 `backend/openapi.json` 是最新的**——改完后端接口要重跑导出，否则这里红的是快照而不是你。
 - 弹层分两种查法：popover / dropdown 会 teleport 到 `document.body`（用 `popper-class` 查），**`el-dialog` 默认 `append-to-body: false`，是就地渲染的**，得在 `wrapper` 里查 `.el-dialog`；挂载时仍传 `attachTo: document.body`，否则弹层里的焦点与事件走不通。
