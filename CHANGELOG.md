@@ -2,6 +2,13 @@
 
 ## 2026-10-05
 
+### 加宽真后端 e2e（#125）：转码表里 mkv 那一行也补一次真产物——顺带纠正 #117 说过头的一句
+
+- **起点是 #117 留在 spec 注释里的一句话**：「四行配方只有这两行有产物可查：`mp4` 造不出产物（源文件本身就是 mp4，同格式覆盖被闸门拒绝），这条用例也不产 mkv」。后半句不是事实，是我自己给自己设的限制——同格式那道闸门是 `Path(input_path).with_suffix(f".{fmt}") == Path(input_path)`，四种格式里只有 `mp4` 那一行真被挡住，`mkv` 从 #115 起就可以转。于是 `mkv` 那半张配方（`-c:v libx264 -c:a aac`）到 #125 之前都没有一个真进程签过字。
+- **补的是第 6 步**：界面上选 `mkv (.mkv)` → 开始转码 → 不刷新，轮询到自己的终态，再按 webm / avi 那两次的规格核对产物——文件头那几个字节自报 `matroska`（读 EBML 的 DocType，不看文件名），`ffprobe` 报出来的两条流是 `h264 + aac`，后台任务写进真库那条通知的 `data.format` 是 `mkv`。这一步刻意不钉 `progress`：avi 那一步已经说明"容器最后报到第几秒"是编码器的细节，不是这条用例要签的东西。产物照旧由 `test.afterEach` 收走，绿跑完媒体目录还是只有播种那两个文件。
+- **两个变异证明这一条真的能红**（改 `backend/src/utils/ffmpeg.py` 的 mkv 那行，每趟跑完按 md5 `b18c9b52…` 还原）：`codec` → `libvpx-vp9` 红在流清单——vp9 塞得进 matroska，容器那一句挡不住它，只有 `ffprobe` 认得出来；`acodec` → `libopus` 同样红在流清单。**第三个变异反过来做**：把 `mp4` 那行的 `acodec` 也改成 `libopus`，整条用例仍然绿（实测 exit 0），因为 mp4→mp4 在闸门就得到 400，ffmpeg 从没为它起过一次进程——这是这套用例现在诚实留下的最后一个配方空白。
+- 顺带 `CONTAINER` 加 `mkv: 'matroska'`、`STREAMS` 加 mkv 那一对，取消那一步的"拒绝不许改记录"基线从 avi 记录换成 mkv 记录（步骤号 6/7/8 跟着挪）。
+- 验证：全套真后端 e2e **16 条 2.1 分钟绿**（单独跑这一条 28.9 秒），`npm run typecheck:test`（`vue-tsc -p tsconfig.vitest.json --noEmit`，那份 tsconfig 把 `e2e/**/*.ts` 算在内）干净。
 ### FastAPI 升级评估（#111）：工单的前提在仓库里找不到出处，顺手把全量套件里最后一个告警消掉
 
 - **动因**：#111 写着"编辑器反复告警 `fastapi==0.112.0` 已过时，当前 `pyproject` 是 `>=0.109.0`、锁到 0.112.0"。先量再动：拿 `.venv/Scripts/python.exe` 用 `importlib.metadata` 逐包读已装版本，对着 `backend/uv.lock` 比，10 个关键包**零漂移**——fastapi 0.140.0 / starlette 1.3.1 / pydantic 2.13.4 / pydantic-core 2.46.4 / uvicorn 0.51.0 / anyio 4.14.2 / python-multipart 0.0.32 / alembic 1.20.0 / sqlalchemy 2.0.51 / httpx 0.28.1，Python 3.13.5；`uv lock --check` 退出码 0（锁与 `pyproject` 也同步）。

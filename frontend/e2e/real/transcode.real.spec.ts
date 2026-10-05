@@ -11,7 +11,7 @@
  *
  * 所以这条用例断言的是只有真进程给得出的东西：服务器报回来的那个**绝对输出路径**在磁盘上
  * 确实在、里面确实是所请求的那种容器（读文件头那几个字节，不看文件名）、里面真有着那半张
- * 配方编出来的两条流（问 ffprobe：webm 是 vp9 + opus、avi 是 h264 + aac；`acodec` 不进任何
+ * 配方编出来的两条流（问 ffprobe：webm 是 vp9 + opus、avi 与 mkv 是 h264 + aac；`acodec` 不进任何
  * 响应，而源里没有音频流时 ffmpeg 会把 `-c:a` 整个跳过——所以这一句要成立，播种那部片子
  * 就得带一条音轨，见 `backend/src/e2e_seed.py`）、后台任务写进真库的那条通知带着自己的格式
  * 与影片 id，以及三种拒绝（同格式、不认识、已经结束的任务）各有原话可说。
@@ -34,6 +34,7 @@ const FIXTURE = join(MEDIA_DIR, 'e2e_sample.mp4')
  * 里面那几个字节才是 FFmpeg 真写下去的东西。
  */
 const CONTAINER: Record<string, string> = {
+  mkv: 'matroska',
   webm: 'webm',
   avi: 'AVI LIST',
 }
@@ -46,14 +47,18 @@ const CONTAINER: Record<string, string> = {
  * vp9）。这里写的是 ffprobe 那一侧的编码器名，不是配方字面值：libvpx-vp9 → vp9、
  * libx264 → h264、libopus → opus、aac → aac。
  *
- * 四行配方只有这两行有产物可查：`mp4` 造不出产物（源文件本身就是 mp4，同格式覆盖被闸门
- * 拒绝），这条用例也不产 mkv——所以 `mp4` 与 `mkv` 这两行的 acodec 至今没有真进程签字，
- * 改错它们不会红。
+ * 四行配方现在有三行能查：webm、avi 和 mkv 都由本用例产出（源文件是 .mp4，同格式那道闸门
+ * 只挡得住 mp4 那一行）。所以 `mp4` 的 acodec 至今没有真进程签字，改错它不会红。
+ * mkv 与 avi 那两行的编码器字面值是一样的，但查表按格式名各查各的：改错 mkv 那一行只红 mkv 那一步，实测 codec / acodec 两个变异都红在它的流清单上。
  */
 const STREAMS: Record<string, [string, string][]> = {
   webm: [
     ['audio', 'opus'],
     ['video', 'vp9'],
+  ],
+  mkv: [
+    ['audio', 'aac'],
+    ['video', 'h264'],
   ],
   avi: [
     ['audio', 'aac'],
@@ -283,7 +288,27 @@ test('转码：真 FFmpeg 写出真文件，通知由后台任务写进真库，
   expect(afterUpper.items[0]?.data).toEqual({ video_id: 1, format: 'avi' })
   expect(afterUpper.items[0]?.type).toBe('transcode_complete')
 
-  // ---- 6. 已经跑完的任务不能被「取消」：取消只认还在跑的那一个
+  // ---- 6. mkv 那一行配方同样要有真产物：闸门只挡 mp4，这一步原先就可以做，只是没做
+  await chooseFormat(page, 'mkv (.mkv)')
+  await page.getByRole('button', { name: '开始转码' }).click()
+  await confirmMessageBox(page)
+  const mkv = await waitSettled(page)
+  // 这一步不钉 progress：avi 那一趟已经说明「容器最后报到第几秒」是编码器的细节（见上一步）
+  expect([mkv.status, mkv.is_transcoding, mkv.error, mkv.target_format]).toEqual([
+    'completed',
+    false,
+    null,
+    'mkv',
+  ])
+  const mkvPath = mkv.output_path ?? ''
+  expect(mkvPath).not.toBe(aviPath)
+  expectRealOutput(mkvPath, 'mkv')
+  produced.push(mkvPath)
+  const afterMkv = await readNotifications(page)
+  expect(afterMkv.total).toBe(afterUpper.total + 1)
+  expect(afterMkv.items[0]?.data).toEqual({ video_id: 1, format: 'mkv' })
+
+  // ---- 7. 已经跑完的任务不能被「取消」：取消只认还在跑的那一个
   const cancel = await fetchInPage(page, '/api/transcode/1/cancel', {
     method: 'POST',
     headers: CSRF,
@@ -293,8 +318,8 @@ test('转码：真 FFmpeg 写出真文件，通知由后台任务写进真库，
     expect.stringContaining('No active transcoding'),
   ])
   // 拒绝不能顺手把记录改掉
-  expect(await readStatus(page)).toEqual(avi)
+  expect(await readStatus(page)).toEqual(mkv)
 
-  // ---- 7. 转码不往库里加片子：产物只是媒体目录里多出来的文件，没扫过就不是影片
+  // ---- 8. 转码不往库里加片子：产物只是媒体目录里多出来的文件，没扫过就不是影片
   expect((await requestJson<{ total: number }>(page, '/api/videos')).total).toBe(1)
 })
