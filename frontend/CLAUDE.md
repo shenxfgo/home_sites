@@ -633,7 +633,7 @@ tests/
 
 - 页面/组件依赖 `useRouter`、`useRoute` 时按文件 `vi.mock('vue-router', ...)`，不要安装真实路由。
 - 测路由守卫要 `vi.mock('@/api/auth')` 控制登录态，并在每个用例前 `useAuth().forget()`——`useAuth` 的状态是模块级 ref，不清就会跨用例串味。
-- 视图里的请求走 `@/api/client`，用 `vi.hoisted` + `vi.mock('@/api/client')` 记录 `url`，再断言路径**不带 `/api` 前缀**（`baseURL` 已经是 `/api`）；`tests/api/paths.spec.ts` 会自动遍历所有 api 模块做同样校验。
+- 视图里的请求走 `@/api/client`，用 `vi.hoisted` + `vi.mock('@/api/client')` 记录 `url`，再断言路径**不带 `/api` 前缀**（`baseURL` 已经是 `/api`）；`tests/api/paths.spec.ts` 遍历 `MODULES` 里那 **12** 份请求模块（`src/api/` 除 `client.ts` 之外的全部）做三条形状校验：不带 `/api`、以 `/` 开头、既没有 `//` 也没有尾斜杠，并且**按模块归账**——某一份一次 `client` 都没打到就算红（实测 12 份共 66 次调用，整份停掉还剩 64，所以只数总数永远看不出）。新增一份 `src/api/*.ts` 要同时加进 `MODULES`，漏了不会红，只会让那一整份的 URL 没有任何静态钉子（#10 那一类双前缀在 auth / preferences / users / watchlists 四份里一直没人签过，直到 #121）。
 - 只测 api 模块本身时，可以改用 `client.defaults.adapter` 拦截，能顺带验证 `baseURL + url` 拼出的完整地址。注意请求体到这里已被 axios 序列化过，要 `JSON.parse(String(config.data))` 再断言字段名。
 - 弹层分两种查法：popover / dropdown 会 teleport 到 `document.body`（用 `popper-class` 查），**`el-dialog` 默认 `append-to-body: false`，是就地渲染的**，得在 `wrapper` 里查 `.el-dialog`；挂载时仍传 `attachTo: document.body`，否则弹层里的焦点与事件走不通。
 - **模板里新用一个 `el-*` 组件，必须同时加进 `src/main.ts` 的按需注册清单**。漏注册不会报错，只会把标签当未知元素渲染（单测照样全绿，因为 `tests/setup.ts` 装的是完整 `ElementPlus` 插件），实际界面里就只剩一串纯文字——`<el-radio>` 曾经就是这样在浏览器里消失的。所以组件注册这类问题只能靠 e2e 或真机发现。

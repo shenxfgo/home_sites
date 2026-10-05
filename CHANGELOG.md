@@ -2,6 +2,15 @@
 
 ## 2026-10-05
 
+### 测试：请求路径的静态钉子从此覆盖全部 12 份请求模块，并且按模块归账（#121）
+
+- **动因**：#119 顺带量到的那句——`frontend/tests/api/paths.spec.ts` 只遍历 `src/api/` 的 8 份，而 auth / preferences / users / watchlists 四份连「别把 `baseURL` 已经带的 `/api` 再写一遍」（#10 那一类双前缀缺陷的回归护栏）都没有钉子。本单补全到 **12** 份（`client.ts` 不在遍历范围内——它就是被替身换掉的那个 axios 实例本身）。
+- **加了什么**：① `MODULES` 补上那四份；② **按模块归账**——`invokeModule()` 返回该模块新增的那几次调用，哪一份一次 `client` 都没打到就算红；③ 第三条形状规则「一次拼接一个分隔符」：路径里既不许出现 `//`，也不许以 `/` 结尾（尾斜杠在 FastAPI 那边是另一条路由，而多写一个 `/` 拼出来的地址会打到前缀中间去）。
+- **红在先**（四个变异，每个只改一份 `src/api/*.ts`，跑 `npx vitest run tests/api/paths.spec.ts`，跑完 `cp` 还原并核对 md5：`auth.ts fddf9ae8…`、`watchlists.ts 7a20707c…`、`preferences.ts ad53d65e…`、`users.ts b45ed6d8…`）：① `'/auth/sessions'` 前面补上 `/api` → 红在双前缀那条（`expected [ '/api/auth/sessions' ] to deeply equal []`）——**这一句在改之前不会红**，因为旧的 `MODULES` 里没有 auth，那正是本单的立身之本；② `'/watchlists'` 去掉前导斜杠 → 红在「必须绝对路径」；③ `preferences.ts` 两个函数都不再请求（直接 `Promise.resolve`）→ 红在按模块归账那句（`expected [ '@/api/preferences' ] …`），而**总调用数只从 66 掉到 64**，旧那句 `toBeGreaterThan(20)` 照样绿——这就是归账断言的存在理由；④ `/users/${userId}/role` 写成 `/users//${userId}/role` → 红在新加的 `//` 那条。
+- **文档同步**：`frontend/CLAUDE.md` 约定清单里那句「`paths.spec.ts` 会自动遍历所有 api 模块」改成了实际形状（12 份、三条规则、按模块归账、新增一份 `src/api/*.ts` 必须同时加进 `MODULES`，漏了不会红）。顺带记一句：**`CHANGELOG.md:698` 那条 2026-09-21 的旧条目写的是「自动遍历全部 api 模块」，从来不是真的**——历史条目按惯例不改写，但引用它的人要知道它说过头了（这正是本仓库反复踩的"文档比代码多说"那一类，只不过这次多说的是我们自己的 changelog）。
+- **仍然钉不住的**：路径的**段名**写错（`/auth/session` 少一个 `s` 这种）在任何一层都看不见——这份测试只管形状，真后端 e2e 只有被界面点到的端点才会撞上去。要真签，得把 12 份模块的 URL 对着 OpenAPI（#119 实测 65 路径 / 84 操作）核一遍，而那需要先有一份**提交进仓库的 `openapi.json`**（现在没有；生成它要起着后端跑一次），这一条列进待办，本单不假装覆盖。
+- **验证**：`npx vitest run tests/api/paths.spec.ts` **4 passed**；前端单测 **290 passed / 29 files**（289 → 290，新加的那条是 `//` 与尾斜杠规则）、`typecheck:test` 绿。本单没动 `src/`、没动后端、没动 e2e，故未重跑 build / pytest / ruff / mypy / playwright。
+
 ### 新增：真后端 e2e 加到 16 条——个人设置页的「退掉那一台」和「主题按人存」第一次打到真库
 
 - **动因**：`Profile.vue` 是除 `NotFound.vue` 外唯一从没在真库上签过字的视图。三件事在别处都没有签名：设备列表（`frontend/e2e/fixtures.ts` **根本没有 `/api/auth/sessions` 处理器**，那 82 条桩用例从没真的请求过它）、单台退出，以及改密码后那句写在卡片上的「其他浏览器会被退出，这台仍然保持登录」——服务层只覆盖 CLI 那条**不带** `keep_token_hash` 的路，也就是说"这台留着"那一半从来没被任何一层测过。
