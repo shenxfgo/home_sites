@@ -2,6 +2,18 @@
 
 ## 2026-10-05
 
+### 加宽守卫（#128）：替身夹具必须接得住前端会发出的每一条地址——上线当天量出 17 条缺分支
+
+- **缝在哪**：#120 写「我的设备」那条用例时才发现 `frontend/e2e/fixtures.ts` 里根本没有 `/api/auth/sessions` 的分支，而此前 82 条替身 e2e 全绿——因为**没有任何一条界面用例请求过那个地址**，兜底那句 `未预置的接口` 一次也没被执行到。缺分支不会红，只会静默把替身编的一句假 500 交给界面；哪天有视图开始请求它，红的是界面而不是测试。本单把这次偶然变成一份常驻守卫。
+- **守卫怎么搭**：`frontend/tests/api/stub-coverage.spec.ts` 不复制匹配器，直接 `import { mockApi } from '../../e2e/fixtures'`——用一份假 `page` 接住它注册的那个 `page.route` 处理函数，用假 `route` 逐条驱动，答出来的状态码就是桩用例真会看到的那个。复制一份匹配器只能保证"我抄的这份"和夹具一致，而真实的失效方式是夹具改了、守卫没跟着改。地址集合也不再各抄遍历器：#121/#122 那两份自己抄的遍历抽成 `frontend/tests/api/emitted-calls.ts` 一份，一次遍历同时记下完整地址（`client.getUri(config)`）、**没拼前缀的原文**（`config.url`，给形状规则用）和那几个只返回字符串的浏览器构造器。三份守卫（形状 / 路由表 / 替身）从此不可能"一边加了地址、另一边静默少几条"——"少了几条"在测试里从来不报错，只是绿。
+- **规则五条**：每条地址都有人答（分支走到了却一次 `fulfill` 都没调，在真浏览器里是永久挂起）；没有一条落到 `未预置的接口`；非 `/auth/*` 的一条都不许被替身的默认拒绝拦成 401/403；模块清单与地址数下限（防 glob 走错目录变成零条空测试）；样本实参登记表不许成陈账（`revokeSession` 那 64 位十六进制令牌、`getSetting` 的白名单键名——函数改名后那份样本对应的就不再是界面会发的地址）。
+- **自己踩到的两个坑，都是"看起来全绿的空守卫"**：① 夹具是**有状态**的（`signedIn`、`removedVideos`、`readNotifications`、转码状态机），而 `POST /auth/logout` 会把 `signedIn` 翻回 false，遍历又按模块名排序、`auth` 排第一——共用一份夹具时实测后面六十条地址被整批拦成 401，兜底那句一次也执行不到，"没有缺分支"那条规则演成一份全绿的空守卫。改成每条地址各自 `installStub()` 一次（一趟 1 毫秒），并把"这批地址是以登录着的 owner 身份走的"单独钉成一条规则。② `.filter((_, i) => …).map((call, i) => answers[i])` 里第二个 `i` 是**筛过之后**的新数组下标，不是 `calls` 的下标——真缺一条分支时点名点对了、配的响应体却是另一条地址的。改成先配对再筛。
+- **量出来的 17 条**：标签的 `POST /tags`、`PUT /tags/{id}`、`DELETE /tags/{id}`、`POST /tags/video/{id}`、`DELETE /tags/video/{v}/{t}`、`GET /tags/{id}`、`GET /tags/{id}/videos`，源的 `POST /sources`、`PUT /sources/{id}`、`GET /sources/{id}`，`GET /videos/{id}/mediaStreams`，内嵌字幕那条流与字幕的增删，`GET/PUT /settings/{key}` 与整表读。其中 `createTag` / `updateTag` / `deleteTag` / `addTagsToVideo` / `removeTagFromVideo` / `createSource` / `updateSource` 是界面上真点的写路径——也就是说这些流程此前在桩用例里根本跑不起来（点下去替身回一句 500，而用例断言的是别的东西）。补进夹具的这几条是有状态的：`tagRows` / `sourceRows` / `subtitleRows` / `systemSettings` 四张小表每次安装重建，重名建标签照后端那条唯一列回 409（#98），`GET /settings/{key}` 与整表读写共用同一份，所以"建完刷新还在"这类桩用例从此有东西可签。
+- **一处刻意没跟着改**：新加的 `/videos/{id}/subtitles/streams` 分支第一版给每条视频都编出一条内嵌字幕，红了三条播放器用例（`播放页为每个字幕渲染一条 WebVTT 轨道` / `播放器菜单…` / `没有字幕的视频不显示字幕按钮`）。替身不能为了让守卫绿而编造后端给不出的数据——现在那条分支如实报"内嵌轨为空"（这份 mp4 夹具确实只有视频流），注释里点名那三条期望。
+- **红过没有**（Red before green：两个变异各自单跑 `npx vitest run tests/api/stub-coverage.spec.ts`，跑完按 md5 `952d6675…` 校验还原字节）：删掉 `GET /tags/{id}/videos` 那一段（11 行）→ 红 1 条，报 `tags.ts#getTagVideos  GET /api/tags/1/videos → {"detail":"未预置的接口: /tags/1/videos"}`；删掉 `POST /tags` 那一段（14 行）→ 红 1 条，报 `tags.ts#createTag  POST /api/tags`。修下标 bug 之前跑的第一个变异是"半对"的红：地址点对了，响应体却是登录那一条的——红是能红，读的人被指错地方。
+- **顺带量到的死导出**（记下来免得下次重新发现一遍）：`getTag` / `getSource` / `markVideoViewed` / `getNewVideos` / `addSubtitle` / `removeSubtitle` / `getSetting` / `updateSetting` 八个导出今天第一次被静态遍历点到，其中六条界面没在用。**没有删**——是不是死代码是产品决定，不是守卫决定。
+- 验证：`npx vitest run` **307 passed / 33 files**（原 302 / 32；新增的 5 条就是本单那份守卫）；`tests/api` 三条守卫同跑 14 条绿；`npm run typecheck:test` 干净（那份 tsconfig 的 `include` 覆盖 `e2e/**/*.ts`，夹具的改动在里面被检查过——它当场拦下一处 `any` 写进 `as const` 键并集的 `TS2322`）；stub e2e **82 条全绿**（`player.spec.ts` 那条 A-B 段重放在并行负载下红过一次、单独跑 2.5 秒绿，是 #126 记过的计时类用例老毛病，不是本单引入）；被钉住的地址 76 条（72 次 `client` 调用 + 4 条构造器）。后端与真后端 e2e 未重跑：`backend/src/` 一行没动，`fixtures.ts` 只活在前端测试面里。
+
 ### 加宽真后端 e2e（#127）：编辑影片那一路打通真库——顺带修掉一个 `rating: null` 炸成 500 的形状
 
 - **缝在哪**：`PUT /api/videos/{video_id}` 是库面最后一个从没在真后端签过字的写接口。服务层 `update_video` 有单测，但那 82 条桩用例里"改完刷新还在"是 `frontend/e2e/fixtures.ts` 自己那份手写响应表说了算；另一半是 `backend/src/services/scan_service.py:157` 那句 docstring——"a title or tag set someone curated by hand is left alone"——从写下那天起没有任何一条用例在 HTTP 之上核过它。

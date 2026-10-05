@@ -1,106 +1,63 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 
-const recorded = vi.hoisted(() => ({ calls: [] as string[] }))
-
-vi.mock('@/api/client', () => {
-  const data = new Proxy(
-    {},
-    {
-      get: () => [],
-    },
-  )
-  const make = () => (url: string) => {
-    recorded.calls.push(url)
-    return Promise.resolve({ data })
-  }
-  return {
-    default: { get: make(), post: make(), put: make(), delete: make() },
-  }
-})
+import { moduleKeys, walkApiModules, type Recorded } from './emitted-calls'
 
 /**
- * `src/api/` 里除 `client.ts`（它就是被上面那份替身换掉的那个 axios 实例）之外的**全部**
- * 请求模块。
+ * `src/api/` 的形状规则——这一层看的是**写代码的人交出去的那一段路径**（`config.url`，
+ * 还没拼 baseURL），所以它管得住另外两层管不到的东西：
+ * - 把 baseURL 已经带的 `/api` 又写一遍（`/api/videos` → 实际请求 `/api/api/videos`）——#10 那一类；
+ * - 相对路径（`videos/${id}`），那样 `baseURL` 就白配了；
+ * - 多写一个 `/`（`/sources/${id}/` + `/scan`）或结尾斜杠，浏览器眼里那是另一个地址。
  *
- * 清单从文件系统推导，不手写——#121 之前这里是一份手写的 12 个字符串，而它的前身声称
- * "遍历所有 api 模块"实际只列了 8 份（auth / preferences / users / watchlists 四份连
- * "别把 baseURL 已经带的 `/api` 再写一遍"——#10 那一类——都没有钉子）。手写清单的失效方式
- * 是"漏一份不会红"，所以干脆不让它存在。`openapi-contract.spec.ts` 用的是同一个 glob，
- * 两份测试因此永远对着同一批模块。
+ * `openapi-contract.spec.ts` 拿完整地址对路由表，`stub-coverage.spec.ts` 拿完整地址对替身夹具，
+ * 这一份拿原文对形状——三份共用 `emitted-calls.ts` 那一个遍历器，所以"漏一份模块"在结构上不可能，
+ * 也不会出现两边各抄一份遍历、一边加了地址另一边静默少一条（#121/#122 的教训）。
  */
-const loaders = import.meta.glob('../../src/api/*.ts')
-const MODULES = Object.keys(loaders)
-  .filter((key) => !key.endsWith('client.ts'))
-  .sort()
 
-async function invokeEveryExport(load: () => Promise<unknown>): Promise<void> {
-  const module = (await load()) as Record<string, unknown>
-  for (const value of Object.values(module)) {
-    const members =
-      typeof value === 'function'
-        ? [value]
-        : value && typeof value === 'object'
-          ? Object.values(value as Record<string, unknown>)
-          : []
-    for (const member of members) {
-      if (typeof member === 'function') {
-        await (member as (...args: unknown[]) => Promise<unknown>)(1, { dummy: true }, 1)
-      }
-    }
-  }
+const calls: Recorded[] = []
+
+beforeAll(async () => {
+  calls.push(...(await walkApiModules()))
+})
+
+/** 只有走 axios 的那几条才有"原文"；构造器返回的就是浏览器要取的完整地址，本来就带 `/api`。 */
+function authored(): Recorded[] {
+  return calls.filter((call) => call.viaClient)
 }
 
-/** 跑一份模块，返回它**新增**的那几次调用——按模块归账才数得出"哪一份没走到 client"。 */
-async function invokeModule(load: () => Promise<unknown>): Promise<string[]> {
-  const before = recorded.calls.length
-  await invokeEveryExport(load)
-  return recorded.calls.slice(before)
-}
-
-async function invokeAll(): Promise<Map<string, string[]>> {
-  const byModule = new Map<string, string[]>()
-  for (const key of MODULES) {
-    byModule.set(key, await invokeModule(loaders[key]))
-  }
-  return byModule
+function short(call: Recorded): string {
+  return `${call.module.replace('../../src/api/', '')}#${call.name}  ${call.rawUrl}`
 }
 
 describe('api request paths', () => {
-  beforeEach(() => {
-    recorded.calls.length = 0
-  })
-
-  it('exercise every exported api function', async () => {
+  it('exercise every exported api function', () => {
     // glob 什么都没匹配到时，这份测试会变成一份什么都不做的绿——先把清单本身钉住。
-    expect(MODULES.length).toBeGreaterThanOrEqual(12)
-    const byModule = await invokeAll()
-    // 空的那一份= 这份模块里的函数没有一个真正打到 client（改成了不请求、或者整个模块
-    // 被 rewrite 成走缓存）。只看总数测不到它：12 份实测共 66 次，整份停掉也还剩 64 次。
-    const silent = [...byModule].filter(([, urls]) => urls.length === 0).map(([path]) => path)
+    expect(moduleKeys.length).toBeGreaterThanOrEqual(12)
+    // 空的那一份 = 这份模块里的函数没有一个真正打到 client（改成了不请求、或者整个模块
+    // 被 rewrite 成走缓存）。只看总数测不到它：14 份实测共 72 次，整份停掉也还剩 71 次。
+    const silent = moduleKeys.filter(
+      (key) => !authored().some((call) => call.module === key),
+    )
     expect(silent).toEqual([])
-    expect(recorded.calls.length).toBeGreaterThan(40)
+    expect(authored().length).toBeGreaterThan(40)
   })
 
-  it('never repeat the /api prefix that the axios instance already carries', async () => {
-    await invokeAll()
-
-    const doubled = recorded.calls.filter((url) => url.startsWith('/api'))
-    expect(doubled).toEqual([])
+  it('never repeat the /api prefix that the axios instance already carries', () => {
+    const doubled = authored().filter((call) => call.rawUrl.startsWith('/api'))
+    expect(doubled.map(short)).toEqual([])
   })
 
-  it('keeps every path absolute so the baseURL stays meaningful', async () => {
-    await invokeAll()
-
-    const relative = recorded.calls.filter((url) => !url.startsWith('/'))
-    expect(relative).toEqual([])
+  it('keeps every path absolute so the baseURL stays meaningful', () => {
+    const relative = authored().filter((call) => !call.rawUrl.startsWith('/'))
+    expect(relative.map(short)).toEqual([])
   })
 
-  it('keeps one separator per join: no // and no trailing slash', async () => {
+  it('keeps one separator per join: no // and no trailing slash', () => {
     // 拼路径时多写一个 `/`（`/sources/${id}/` + `/scan`）在浏览器里是个新地址，会打到
     // 前缀中间去；尾斜杠同样是另一条路由。真库里没人点过的组合只有这条静态钉子挡得住。
-    await invokeAll()
-
-    const malformed = recorded.calls.filter((url) => url.includes('//') || url.endsWith('/'))
-    expect(malformed).toEqual([])
+    const malformed = authored().filter(
+      (call) => call.rawUrl.includes('//') || call.rawUrl.endsWith('/'),
+    )
+    expect(malformed.map(short)).toEqual([])
   })
 })

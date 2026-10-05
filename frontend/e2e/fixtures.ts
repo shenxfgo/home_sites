@@ -466,6 +466,36 @@ export async function mockApi(
 
   const findQueue = (id: number) => queues.find((list) => list.id === id)
 
+  /**
+   * 标签、视频源、字幕这三面也有写请求了，所以各装一份副本（和 `userRows` 同一个理由）：
+   * 请求改的是这份，模块级那份 `sources`/`subtitles` 不动——界面用例也 import 它们来对照，
+   * 跨用例被改脏就废了。#128 之前这三面只有读：建标签、改视频源、挂字幕那几条地址
+   * 全落在兜底那句 `未预置的接口` 上，而 82 条替身用例一条也没请求过它们，所以没人红。
+   */
+  const tagRows = [{ id: 1, name: '动作片', color: '#7c6cff' }]
+  const sourceRows = sources.map((row) => ({ ...row }))
+  const subtitleRows = subtitles.map((row) => ({ ...row }))
+  let nextTagId = 100
+  let nextSourceId = 100
+  let nextSubtitleId = 100
+
+  /** 整份系统配置的样子。`GET /settings` 与 `GET /settings/{key}` 同源，不抄两遍。 */
+  const systemSettings: Record<string, string | number | boolean> = {
+    auto_scan_enabled: true,
+    auto_scan_interval: 3600,
+    default_transcode_format: 'mp4',
+    thumbnail_width: 320,
+    thumbnail_height: 180,
+  }
+
+  /** 后端的 `TagResponse` 带 `video_count`，数的是此刻还活着的行（删掉的影片不数）。 */
+  const tagBody = (tag: { id: number; name: string; color: string }) => ({
+    ...tag,
+    video_count: aliveVideos().filter((video) =>
+      video.tags.some((item) => item.id === tag.id),
+    ).length,
+  })
+
   /** 这个账号此刻开着的会话。当前这台报进去的 User-Agent，另一台是造好的手机。 */
   const deviceRows = (userAgent: string | null) =>
     [
@@ -666,6 +696,17 @@ export async function mockApi(
     }
 
     if (method === 'GET') {
+      const mediaStreams = /^\/videos\/(\d+)\/subtitles\/streams$/.exec(path)
+      if (mediaStreams) {
+        // 形状照 `MediaStreamsResponse`：读不出来的文件是 `probed: false`，不是「没有轨」。
+        // 两条清单刻意留空——夹具里那段真片段是只有视频轨的 mp4，替身报出内嵌字幕会让
+        // 播放页多用例的「2 条字幕轨 / 3 个菜单项」变成对不上，而那正是要钉的那个形状。
+        return respond(route, { probed: true, container: 'mp4', subtitles: [], audio: [] })
+      }
+
+      if (/^\/videos\/\d+\/subtitles\/embedded\/\d+\/stream$/.test(path)) {
+        return route.fulfill({ status: 200, contentType: 'text/vtt', body: SAMPLE_VTT })
+      }
       if (path === '/videos') {
         const search = (url.searchParams.get('search') ?? '').trim()
         const sourceId = url.searchParams.get('source_id')
@@ -691,7 +732,7 @@ export async function mockApi(
       if (subtitleList) {
         return respond(
           route,
-          subtitles.filter((item) => item.video_id === Number(subtitleList[1])),
+          subtitleRows.filter((item) => item.video_id === Number(subtitleList[1])),
         )
       }
       if (/^\/videos\/\d+\/stream$/.test(path)) {
@@ -707,9 +748,14 @@ export async function mockApi(
       if (/^\/videos\/\d+\/thumbnail$/.test(path)) {
         return route.fulfill({ status: 200, contentType: 'image/png', body: TINY_PNG })
       }
+      const sourceRow = /^\/sources\/(\d+)$/.exec(path)
+      if (sourceRow) {
+        const found = sourceRows.find((row) => row.id === Number(sourceRow[1]))
+        return found ? respond(route, found) : respond(route, { detail: '视频源不存在' }, 404)
+      }
       if (path === '/sources') {
         const activeOnly = url.searchParams.get('active_only') === 'true'
-        return respond(route, activeOnly ? sources.filter((source) => source.is_active) : sources)
+        return respond(route, activeOnly ? sourceRows.filter((item) => item.is_active) : sourceRows)
       }
       if (path === '/history') {
         return respond(route, {
@@ -758,7 +804,23 @@ export async function mockApi(
         })
       }
       if (path === '/favorites') return respond(route, { items: [videos[1]], total: 1, page: 1, page_size: 20 })
-      if (path === '/tags') return respond(route, [{ id: 1, name: '动作片', color: '#7c6cff', video_count: 1 }])
+      if (path === '/tags') return respond(route, tagRows.map(tagBody))
+      const tagVideos = /^\/tags\/(\d+)\/videos$/.exec(path)
+      if (tagVideos) {
+        const id = Number(tagVideos[1])
+        if (!tagRows.some((tag) => tag.id === id)) {
+          return respond(route, { detail: '标签不存在' }, 404)
+        }
+        return respond(
+          route,
+          aliveVideos().filter((video) => video.tags.some((item) => item.id === id)),
+        )
+      }
+      const tagRow = /^\/tags\/(\d+)$/.exec(path)
+      if (tagRow) {
+        const found = tagRows.find((tag) => tag.id === Number(tagRow[1]))
+        return found ? respond(route, tagBody(found)) : respond(route, { detail: '标签不存在' }, 404)
+      }
       if (path === '/watchlists') {
         const videoId = url.searchParams.get('video_id')
         const held = videoId ? queues.filter((list) => list.video_ids.includes(Number(videoId))) : queues
@@ -769,13 +831,14 @@ export async function mockApi(
         const found = findQueue(Number(queueRow[1]))
         return found ? respond(route, queueBody(found)) : respond(route, { detail: '片单不存在' }, 404)
       }
-      if (path === '/settings') {
+      if (path === '/settings') return respond(route, systemSettings)
+      const settingRow = /^\/settings\/([\w.-]+)$/.exec(path)
+      if (settingRow) {
+        // 后端对没有的键给空串而不是 404，这里照做：读路径不该比写路径严。
+        const value = systemSettings[settingRow[1]]
         return respond(route, {
-          auto_scan_enabled: true,
-          auto_scan_interval: 3600,
-          default_transcode_format: 'mp4',
-          thumbnail_width: 320,
-          thumbnail_height: 180,
+          key: settingRow[1],
+          value: value === undefined ? '' : String(value),
         })
       }
       if (path === '/notifications') {
@@ -803,6 +866,57 @@ export async function mockApi(
     }
 
     if (method === 'POST') {
+      if (path === '/tags') {
+        const body = JSON.parse(request.postData() ?? '{}')
+        // `tags.name` 在库里是唯一列，重名建标签后端回 409（#98）——替身不能假装这条没有。
+        if (tagRows.some((tag) => tag.name === body.name)) {
+          return respond(route, { detail: `标签「${body.name}」已存在` }, 409)
+        }
+        const created = {
+          id: nextTagId++,
+          name: body.name ?? '未命名标签',
+          color: body.color ?? '#409eff',
+        }
+        tagRows.push(created)
+        return respond(route, tagBody(created), 201)
+      }
+      if (path === '/sources') {
+        const body = JSON.parse(request.postData() ?? '{}')
+        const created = {
+          id: nextSourceId++,
+          name: body.name ?? '未命名视频源',
+          path: body.path ?? '',
+          type: body.type ?? 'local',
+          scan_interval: body.scan_interval ?? 3600,
+          last_scan_at: null,
+          is_active: body.is_active ?? true,
+          created_at: new Date().toISOString(),
+        }
+        sourceRows.push(created)
+        return respond(route, created, 201)
+      }
+      const subtitleAdd = /^\/videos\/(\d+)\/subtitles$/.exec(path)
+      if (subtitleAdd) {
+        const body = JSON.parse(request.postData() ?? '{}')
+        const created = {
+          id: nextSubtitleId++,
+          video_id: Number(subtitleAdd[1]),
+          language: body.language ?? null,
+          filepath: body.filepath ?? '',
+          label: body.label ?? null,
+          created_at: new Date().toISOString(),
+        }
+        subtitleRows.push(created)
+        return respond(route, created, 201)
+      }
+      // 后端这三条 ACK 都是 200 + `{status: 'ok'}`（`src/api/videos.py`）。
+      if (/^\/videos\/new\/\d+\/viewed$/.test(path)) return respond(route, { status: 'ok' })
+      const videoTagAdd = /^\/tags\/video\/(\d+)$/.exec(path)
+      if (videoTagAdd) {
+        const video = aliveVideos().find((item) => item.id === Number(videoTagAdd[1]))
+        if (!video) return respond(route, { detail: '视频不存在' }, 404)
+        return route.fulfill({ status: 204, body: '' })
+      }
       if (/^\/videos\/\d+\/(play|progress)$/.test(path)) return respond(route, { ok: true })
       if (/^\/favorites\/\d+$/.test(path)) return respond(route, { ok: true })
       if (path === '/watchlists') {
@@ -855,6 +969,32 @@ export async function mockApi(
     }
 
     if (method === 'PUT') {
+      const sourceEdit = /^\/sources\/(\d+)$/.exec(path)
+      if (sourceEdit) {
+        const found = sourceRows.find((row) => row.id === Number(sourceEdit[1]))
+        if (!found) return respond(route, { detail: '视频源不存在' }, 404)
+        const body = JSON.parse(request.postData() ?? '{}')
+        if (body.name !== undefined) found.name = body.name
+        if (body.path !== undefined) found.path = body.path
+        if (body.type !== undefined) found.type = body.type
+        if (body.scan_interval !== undefined) found.scan_interval = body.scan_interval
+        if (body.is_active !== undefined) found.is_active = body.is_active
+        return respond(route, found)
+      }
+      const tagEdit = /^\/tags\/(\d+)$/.exec(path)
+      if (tagEdit) {
+        const found = tagRows.find((tag) => tag.id === Number(tagEdit[1]))
+        if (!found) return respond(route, { detail: '标签不存在' }, 404)
+        const body = JSON.parse(request.postData() ?? '{}')
+        if (body.name !== undefined) found.name = body.name
+        if (body.color !== undefined) found.color = body.color
+        return respond(route, tagBody(found))
+      }
+      const settingEdit = /^\/settings\/([\w.-]+)$/.exec(path)
+      if (settingEdit) {
+        const body = JSON.parse(request.postData() ?? '{}')
+        return respond(route, { key: settingEdit[1], value: String(body.value ?? '') })
+      }
       const queueEdit = /^\/watchlists\/(\d+)$/.exec(path)
       if (queueEdit) {
         const found = findQueue(Number(queueEdit[1]))
@@ -870,6 +1010,27 @@ export async function mockApi(
     }
 
     if (method === 'DELETE') {
+      if (/^\/tags\/video\/\d+\/\d+$/.test(path)) {
+        return route.fulfill({ status: 204, body: '' })
+      }
+      const subtitleTake = /^\/videos\/(\d+)\/subtitles\/(\d+)$/.exec(path)
+      if (subtitleTake) {
+        const index = subtitleRows.findIndex(
+          (row) =>
+            row.id === Number(subtitleTake[2]) &&
+            row.video_id === Number(subtitleTake[1]),
+        )
+        if (index === -1) return respond(route, { detail: '字幕不存在' }, 404)
+        subtitleRows.splice(index, 1)
+        return route.fulfill({ status: 204, body: '' })
+      }
+      const tagErase = /^\/tags\/(\d+)$/.exec(path)
+      if (tagErase) {
+        const index = tagRows.findIndex((tag) => tag.id === Number(tagErase[1]))
+        if (index === -1) return respond(route, { detail: '标签不存在' }, 404)
+        tagRows.splice(index, 1)
+        return route.fulfill({ status: 204, body: '' })
+      }
       const queueTakeOut = /^\/watchlists\/(\d+)\/videos\/(\d+)$/.exec(path)
       if (queueTakeOut) {
         const found = findQueue(Number(queueTakeOut[1]))
