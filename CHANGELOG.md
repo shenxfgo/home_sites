@@ -2,6 +2,21 @@
 
 ## 2026-10-06
 
+### 加宽真后端 e2e（#136）：转码取消那一路——被杀掉的是一个真子进程，半截产物真的从磁盘上没了
+
+- **缝在哪**：`backend/src/utils/ffmpeg.py:126-132` 那段 `except asyncio.CancelledError`（kill → wait → `unlink` 输出 → 再 raise）**在全仓库一处也没有被执行过**。服务层唯一那条 cancel 用例（`tests/test_services/test_transcode_service.py` 的 `test_cancel_stops_the_job_and_records_it`）把 `transcode_video` 整个换成一个挂在 `asyncio.Event().wait()` 上的假函数，于是它签的是"作业状态机记得住 cancelled"，而真进程有没有被杀、半截文件归谁管，两句都不在它的路径上；100 条桩用例那份 cancel 处理器更是只把一个字符串改成 `'cancelled'`，顺带回 200 `{ok:true}`，而真路由回的是 **204 空体**。
+- **怎么让一个真任务追得上**：现场是一部现编的 15 秒 720p 真片子（`writeSlowClip`），同一份字节两种速度——vp9 编它要好几分钟，末尾重编成 mkv（libx264）只要几秒。播种那部 5 KB 黑屏编成 webm 只要 0.06 秒，点不到「取消」就已经跑完，追一个已经结束的任务得到的会是第 15 条已经签过的那个 404。
+- **五个变异，四红一绿**（每个改完单独 `-g 转码取消` 跑，跑完原字节写回并核对 md5：`utils/ffmpeg.py` `b18c9b52…` / `services/transcode_service.py` `9ffd03fe…` / `views/Transcode.vue` `cf01ce17…`）：
+  - 删掉 `Path(output_path).unlink(...)` → 红在 `transcode.real.spec.ts:580`（`existsSync(partial)` 应为 false），4.2 秒；
+  - 删掉 `_run` 里那句 `raise`（于是取消也会写一条 `transcode_error` 通知）→ 红在 `:587`，通知总数 3 比 2；
+  - 把 `Transcode.vue` 里那句 `await cancelTranscode()` 打桩掉 → 红在 `:567`：**toast「转码已取消」照样弹**，而 `.status-section` 停在「转码中」——那句成功提示是前端自己写的，所以这一条不许只认 toast，这一句写进了用例头部；
+  - 删掉 `proc.kill()` → 红在 `:566`：那个 POST 压根不返回（服务层在 `await` 一个没人杀的编码器），连 toast 都弹不出来。这一枪顺带签掉了比预期更强的一句：**204 是等到子进程真没了才发的**；
+  - **绿的那一个是有预期的**：删掉 `cancel()` 末尾那句兜底（`if job.status == "running": job.status = "cancelled"`），本条和服务层 11 条全绿——`_run` 在 re-raise 之前已经写过 `cancelled`，那是个**死分支**。这里只记不删：删代码是行为变更，不是一条测试用例的份内事。
+- **两句量出来的实话，不是一开始写出来的**：「取消之前磁盘上先有那个半截文件」这一句只能核**存在**、不能核字节——ffmpeg 的 muxer 带缓冲（32 KB 才落一次盘），而正被写的文件在 Windows 上不一定读得动，实测第一版拿 `size > 0` 轮询 30 秒读到 0。这是本仓库第三次撞到"要断的是那条路径真的跑过的副作用"。
+- **`finally` 里的清理不许抛**（本条立的一条通用规矩）：Windows 上刚被真 ffmpeg 读过的那个输入文件，紧接着 unlink 会得到 `EBUSY`（重试 10 次也穿得过），而 **`finally` 抛出的异常会顶掉 try 块里那个真正的断言失败**——M4 第一次跑报出来的就是一句 unlink 错误，用例红了哪一步完全看不见。现在那句清理带 `maxRetries` 并 catch 掉，下一轮 `e2e_seed.prepare_media()` 的 rmtree 兜底。
+- **顺序与编号**：本条落在 `transcode.real.spec.ts` 的第三个 `test`，没有新起 `transcode-cancel.real.spec.ts`——文件名里 `-`（45）排在 `.`（46）之前，那份新文件会插到 `transcode` 前面，推动的是六条而不是四条。于是 `users` 17→18、`video-delete` 18→19、`video-edit` 19→20（含头部引用 `video-tags` 那一处）、`video-tags` 20→21；总数 20 → 21，`README.md:391`、`CLAUDE.md:205`、`frontend/CLAUDE.md`（671 的逐条段、678 的顺序段与 `-g` 清单）跟着改口。顺带纠正 678 里四处从 #134 起就在欠账的数字：「第 15 条排在倒数第六条」→第七条并补上取消、「丢失标记排在后面那七条之前」→八条、「第 15~19 条要用它登录」→15~20、「会改变库里影片数的两条之一」→三条（并写清第 17 条为什么可以插在中间：它那一行在正文末尾就删掉了）。
+- **基线**：真后端 **21 条 2.3m 全绿**（新这条 solo 7.1 秒、整跑 7.4 秒），桩 e2e **100 passed**（第三次整跑才绿：前两次各抖一条计时类播放器用例，`player.spec.ts:189` 与 `:92`，单跑都绿——#115/#117/#118/#119/#120 记过的那一族，本单没碰播放器与替身一行代码）、Vitest **334 / 36 文件**、`typecheck:test` 干净；`backend/src/` 三个文件字节级回到基线（md5 逐个核对），故全量 pytest / `ruff` / `mypy` 未重跑，只把 `test_transcode_service.py` 在还原后的代码上重测一遍（11 passed）。跑完 `data/e2e/media/` 实测回到 `e2e_sample.mp4` 与 `e2e_sample.zh.srt` 两个文件。
+
 ### 加宽真后端 e2e（#135）：用户管理页那五条写路径打真库真中间件——一套里第一次同时开四台浏览器
 
 - **缝在哪**：`frontend/src/views/Users.vue` 那五个写接口（`POST /api/users`、`PUT .../role`、`PUT .../status`、`POST .../password`、`DELETE .../sessions`）在浏览器这一层一次也没被点过。第 7 条只让这个页面**列出**账号、读那一格设备数；替身那侧（`e2e/roles.spec.ts`）有建号、改角色、重置密码、踢下线四条，可它们签的是 `fixtures.ts` 里手写的响应表——那句 400 是前端自己编的，永远不会和后端那句不一样。

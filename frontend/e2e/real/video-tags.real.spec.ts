@@ -1,5 +1,5 @@
 /**
- * 真后端 e2e 的第 20 条：在影片详情页手工挂一枚标签，再让扫描跑过那一行，看那枚标签还在不在。
+ * 真后端 e2e 的第 21 条：在影片详情页手工挂一枚标签，再让扫描跑过那一行，看那枚标签还在不在。
  *
  * 这条用例的动机是 `scan_service._backfill_coordinates` 那句 docstring：「a title **or tag set**
  * someone curated by hand is left alone」。#127 只在真库上签了前半句（标题），后半句从来没被

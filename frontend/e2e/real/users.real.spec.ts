@@ -1,5 +1,5 @@
 /**
- * 真后端 e2e 的第 17 条：用户管理页那五条写路径，两头都要落——库里那一行，和**别的那台浏览器**
+ * 真后端 e2e 的第 18 条：用户管理页那五条写路径，两头都要落——库里那一行，和**别的那台浏览器**
  * 当场失效这件事。
  *
  * `Users.vue` 是这一页第一次打真库：第 7 条只让它列出账号、读那一格设备数。替身那一侧
@@ -131,7 +131,7 @@ const failure = (page: Page): Locator => page.locator('.el-message--error').last
 /** 表格按 `list_users` 的 id 序渲染，所以先按账号名等到那一行出现，再拿第几行去点。 */
 async function rowFor(page: Page, username: string): Promise<Locator> {
   // 用 poll 而不是读一次：`onMounted(loadUsers)` 还在飞的时候 `.cell-username` 是个空列表，
-  // 那一刻 indexOf 回 -1，报出来的就是「表格里没有这个账号」——和第 20 条那个同一类坑。
+  // 那一刻 indexOf 回 -1，报出来的就是「表格里没有这个账号」——和第 21 条那个同一类坑。
   await expect
     .poll(async () => (await page.locator('.cell-username').allTextContents()).join(','), {
       message: `表格里等不到账号 ${username}`,
