@@ -300,10 +300,12 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     expect(ass.text).not.toContain('ScriptType')
     // ffmpeg 的 webvtt muxer 省掉小时，`srt_to_webvtt`（纯 Python）保留小时。
     expect(ass.text).toContain('00:05.000 --> 00:08.000')
-    // ASS 的 `\N` 被写成了一次换行，而时间戳行后面紧跟空行在 WebVTT 里的意思是"这条 cue 到此
-    // 为止"。所以这句的词**在响应体里**、却不再是一条 cue 的文本（第 6 步在浏览器那一头钉这个
-    // 后果）。这一句钉的是现状不是愿望：修掉之后这里该是 `--> 00:12.000\n${CUE_ASS_TWO}`。
-    expect(ass.text).toContain('00:10.000 --> 00:12.000\n\n' + CUE_ASS_TWO)
+    // ASS 的 `\N` 被 muxer 写成一次真的换行，而时间戳行后面紧跟空行在 WebVTT 里的意思是"这条
+    // cue 到此为止"——那句词因此落在所有 cue 之外，浏览器上一条也不显示。转换器把紧跟时间戳
+    // 的那一段空行收掉（#140），词回到自己的 cue 里。
+    expect(ass.text).toContain('00:10.000 --> 00:12.000\n' + CUE_ASS_TWO)
+    // 反向那一半：不许顺手把所有空行都删掉，那会把下一条 cue 的时间戳吞进上一条的文本里。
+    expect(ass.text).not.toContain('00:12.000\n\n')
 
     const srt = await fetchInPage(page, `/api/videos/${videoId}/subtitles/${srtId}/stream`)
     expect(srt.status, srt.text).toBe(200)
@@ -339,8 +341,8 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     expect(await subtitleMenuItems(page)).toEqual(['关闭', 'chi', 'eng', 'jpn'])
 
     await page.locator('.subtitle-menu-item', { hasText: 'chi' }).click()
-    // 第二句是空串：ASS 那句以 `\N` 开头，ffmpeg 把它写成空行，浏览器就在那儿结束了这条 cue。
-    // 现状钉在这里，第 4 步响应体里那句词还在——修转换的那一单要把这一格改成两句话。
+    // 两句都在：ASS 那句以 `\N` 开头，muxer 把它写成空行、浏览器就在那儿结束了这条 cue，第 22 条
+    // 上线时这里解析出的是 `[CUE_ASS_ONE, '']`——词在响应体里，却一句也不显示。#140 修的是转换器。
     await expect
       .poll(() => trackStates(page), {
         message: '那条外挂 ASS 没有被浏览器拉下来并解析成 cue',
@@ -349,7 +351,7 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
         src: `/api/videos/${videoId}/subtitles/${rows[0].id}/stream`,
         mode: 'showing',
         elementState: 2,
-        cues: [CUE_ASS_ONE, ''],
+        cues: [CUE_ASS_ONE, CUE_ASS_TWO],
       })
 
     // 三条轨一次看全。第三条是第 5 步那个"200 而零条 cue"在浏览器那一头的样子：加载状态
@@ -361,7 +363,7 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
         src: `/api/videos/${videoId}/subtitles/${rows[0].id}/stream`,
         mode: 'showing',
         elementState: 2,
-        cues: [CUE_ASS_ONE, ''],
+        cues: [CUE_ASS_ONE, CUE_ASS_TWO],
       },
       {
         src: `/api/videos/${videoId}/subtitles/${srtId}/stream`,

@@ -126,7 +126,9 @@ def convert_to_webvtt(filepath: str) -> str:
     """Return the subtitle file as WebVTT text.
 
     ``<track>`` only renders WebVTT, so the other formats are converted here
-    rather than served raw.
+    rather than served raw. A ``.vtt`` is already the browser's own format and
+    stays byte-for-byte as written, defects included: only text this module
+    converts gets repaired.
     """
     if not os.path.isfile(filepath):
         raise FileNotFoundError(filepath)
@@ -135,10 +137,59 @@ def convert_to_webvtt(filepath: str) -> str:
     if ext == ".vtt":
         return read_subtitle_text(filepath)
     if ext == ".srt":
-        return srt_to_webvtt(read_subtitle_text(filepath))
+        return fold_blank_lines_inside_cues(srt_to_webvtt(read_subtitle_text(filepath)))
     if ext in (".ass", ".ssa"):
-        return _ffmpeg_to_webvtt(filepath)
+        return fold_blank_lines_inside_cues(_ffmpeg_to_webvtt(filepath))
     raise SubtitleConversionError(f"不支持的字幕格式: {ext}")
+
+
+# One line of a finished WebVTT cue: "00:01:02.003 --> ..." or the
+# "00:02.003 --> ..." dialect ffmpeg writes. Tells a cue separator apart from a
+# stray blank line.
+_CUE_TIMESTAMP_LINE = re.compile(
+    r"^\s*(?:\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})\s*-->"
+)
+
+
+def fold_blank_lines_inside_cues(webvtt: str) -> str:
+    """Fold the blank lines a converter wrote *inside* a cue back into its text.
+
+    ffmpeg's WebVTT muxer turns an ASS ``\\N`` into a literal newline, so a
+    dialogue starting with ``\\N`` comes out as a timestamp line, a blank line,
+    then the text. A blank line ends a WebVTT cue, so the browser parses an
+    empty cue and drops the stranded sentence: the subtitle looks selected but
+    shows nothing. The pure-Python SRT path can hand back the same shape.
+
+    Two things keep the fold honest:
+
+    * A blank run is only folded when the next non-blank line is not itself a
+      timestamp line -- a genuinely empty cue keeps its separator, otherwise the
+      next cue's timestamp would be swallowed as text.
+    * Nothing before the first timestamp line is touched. That region is the
+      ``WEBVTT`` header (and an optional cue identifier), not cue text, and its
+      blank line is required syntax.
+    """
+    lines = webvtt.split("\n")
+    kept: list[str] = []
+    past_header = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.strip():
+            past_header = past_header or bool(_CUE_TIMESTAMP_LINE.match(line))
+            kept.append(line)
+            index += 1
+            continue
+        next_text = index
+        while next_text < len(lines) and not lines[next_text].strip():
+            next_text += 1
+        following = lines[next_text] if next_text < len(lines) else ""
+        if past_header and following and not _CUE_TIMESTAMP_LINE.match(following):
+            index = next_text
+            continue
+        kept.append(line)
+        index += 1
+    return "\n".join(kept)
 
 
 def _ffmpeg_to_webvtt(filepath: str) -> str:

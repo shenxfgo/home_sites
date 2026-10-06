@@ -143,3 +143,92 @@ def test_convert_ass_without_ffmpeg_raises(tmp_path):
     ):
         with pytest.raises(SubtitleConversionError):
             convert_to_webvtt(path)
+
+
+# 本机实测的真 ffmpeg 输出（8.x，`-f webvtt` 写 stdout）。ASS 的 `\N` 被 muxer 写成一次真的
+# 换行，于是"以 `\N` 开头的台词"变成「时间戳行 + 空行 + 文本」——而空行在 WebVTT 里就是这条
+# cue 的结束。界面上因此解析出一条空文本的 cue，那句词落在所有 cue 之外，一句也不显示。
+FFMPEG_LEADING_BREAK = (
+    "WEBVTT\n\n"
+    "00:05.000 --> 00:08.000\n第一句 ONE\n\n"
+    "00:10.000 --> 00:12.000\n\n第二句 TWO\n"
+)
+
+
+def test_convert_ass_puts_a_break_led_dialogue_back_inside_its_cue(tmp_path):
+    """转换的产物必须是浏览器认得的 cue：紧跟时间戳的那个空行是 muxer 多写的。"""
+    path = _touch(str(tmp_path), "movie.ass", "[Events]\n")
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout=FFMPEG_LEADING_BREAK, stderr=""
+    )
+
+    with patch("src.utils.subtitles.subprocess.run", return_value=completed):
+        text = convert_to_webvtt(path)
+
+    assert "00:10.000 --> 00:12.000\n第二句 TWO" in text
+    # 文件头 `WEBVTT` 后面那个空行是语法要求的，不属于任何 cue，不许被一起收掉。
+    assert text.startswith("WEBVTT\n\n")
+
+
+def test_convert_ass_keeps_the_separator_of_a_really_empty_cue(tmp_path):
+    """台词只有 `\\N` 时那条 cue 是真空的：后面紧跟下一条时间戳，那个空行必须留着。
+
+    少了这一句，修复可以做成"把所有空行都删掉"，而那会把两条 cue 的时间戳吞进上一条的文本里。
+    """
+    stdout = (
+        "WEBVTT\n\n"
+        "00:01.000 --> 00:02.000\n\n"
+        "00:03.000 --> 00:04.000\n第二句 TWO\n"
+    )
+    path = _touch(str(tmp_path), "movie.ass", "[Events]\n")
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+
+    with patch("src.utils.subtitles.subprocess.run", return_value=completed):
+        text = convert_to_webvtt(path)
+
+    assert "00:01.000 --> 00:02.000\n\n00:03.000 --> 00:04.000" in text
+
+
+def test_convert_srt_keeps_a_break_led_text_inside_its_cue(tmp_path):
+    """同一道修复也在纯 Python 那一路：SRT 文本以空行开头时（中文 Windows 上另存过的手感）
+    浏览器照样会把这条 cue 截成空的。
+
+    夹具按 LF 写：`_touch` 走文本模式，本机落到磁盘就是 CRLF，而 `srt_to_webvtt` 第一步就把它
+    折平——这里要的是"时间戳行后面紧跟一个空行"那一个形状，不是两种换行法叠出来的形状。
+    """
+    path = _touch(
+        str(tmp_path),
+        "movie.srt",
+        "1\n00:00:01,000 --> 00:00:02,000\n\n第二句 TWO\n",
+    )
+
+    text = convert_to_webvtt(path)
+
+    assert "00:00:01.000 --> 00:00:02.000\n第二句 TWO" in text
+    assert text.startswith("WEBVTT\n\n")
+
+
+def test_convert_leaves_the_header_separator_alone_when_nothing_parses(tmp_path):
+    """`WEBVTT` 后面那个空行是语法要求的：一行 cue 都没认出来时也不许被折叠吃掉。
+
+    这一条是真跑出来的。#140 第一版的规则只看"下一句非空文本是不是时间戳"，于是第 23 条那个没有
+    BOM 的 UTF-16 文件（整份被当成 UTF-8 读、连时间戳都拼不出来）在头部就被折掉一行，红在真后端
+    e2e 那句 `startsWith('WEBVTT…')` 上。所以规则多了一道闸门：走到第一条时间戳之前一律不动。
+    """
+    path = _touch(str(tmp_path), "movie.srt", "hello\n\nworld\n")
+
+    assert convert_to_webvtt(path) == "WEBVTT\n\nhello\n\nworld\n"
+
+
+def test_convert_vtt_stays_byte_faithful_even_with_the_same_shape(tmp_path):
+    """`.vtt` 那一支不转换，所以也不修：交出去的还是盘上那份。
+
+    这一句划的是修复的边界——本单改的是**应用自己写出来的** WebVTT，不是别人写好的文件。
+    """
+    body = "WEBVTT\n\n00:01.000 --> 00:02.000\n\n第二句 TWO\n"
+    path = os.path.join(str(tmp_path), "movie.zh.vtt")
+    # 按 LF 落盘（`newline=""`）：这个测试比的是"一个字节都不许动"，换行法不能由写入模式决定。
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(body)
+
+    assert convert_to_webvtt(path) == body

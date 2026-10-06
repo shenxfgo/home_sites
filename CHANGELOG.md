@@ -1,6 +1,23 @@
 # 更新日志
 
 ## 2026-10-06
+### 修掉字幕转换里那一个空 cue（#140）：ASS 的 `\N` 被 WebVTT 当成"这条 cue 到此为止"，第 22 条钉成的那三格现状这次真翻了
+
+- **症状**：第 22 条（#138）当初把一句现状钉在断言里——那条外挂 ASS 的响应体里词都在，浏览器解析出的却是 `[CUE_ASS_ONE, '']`：菜单里点得动、一句也不显示。根因在 ffmpeg 的 WebVTT muxer：它把 ASS 的 `\N` 写成**一次真的换行**，于是一条以 `\N` 开头的 Dialogue 出来是"时间戳行 + 空行 + 那句词"，而 WebVTT 里时间戳后面紧跟空行的意思就是"这条 cue 到此结束"，那句词因此落在所有 cue 之外。本机真 ffmpeg 8.x 两条出口都量过字节：sidecar 那条（`subtitles._ffmpeg_to_webvtt`）吐出 `00:10.000 --> 00:12.000\n\n外挂 ASS·第二句…`，内嵌那条（`media_streams.extract_subtitle_webvtt`）在同一部 mkv 上吐出的是 `00:05.000 --> 00:08.000\n\n内嵌ASS第一句…`——**空行出现在第一条 cue 上而不是第二条**，所以按"第几条"写规则是错的，得按"紧跟时间戳"写。
+- **修法**：`subtitles.fold_blank_lines_inside_cues()` 一个函数，三条**转换**支路各套一次（`.srt`、`.ass/.ssa`、内嵌提取），不是套在两个 ffmpeg 出口上——纯 Python 的 `srt_to_webvtt` 也给得出同一个形状（SRT 里那段空行本来就是合法写法），汇合处只有一处。两道闸门各有自己的用例：**只有下一行非空且不是时间戳行才折**，真·空 cue 的分隔符因此保住，否则下一条 cue 的时间戳会被吞进上一条的文本里；**第一条时间戳之前的区域一个字不碰**，那是 `WEBVTT` 头和可选的 cue 标识，它的空行是语法要求。第二道闸门是真后端 e2e 教出来的：第一版没有它，第 23 条红在 `:569`——那份没有 BOM 的 UTF-16 转回来的文本里**没有任何一行认得出时间戳**，于是整份文件的头部空行被当成 cue 内空行折掉了，`text.startsWith('WEBVTT\n\n')` 当场失效。
+- **边界**：`.vtt` 依旧原样透传，**正好是同一个形状也不动**。这一单改的是**应用自己写出来的** WebVTT，不是别人写好的文件；`test_convert_vtt_stays_byte_faithful_even_with_the_same_shape` 就是划这条线的，它用 `open(..., newline="")` 按 LF 落盘，因为这一句比的是"一个字节都不许动"，换行法不能由写入模式决定。
+- **用例**：`tests/test_utils/test_subtitles.py` 五条新的、`tests/test_utils/test_media_streams.py` 一条新的，夹具是上面量回来的真字节。`_touch` 走文本模式，本机落到磁盘就是 CRLF，所以那两条比字节形状的用例刻意绕开它按 LF 写——这里要的是"时间戳行后面紧跟一个空行"那**一个**形状，不是两种换行法叠出来的形状。
+- **第 22 条那三格**：响应体翻成 `'00:10.000 --> 00:12.000\n' + CUE_ASS_TWO`，并加一句反向的 `not.toContain('00:12.000\n\n')`（不许顺手把所有空行都删掉），浏览器那两处从 `[CUE_ASS_ONE, '']` 翻成 `[CUE_ASS_ONE, CUE_ASS_TWO]`（第 6 步那条 `toContainEqual` 和三轨 `toEqual` 里第一条）。第 21 条不受影响：那个容器里两条轨是 `mov_text` + `ttml`，没有以换行开头的 Dialogue。
+- **七次变异**（每条改完单跑一次，跑完按字节还原并核对 md5：`src/utils/subtitles.py` `1f2876fe…` / `src/utils/media_streams.py` `90f23b07…`，七次全 `restored=True`）：
+  - fold 整个变成 no-op → 红 3 条（sidecar、srt、内嵌提取各一），真后端 e2e 第 22 条一起红在响应体那一句；
+  - 折掉"下一条是时间戳就不许折"那道闸门 → 红在「真·空 cue 的分隔符还在」和内嵌那条（第二条 cue 前的 `\n\n` 没了）；
+  - 折掉"头部之前不许动"那道闸门 → 红在「什么都解析不出来时头部空行还在」，就是第 23 条踩过的那一枪；
+  - sidecar 支路不套 fold → 红在 ass 那条 + 第 22 条 e2e；
+  - `.srt` 支路不套 → 红在 srt 那条；
+  - 内嵌提取不套 → 红在内嵌那条；
+  - `.vtt` 支路**套上** fold → 红在字节忠实那条。这一枪是给边界上的，不是给修复上的——它证明那条断言不是摆设。
+- **基线**：后端全量 **744 passed**（原 738，+6 全在这单的两份测试文件里），`tests/test_utils/test_subtitles.py` + `test_media_streams.py` **27 passed**（原 22），真后端 e2e **24 条全绿**，桩 e2e **100 passed**，Vitest **334 passed**，`typecheck:test` 干净，`ruff` 全绿、`mypy` 对这两份源文件干净。
+
 ### 加宽真后端 e2e（#139）：外挂字幕的编码那一路——GBK / UTF-16 / BOM 四种真字节走到浏览器，少了 BOM 那一份安静地什么都没有
 
 - **缝在哪**：`backend/src/utils/subtitles.py::read_subtitle_text` 那两个编码分支。服务层那 12 条只有一条碰过编码（`test_read_subtitle_text_falls_back_to_gb18030`），而 `utf-16`（BOM 判据）和 `utf-8-sig`（剥 UTF-8 BOM）两支**全仓库零用例**——实测把 `if raw.startswith((b"\xff\xfe", b"\xfe\xff")): return raw.decode("utf-16")` 那两行整个删掉，`tests/test_utils/test_subtitles.py` 与 `tests/test_api/test_subtitles.py` 那 30 条一条都不红。桩用例这一头更直接：`fixtures.ts` 那个 stream 处理器无论问哪一条都回同一段 UTF-8 的 `SAMPLE_VTT`，"这份文件是什么编码"在桩面上结构上不存在。

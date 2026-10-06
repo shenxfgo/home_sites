@@ -143,6 +143,30 @@ def test_extract_writes_the_webvtt_to_stdout(tmp_path):
     assert "-y" not in command
 
 
+def test_extract_puts_a_break_led_embedded_cue_back_together(tmp_path):
+    """内嵌 ASS 轨上同一个洞：本机实测 ffmpeg 把以 `\\N` 开头的台词写成「时间戳 + 空行 + 文本」。
+
+    那条空行在 WebVTT 里就是这条 cue 的结束，于是浏览器解析出一条空文本的 cue，那句词整个不显示。
+    """
+    video = tmp_path / "movie.mkv"
+    video.write_bytes(b"matroska")
+    stdout = (
+        "WEBVTT\n\n"
+        "00:05.000 --> 00:08.000\n\n内嵌 ASS 第一句 ONE\n\n"
+        "00:10.000 --> 00:12.000\n内嵌 ASS 第二句 TWO\n"
+    )
+
+    fake = FakeRun(_probe(), _stdout(stdout))
+    with patch("src.utils.media_streams.subprocess.run", fake):
+        text = extract_subtitle_webvtt(str(video), 2)
+
+    assert "00:05.000 --> 00:08.000\n内嵌 ASS 第一句 ONE" in text
+    assert text.startswith("WEBVTT\n\n")
+    # 第二条本来就正常，它前面那个空行是分条用的，不许跟着一起被收掉。
+    assert "TWO\n" in text
+    assert "\n\n00:10.000 --> 00:12.000\n" in text
+
+
 def test_extract_refuses_a_stream_that_is_not_a_subtitle(tmp_path):
     video = tmp_path / "movie.mkv"
     video.write_bytes(b"matroska")
