@@ -190,6 +190,42 @@ async def test_my_devices_list_every_browser_and_mark_this_one(
     await phone.aclose()
 
 
+async def test_a_browser_that_stopped_coming_back_leaves_the_device_list(
+    anon_client, new_browser, db_session
+):
+    """过期那一行不算设备：它已经不是任何人的会话了，只是还没人把它删掉。
+
+    ``resolve_session`` 早就拒绝它，但那一行要等**它自己的** Cookie 再被拿回来一次
+    才会消失。界面上"我的设备"读的是列表，永远等不到那一次，所以一台关掉的手机
+    会永远挂在清单里，而它旁边的"30 天前"只会让人以为是自己记错了。
+    """
+    await _alice(db_session)
+    await _login(anon_client)
+    here = hash_token(anon_client.cookies.get(COOKIE_NAME))
+    phone = await new_browser()
+    await _login(phone, remember=True)
+    there = hash_token(phone.cookies.get(COOKIE_NAME))
+
+    # 那台手机从此没再开机：它的有效期已经过去一个小时。这里直接写死一个过期的
+    # 时刻，不去"记住我"那个 30 天里减几天——那个数字一改，这一条就会静默地变成
+    # 一个还活着的会话，而它看上去仍然在测过期。
+    row = await db_session.get(UserSession, there)
+    row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    await db_session.commit()
+
+    rows = (await anon_client.get("/api/auth/sessions")).json()
+
+    assert [r["token_hash"] for r in rows] == [here]
+    # 不是"藏起来"：这一行已经不在表里，所以「登录设备」那一格和踢下线的回执
+    # 数都不会再数到它，而这一台照常还能看见自己。先回滚一次再读——一条没提交的
+    # DELETE 在这个会话里同样"看不见"，只有回滚会把它原样还回来。
+    await db_session.rollback()
+    assert [sess.token_hash for sess in await _sessions(db_session)] == [here]
+    assert (await phone.get("/api/auth/me")).status_code == 401
+    assert (await anon_client.get("/api/auth/me")).status_code == 200
+    await phone.aclose()
+
+
 async def test_the_device_list_records_the_browser_string(new_browser, db_session):
     """登录时存进 sessions.user_agent 的那句话，就是"我的设备"要显示的内容。"""
     await _alice(db_session)

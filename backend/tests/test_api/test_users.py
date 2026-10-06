@@ -5,10 +5,13 @@
 一个可用管理员都不剩。
 """
 
-import pytest
+from datetime import datetime, timedelta, timezone
 
-from src.models.user import ROLE_MEMBER, ROLE_OWNER
-from src.services.auth_service import login_rate_limiter
+import pytest
+from sqlalchemy import select
+
+from src.models.user import ROLE_MEMBER, ROLE_OWNER, UserSession
+from src.services.auth_service import hash_token, login_rate_limiter
 
 PASSWORD = "a-quiet-home-lab"
 OTHER_PASSWORD = "another-quiet-lab"
@@ -57,6 +60,36 @@ async def test_listing_users_shows_every_account_and_its_open_browsers(
     assert by_name["guest"]["signed_in_devices"] == 1
     # tester 的那一枚是夹具替他签的：会话数就是"有几个浏览器还登着"。
     assert by_name["tester"]["signed_in_devices"] == 1
+
+
+async def test_the_device_count_leaves_out_a_session_that_already_expired(
+    client, signed_in_user, db_session
+):
+    """「登录设备」那一格数的是还活着的浏览器，不是 sessions 表里的行数。
+
+    过期那一行只有被它自己的 Cookie 再带回来一次才会被删掉，而管理面根本不会有
+    那么一次——所以一个已经关掉的浏览器会永远占着这一格，点「踢下线」还会报出一个
+    比界面上更大的数。
+    """
+    stale = hash_token("a-phone-nobody-turned-back-on")
+    now = datetime.now(timezone.utc)
+    db_session.add(
+        UserSession(
+            token_hash=stale,
+            user_id=signed_in_user.id,
+            expires_at=now - timedelta(days=1),
+            last_seen_at=now - timedelta(days=2),
+        )
+    )
+    await db_session.commit()
+
+    rows = (await client.get("/api/users")).json()
+
+    assert [row for row in rows if row["username"] == "tester"][0]["signed_in_devices"] == 1
+    # 数对了之后还要确认那一行是**真的没了**：下面那颗「踢下线」报的是 revoke 的
+    # 行数，先回滚一次再读，没提交的 DELETE 会把这一行原样还回来。
+    await db_session.rollback()
+    assert stale not in (await db_session.execute(select(UserSession.token_hash))).scalars().all()
 
 
 async def test_a_duplicate_username_is_refused(client):

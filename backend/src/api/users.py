@@ -60,7 +60,15 @@ class RevokedSessionsResponse(BaseModel):
 
 
 async def _payload(session: AsyncSession, user: User) -> AdminUserResponse:
-    """One row of the table, including how many browsers still hold it open."""
+    """One row of the table, including how many browsers still hold it open.
+
+    The purge is what makes that number mean the thing the sentence next to it
+    claims: an expired row is refused by the middleware but only deleted when its
+    own cookie returns, so an account's abandoned phone would otherwise be counted
+    as a signed-in browser for the rest of its life — and 踢下线 would report one
+    more device than the 我的设备 list of that account can show.
+    """
+    await AuthService(session).purge_expired_sessions(user.id)
     result = await session.execute(
         select(func.count(UserSession.token_hash)).where(UserSession.user_id == user.id)
     )

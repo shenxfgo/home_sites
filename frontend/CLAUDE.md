@@ -591,7 +591,7 @@ client.interceptors.response.use(
 - 这条标准也管顶栏自己：`NotificationCenter` 在 `isAuthenticated` 为真之前不打 `/api/notifications*`（`watch` 而不是 `onMounted`——顶栏会比会话探测先挂上来，首帧那一下没有会话）。不守着就每次进登录页都在控制台留一对 401，而真机走查看的就是控制台。
 - 藏入口只是体验，**中间件才是真拦**：后端已经把成员的管理面写请求挡成 403，前端少给一个入口只是少一次"点了没反应"。新加一个管理页时，先确认后端口已经收口，再考虑要不要给成员露出来。
 - 主题是账号的属性：`useTheme.setTheme()` 本机立即生效并写 `localStorage`，再尽力 `PUT /api/preferences`；`load()` / `signIn()` 之后 `syncThemeFromAccount()` 拉回那一份。这个拉取是 fire-and-forget——服务端慢或不可达时主题晚一帧到位可以接受，卡在登录页不行，所以**不要**去 `await` 它。
-- 「登录设备」是 `/profile` 最后一张卡：`listSessions()` 回的每一行里 `token_hash` 是摘要而不是 Cookie 值，前端只拿它当"退哪一台"的地址。User-Agent 由 `deviceLabel()` 翻成 `Chrome · Windows` 这类文案，认不出来就原样截 40 字符——**那句话是客户端自己写的，只决定这一行显示什么，任何判断都不看它**。当前这台不给「退出」按钮（退它就是退出本页，走顶栏的「退出登录」）；`handleRevoke` 成功时本地删行，失败时弹后端原话并重读，别把列表留在假数据上；改密码会顺手退掉别的浏览器，所以成功后同样 `loadDevices()`。四张卡各自带语义 class（`card-account` / `card-theme` / `card-password` / `card-devices`），单测与 e2e 按它定位——**别用 `.profile-card` 的第几张来选**，加一张卡就会错位。
+- 「登录设备」是 `/profile` 最后一张卡：`listSessions()` 回的每一行里 `token_hash` 是摘要而不是 Cookie 值，前端只拿它当"退哪一台"的地址。**这里从不出现已过期的那一行**：服务器在列表之前先把它们删掉（`AuthService.purge_expired_sessions`），所以这一张卡的行数和 `/users` 那格的「登录设备」是同一个口径，前端不需要自己按 `expires_at` 再筛一遍。User-Agent 由 `deviceLabel()` 翻成 `Chrome · Windows` 这类文案，认不出来就原样截 40 字符——**那句话是客户端自己写的，只决定这一行显示什么，任何判断都不看它**。当前这台不给「退出」按钮（退它就是退出本页，走顶栏的「退出登录」）；`handleRevoke` 成功时本地删行，失败时弹后端原话并重读，别把列表留在假数据上；改密码会顺手退掉别的浏览器，所以成功后同样 `loadDevices()`。四张卡各自带语义 class（`card-account` / `card-theme` / `card-password` / `card-devices`），单测与 e2e 按它定位——**别用 `.profile-card` 的第几张来选**，加一张卡就会错位。
 - 播放器偏好（倍速、音量、字幕字号与延迟）仍留在 `localStorage`，跟浏览器不跟人，与主题不是一回事，见设计文档的偏差说明。
 
 ### API 模块

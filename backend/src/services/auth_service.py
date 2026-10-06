@@ -167,12 +167,32 @@ class AuthService:
         # 宽接口 Result，所以断言一次，不为了这个数再发一条 count 查询。
         return cast(CursorResult[Any], result).rowcount or 0
 
+    async def purge_expired_sessions(self, user_id: int) -> int:
+        """Delete this account's sessions whose expiry has passed; return the count.
+
+        ``resolve_session`` already refuses such a row, but it only deletes it
+        when **that browser's own** cookie comes back. A device that was
+        switched off therefore stays in ``sessions`` forever, and every list
+        built straight from the table would call it a signed-in browser. So the
+        rows that are already dead get removed where they are read.
+        """
+        result = await self.session.execute(
+            delete(UserSession).where(
+                UserSession.user_id == user_id, UserSession.expires_at <= _utc_now()
+            )
+        )
+        await self.session.commit()
+        return cast(CursorResult[Any], result).rowcount or 0
+
     async def list_sessions(self, user_id: int) -> list[UserSession]:
         """This account's live sessions, newest activity first.
 
         No pagination: a household has a handful of browsers, and the rows
-        disappear on their own when they expire or get revoked.
+        disappear on their own when they expire or get revoked — the expiry half
+        of that is this method's own purge, since no request from the expired
+        browser will ever come to ask.
         """
+        await self.purge_expired_sessions(user_id)
         result = await self.session.execute(
             select(UserSession)
             .where(UserSession.user_id == user_id)
