@@ -1005,7 +1005,13 @@ export async function mockApi(
         return respond(route, queueBody(found))
       }
       if (path === '/settings' || /^\/videos\/\d+$/.test(path)) {
-        return respond(route, JSON.parse(request.postData() ?? '{}'))
+        const body = JSON.parse(request.postData() ?? '{}')
+        // 整份 PUT 照后端那样**既回显也落库**：`settings.py::update_settings` 写完五个键才
+        // `return data`，回显和落库是两件事（#112 量的）。只回显不落库时「保存后刷新还在」
+        // 在桩用例里永远红，而红的是替身不是界面。单键那两条仍只回显——它们没有界面调用者
+        // （#128 那次静态遍历量的），要接住得连后端那道整数闸门一起补。
+        if (path === '/settings') Object.assign(systemSettings, body)
+        return respond(route, body)
       }
     }
 
