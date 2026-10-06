@@ -52,7 +52,7 @@ async function loadFavorites() {
     videos.value = result.items
     total.value = result.total
   } catch (err: unknown) {
-    ElMessage.error(`Failed to load favorites: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`收藏加载失败：${err instanceof Error ? err.message : err}`)
   } finally {
     loading.value = false
   }
@@ -71,7 +71,7 @@ async function handleRemoveFavorite(video: Video) {
     loadFavorites()
   } catch (err: unknown) {
     if (err !== 'cancel' && !(err instanceof Error && err.message === 'cancel')) {
-      ElMessage.error(`Remove failed: ${err instanceof Error ? err.message : err}`)
+      ElMessage.error(`移除收藏失败：${err instanceof Error ? err.message : err}`)
     }
   }
 }

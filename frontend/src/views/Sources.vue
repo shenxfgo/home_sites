@@ -27,7 +27,7 @@ async function loadSources() {
   try {
     sources.value = await listSources()
   } catch (err: unknown) {
-    ElMessage.error(`Failed to load sources: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`视频源加载失败：${err instanceof Error ? err.message : err}`)
   } finally {
     loading.value = false
   }
@@ -55,7 +55,7 @@ async function handleSubmit(data: SourceCreate) {
     showForm.value = false
     await loadSources()
   } catch (err: unknown) {
-    ElMessage.error(`Operation failed: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`操作失败：${err instanceof Error ? err.message : err}`)
   }
 }
 
@@ -72,7 +72,7 @@ async function handleDelete(source: Source) {
   } catch (err: unknown) {
     // User cancelled or API error
     if (err !== 'cancel' && !(err instanceof Error && err.message === 'cancel')) {
-      ElMessage.error(`Delete failed: ${err instanceof Error ? err.message : err}`)
+      ElMessage.error(`删除视频源失败：${err instanceof Error ? err.message : err}`)
     }
   }
 }

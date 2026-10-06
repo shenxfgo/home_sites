@@ -33,7 +33,7 @@ async function loadTags() {
   try {
     tags.value = await listTags()
   } catch (err: unknown) {
-    ElMessage.error(`Failed to load tags: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`标签加载失败：${err instanceof Error ? err.message : err}`)
   } finally {
     loading.value = false
   }
@@ -80,7 +80,7 @@ async function handleSubmit() {
     showDialog.value = false
     await loadTags()
   } catch (err: unknown) {
-    ElMessage.error(`Operation failed: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`操作失败：${err instanceof Error ? err.message : err}`)
   } finally {
     submitting.value = false
   }
@@ -98,7 +98,7 @@ async function handleDelete(tag: Tag) {
     await loadTags()
   } catch (err: unknown) {
     if (err !== 'cancel' && !(err instanceof Error && err.message === 'cancel')) {
-      ElMessage.error(`Delete failed: ${err instanceof Error ? err.message : err}`)
+      ElMessage.error(`删除标签失败：${err instanceof Error ? err.message : err}`)
     }
   }
 }

@@ -186,7 +186,7 @@ async function loadVideos() {
     videos.value = result.items
     total.value = result.total
   } catch (err: unknown) {
-    ElMessage.error(`Failed to load videos: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`视频加载失败：${err instanceof Error ? err.message : err}`)
   } finally {
     loading.value = false
   }

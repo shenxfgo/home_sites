@@ -60,7 +60,7 @@ async function loadHistory() {
     historyItems.value = result.items
     total.value = result.total
   } catch (err: unknown) {
-    ElMessage.error(`Failed to load history: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`播放历史加载失败：${err instanceof Error ? err.message : err}`)
   } finally {
     loading.value = false
   }
@@ -86,7 +86,7 @@ async function handleDelete(item: HistoryItem) {
     loadHistory()
   } catch (err: unknown) {
     if (err !== 'cancel' && !(err instanceof Error && err.message === 'cancel')) {
-      ElMessage.error(`Delete failed: ${err instanceof Error ? err.message : err}`)
+      ElMessage.error(`删除播放记录失败：${err instanceof Error ? err.message : err}`)
     }
   }
 }

@@ -95,6 +95,11 @@ async function fetchData<T>(url: string): Promise<T> {
 - 常量：UPPER_CASE（`API_BASE_URL`）
 - CSS 类名：kebab-case（`video-card`）
 
+### 提示文案语言
+
+- **`ElMessage` / `ElMessageBox` 的文案一律中文开头**（#131）。这一条有静态闸门：`tests/views/toast-language.spec.ts` 遍历 `src/` 里每一个第一实参是字面量的提示调用（实测 100 处里的 96 处），断言那句话里含汉字。为什么单开一层静态的：这 17 处从前改回英文**不会有任何一条用例红**——单元层断的是 `stringContaining('服务端那句原因')`（前缀不在断言里），e2e 断的也是那句原因，两层都在核"服务端原话有没有被吞"（#74 那一族），没有一层核"外面套的是哪种语言"。
+- 剩下 4 处第一实参是表达式（`ElMessage.error(x ?? '转码失败')`、`ElMessage.success(a ? '…' : '…')`）静态读不到，肉眼核过是中文。**别把兜底常量当文案改**：那种 `?? '转码失败'` 正是 #74/#126 量过的"吞掉服务端原因"的形状，要动的是让原因进来。
+
 ## 目录结构
 
 ```

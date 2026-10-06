@@ -109,7 +109,7 @@ async function loadVideo() {
       // Silently ignore favorite check failure
     }
   } catch (err: unknown) {
-    ElMessage.error(`Failed to load video: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`影片加载失败：${err instanceof Error ? err.message : err}`)
     router.push({ name: 'home' })
   } finally {
     loading.value = false
@@ -151,7 +151,7 @@ async function handleSaveTags() {
     showTagDialog.value = false
     ElMessage.success('标签已更新')
   } catch (err: unknown) {
-    ElMessage.error(`Failed: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`标签保存失败：${err instanceof Error ? err.message : err}`)
   }
 }
 
@@ -194,7 +194,7 @@ async function handleSaveWatchlists() {
     showWatchlistDialog.value = false
     ElMessage.success('片单已更新')
   } catch (err: unknown) {
-    ElMessage.error(`Failed: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`片单保存失败：${err instanceof Error ? err.message : err}`)
   }
 }
 
@@ -211,7 +211,7 @@ async function toggleFavorite() {
       ElMessage.success('已添加到收藏')
     }
   } catch (err: unknown) {
-    ElMessage.error(`Failed: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`收藏操作失败：${err instanceof Error ? err.message : err}`)
   }
 }
 
@@ -241,7 +241,7 @@ async function saveEdit() {
     editing.value = false
     ElMessage.success('视频信息已更新')
   } catch (err: unknown) {
-    ElMessage.error(`Update failed: ${err instanceof Error ? err.message : err}`)
+    ElMessage.error(`视频信息更新失败：${err instanceof Error ? err.message : err}`)
   }
 }
 
@@ -258,7 +258,7 @@ async function handleDelete() {
     router.push({ name: 'home' })
   } catch (err: unknown) {
     if (err !== 'cancel' && !(err instanceof Error && err.message === 'cancel')) {
-      ElMessage.error(`Delete failed: ${err instanceof Error ? err.message : err}`)
+      ElMessage.error(`删除影片失败：${err instanceof Error ? err.message : err}`)
     }
   }
 }
