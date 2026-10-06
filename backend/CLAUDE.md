@@ -573,6 +573,8 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 
 标签那套在 2026-10-05 补上了接口层用例（`tests/test_api/test_tags.py`，八个端点各过一遍，顺带把"重名建标签回 500"改成 409），`api/tags.py` 100%、`tag_service.py` 97%，不再是空白。这几处都是有意的取舍，不是漏了；别为了让总数好看去造只断言"没抛异常"的用例。
 
+**标签名的裁剪只有一处出处：`TagService._clean_name`**（#130）。建和改两条写路径都先过它，裁完是空串就抛 `BlankTagNameError`（`ValueError` 的子类），路由把它翻成 400 并原样带上那句中文原因。为什么必须在服务层而不在界面收口：`tags.name` 的唯一约束算的是**整串**，`动作片` 与 `动作片␣` 是两行，而界面上是两张分不出来的卡片；`Field(..., min_length=1)` 数的是字符数，`"   "` 照样过校验建出一枚看不见的标签（这两条都是实测出来的现象，不是从文档推的）。只修前端的话任何客户端仍能往库里塞带空格的重复标签。**两处顺序是承重的，改动时别调**：`api/tags.py` 的 `update_tag` 里 `except BlankTagNameError` 必须排在 `except ValueError`（那条翻成 404「标签不存在」）**之前**——它本身就是 `ValueError`，晚一步那个 400 会悄悄降级成 404；`service.update` 里必须**先验名字再动任何 `setattr`**，否则一次带着 `{name, color}` 的失败改名会把颜色留下，`test_renaming_into_only_padding_is_refused_and_changes_nothing` 钉的就是后半句。扫描那条自动标签不需要跟着改：`name_parser._find_group` 早就 `.strip(" -_")` 了。
+
 ## 依赖管理
 
 ```bash

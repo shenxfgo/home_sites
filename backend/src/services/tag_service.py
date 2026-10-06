@@ -17,6 +17,15 @@ class DuplicateTagNameError(ValueError):
     """
 
 
+class BlankTagNameError(ValueError):
+    """Nothing is left of the name once the padding is trimmed off.
+
+    ``min_length=1`` counts characters, so three spaces pass validation and the
+    unique column happily stores an invisible tag. Both write paths trim first
+    and answer 400 here instead.
+    """
+
+
 class TagService:
     """Service for managing tags."""
 
@@ -28,8 +37,21 @@ class TagService:
         result = await self.session.execute(select(Tag.id).where(Tag.name == name))
         return result.scalar_one_or_none()
 
+    @staticmethod
+    def _clean_name(name: str) -> str:
+        """Trim the padding a tag name cannot survive, and refuse what is left with.
+
+        首尾空格是「动作片」和「动作片␣」在唯一列上成为两行的唯一区别，也是界面
+        上看不出来的那一种；所以裁剪放在写库前的这一层，两条写路径共用一把尺子。
+        """
+        cleaned = name.strip()
+        if not cleaned:
+            raise BlankTagNameError("标签名不能为空")
+        return cleaned
+
     async def create(self, name: str, color: str = "#409eff") -> Tag:
         """Create a new tag."""
+        name = self._clean_name(name)
         if await self._existing_tag_id(name) is not None:
             raise DuplicateTagNameError(f"标签「{name}」已存在")
 
@@ -68,9 +90,12 @@ class TagService:
             raise ValueError(f"Tag with id {tag_id} not found")
 
         new_name = kwargs.get("name")
-        if isinstance(new_name, str) and new_name != tag.name:
-            if await self._existing_tag_id(new_name) is not None:
-                raise DuplicateTagNameError(f"标签「{new_name}」已存在")
+        if isinstance(new_name, str):
+            # 先验名，再动任何字段：一次带着 name+color 的失败改名不该把颜色留下。
+            kwargs["name"] = new_name = self._clean_name(new_name)
+            if new_name != tag.name:
+                if await self._existing_tag_id(new_name) is not None:
+                    raise DuplicateTagNameError(f"标签「{new_name}」已存在")
 
         for key, value in kwargs.items():
             if hasattr(tag, key):

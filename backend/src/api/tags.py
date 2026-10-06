@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.videos import VideoResponse
 from src.database import get_session
-from src.services.tag_service import DuplicateTagNameError, TagService
+from src.services.tag_service import BlankTagNameError, DuplicateTagNameError, TagService
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
 
@@ -70,6 +70,9 @@ async def create_tag(
         return await service.create(name=data.name, color=data.color)
     except DuplicateTagNameError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except BlankTagNameError as e:
+        # 裁完就没了的名字和 `min_length=1` 挡不住的空白是同一件事，回 400 带原因。
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/{tag_id}", response_model=TagResponse)
@@ -99,6 +102,10 @@ async def update_tag(
         return await service.update(tag_id, **update_data)
     except DuplicateTagNameError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except BlankTagNameError as e:
+        # 必须排在下面那条 `except ValueError` 之前：它也是 ValueError，
+        # 晚一步就会被当成「标签不存在」的 404 吞掉。
+        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

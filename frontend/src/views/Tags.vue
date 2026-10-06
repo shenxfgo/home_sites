@@ -52,8 +52,10 @@ function openEditDialog(tag: Tag) {
 }
 
 async function handleSubmit() {
-  if (!formData.value.name.trim()) {
-    ElMessage.warning('Please enter a tag name')
+  // 后端会裁，这里也裁：不然卡片上写的和实际存下来的是两个名字。
+  const name = formData.value.name.trim()
+  if (!name) {
+    ElMessage.warning('请输入标签名')
     return
   }
 
@@ -61,8 +63,8 @@ async function handleSubmit() {
   try {
     if (editingTag.value) {
       const updateData: TagUpdate = {}
-      if (formData.value.name !== editingTag.value.name) {
-        updateData.name = formData.value.name
+      if (name !== editingTag.value.name) {
+        updateData.name = name
       }
       if (formData.value.color !== editingTag.value.color) {
         updateData.color = formData.value.color
@@ -72,7 +74,7 @@ async function handleSubmit() {
         ElMessage.success('标签已更新')
       }
     } else {
-      await createTag(formData.value)
+      await createTag({ ...formData.value, name })
       ElMessage.success('标签已创建')
     }
     showDialog.value = false

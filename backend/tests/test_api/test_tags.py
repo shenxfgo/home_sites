@@ -66,6 +66,35 @@ async def test_a_second_tag_with_the_same_name_conflicts_instead_of_500(client):
     assert [item["name"] for item in await _list(client)] == ["科幻"]
 
 
+# ---------- 首尾空格（#130）----------
+
+
+async def test_padding_is_not_part_of_the_name(client):
+    """唯一列比的是整串，`动作片` 与 `动作片 ` 在它眼里是两条——界面上却是同一回事。"""
+    tag = await _create(client, "  恐怖  ")
+
+    assert tag["name"] == "恐怖"
+    assert [item["name"] for item in await _list(client)] == ["恐怖"]
+
+
+async def test_padding_does_not_buy_a_second_tag(client):
+    await _create(client, "恐怖")
+
+    response = await client.post("/api/tags", json={"name": " 恐怖 "})
+
+    assert response.status_code == 409, response.text
+    assert len(await _list(client)) == 1
+
+
+async def test_a_name_that_is_only_padding_is_refused_with_a_reason(client):
+    """`min_length=1` 数的是字符数，三个空格照样放行，而界面上它是一条看不见的标签。"""
+    response = await client.post("/api/tags", json={"name": "   "})
+
+    assert response.status_code == 400, response.text
+    assert "不能为空" in response.json()["detail"]
+    assert await _list(client) == []
+
+
 # ---------- 列表与单取 ----------
 
 
@@ -127,6 +156,43 @@ async def test_renaming_onto_an_existing_name_conflicts(client):
     assert response.status_code == 409, response.text
     assert (await client.get(f"/api/tags/{other['id']}")).json()["name"] == "奇幻"
     assert len(await _list(client)) == 2
+
+
+async def test_renaming_onto_a_padded_twin_conflicts(client):
+    """改名这一路撞的是同一个唯一列，所以它得用同一把尺子量。"""
+    await _create(client, "科幻")
+    other = await _create(client, "奇幻")
+
+    response = await client.put(f"/api/tags/{other['id']}", json={"name": " 科幻 "})
+
+    assert response.status_code == 409, response.text
+    assert (await client.get(f"/api/tags/{other['id']}")).json()["name"] == "奇幻"
+
+
+async def test_renaming_strips_the_padding_too(client):
+    created = await _create(client, "旧名")
+
+    response = await client.put(f"/api/tags/{created['id']}", json={"name": " 新名 "})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "新名"
+
+
+async def test_renaming_into_only_padding_is_refused_and_changes_nothing(client):
+    created = await _create(client, "科幻", color="#123456")
+
+    response = await client.put(f"/api/tags/{created['id']}", json={"name": "  "})
+
+    assert response.status_code == 400, response.text
+    assert "不能为空" in response.json()["detail"]
+    fresh = (await client.get(f"/api/tags/{created['id']}")).json()
+    assert fresh["name"] == "科幻"
+    # 同一次请求里带着的另一个字段也不能落库：先验名，再写。
+    padded = await client.put(
+        f"/api/tags/{created['id']}", json={"name": "  ", "color": "#654321"}
+    )
+    assert padded.status_code == 400, padded.text
+    assert (await client.get(f"/api/tags/{created['id']}")).json()["color"] == "#123456"
 
 
 async def test_an_empty_patch_changes_nothing_but_is_refused(client):

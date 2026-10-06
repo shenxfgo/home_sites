@@ -129,9 +129,48 @@ describe('Tags view', () => {
     await nameField(wrapper).setValue('   ')
     await clickInDialog(wrapper, '创建')
 
-    expect(ElMessage.warning).toHaveBeenCalledWith('Please enter a tag name')
+    expect(ElMessage.warning).toHaveBeenCalledWith('请输入标签名')
     expect(createTag).not.toHaveBeenCalled()
     expect(listTags).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  /**
+   * #130：后端会裁掉首尾空格，界面也得裁——不然卡片上写的和存下去的是两个名字，
+   * 而 `tags.name` 那个唯一列正好拦不住「动作片」与「动作片␣」这一对。
+   */
+  it('trims the padding off a created name', async () => {
+    const wrapper = await mountTags()
+    await openCreate(wrapper)
+
+    await nameField(wrapper).setValue('  纪录片  ')
+    await clickInDialog(wrapper, '创建')
+
+    expect(createTag).toHaveBeenCalledWith({ name: '纪录片', color: '#409eff' })
+    wrapper.unmount()
+  })
+
+  it('trims the padding off a renamed tag', async () => {
+    const wrapper = await mountTags([ACTION])
+
+    await clickInCard(wrapper, 0, '编辑')
+    await nameField(wrapper).setValue(' 文艺片 ')
+    await clickInDialog(wrapper, '更新')
+
+    expect(updateTag).toHaveBeenCalledWith(1, { name: '文艺片' })
+    wrapper.unmount()
+  })
+
+  it('treats a rename that only adds padding as no change at all', async () => {
+    const wrapper = await mountTags([ACTION])
+
+    await clickInCard(wrapper, 0, '编辑')
+    await nameField(wrapper).setValue('动作片 ')
+    await clickInDialog(wrapper, '更新')
+
+    // 裁完之后同名，就不该发那次 PUT——这正是以前会写出第二条重复标签的那一下。
+    expect(updateTag).not.toHaveBeenCalled()
+    expect(ElMessage.success).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

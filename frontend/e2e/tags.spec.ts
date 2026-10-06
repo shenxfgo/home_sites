@@ -85,10 +85,56 @@ test('名称为空时前置挡下，一次请求也不发', async ({ page }) => 
   // 只有空格：`.trim()` 之后是空串，和留空走的是同一道闸门。
   await dialog.getByPlaceholder('请输入标签名称').fill('   ')
   await dialog.getByRole('button', { name: '创建', exact: true }).click()
-  await expect(page.locator('.el-message--warning')).toBeVisible()
+  await expect(page.locator('.el-message--warning')).toContainText('请输入标签名')
 
   expect(posts).toEqual([])
   await expect(page.locator('.tag-card')).toHaveCount(1)
+})
+
+/**
+ * #130：`tags.name` 那个唯一列比的是整串，所以「动作片」与「动作片␣」在它眼里是两条，
+ * 而界面上一张卡片写着带空格的、另一张写着不带的，看起来就是"莫名多了个重复标签"。
+ * 单元层钉的是请求体里那个名字（`toHaveBeenCalledWith`），这一层钉的是卡片上那行字。
+ *
+ * 替身夹具**没有**跟着加裁剪逻辑——前端在发之前就裁完了，夹具从此收不到带空格的名称，
+ * 在那儿加一条量不到的分支就是 #132 记下的那类死写。后端自己那道 `_clean_name` 由
+ * `tests/test_api/test_tags.py` 的 6 条签字，这一层只保证界面不再往人眼前塞空格。
+ */
+test('名字两头带的空格不会跟着存进卡片', async ({ page }) => {
+  await page.goto('/tags')
+  await page.getByRole('button', { name: '添加标签' }).click()
+
+  const dialog = page.locator('.el-dialog')
+  await dialog.getByPlaceholder('请输入标签名称').fill('  纪录片  ')
+  const created = page.waitForResponse(
+    (res) => res.request().method() === 'POST' && /\/api\/tags$/.test(res.url()),
+  )
+  await dialog.getByRole('button', { name: '创建', exact: true }).click()
+  expect((await created).status()).toBe(201)
+
+  // 渲染出来的名字必须不带两头空格：`hasText: '纪录片'` 对带空格的卡片同样成立（子串匹配），
+  // 所以断的是整行的可见文案，而不是"存不存在这么一张卡"。
+  await expect(page.locator('.tag-card')).toHaveCount(2)
+  await expect(card(page, '纪录片').locator('.tag-name')).toHaveText('纪录片')
+})
+
+test('改名只加了一圈空格时，一次更新也不发', async ({ page }) => {
+  await page.goto('/tags')
+  await card(page, '动作片').getByRole('button', { name: '编辑' }).click()
+
+  const puts: string[] = []
+  page.on('request', (req) => {
+    if (req.method() === 'PUT') puts.push(req.url())
+  })
+
+  const dialog = page.locator('.el-dialog')
+  await dialog.getByPlaceholder('请输入标签名称').fill('动作片 ')
+  await dialog.getByRole('button', { name: '更新', exact: true }).click()
+
+  // 以前这一步会真的发出一次 PUT，把「动作片␣」写进唯一列，界面上凭空多出同名第二行。
+  expect(puts).toEqual([])
+  await expect(page.locator('.tag-card')).toHaveCount(1)
+  await expect(card(page, '动作片').locator('.tag-name')).toHaveText('动作片')
 })
 
 test('改名只发改动的那个字段，卡片跟着换成新名字', async ({ page }) => {
