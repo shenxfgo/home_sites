@@ -451,7 +451,26 @@ export async function mockApi(
     video_ids: [...list.video_ids],
   }))
   let nextQueueId = 100
-  const aliveVideos = () => videos.filter((video) => !removedVideos.has(video.id))
+  /**
+   * 影片↔标签的关系表，替身版的后端那张 `video_tags`：每次安装一份，只存标签 id。
+   *
+   * #132 之前这份关系只写在模块级的 `videos[].tags` 上，而 `POST /tags/video/{id}` 与
+   * `DELETE /tags/video/{id}/{tagId}` 两条地址只回一句 204、谁也没动它——于是「挂上标签后
+   * 重新读这部影片」在替身用例里永远拿不到新标签，红的是替身不是界面。现在读路径一律按 id
+   * 从 `tagRows` 现取，所以改名跟着走、删标签自动从卡片上消失（和真库那次 join 同一个理由），
+   * 全夹具只剩这一处真相。
+   */
+  const videoTagLinks = new Map<number, number[]>(
+    videos.map((video) => [video.id, video.tags.map((tag) => tag.id)]),
+  )
+  const tagsOf = (videoId: number) =>
+    (videoTagLinks.get(videoId) ?? [])
+      .map((tagId) => tagRows.find((tag) => tag.id === tagId))
+      .filter((tag): tag is { id: number; name: string; color: string } => Boolean(tag))
+  const aliveVideos = () =>
+    videos
+      .filter((video) => !removedVideos.has(video.id))
+      .map((video) => ({ ...video, tags: tagsOf(video.id) }))
   const aliveCopies = () => duplicateCopies.filter((video) => !removedVideos.has(video.id))
 
   const queueBody = (list: StubWatchlist) => ({
@@ -720,7 +739,16 @@ export async function mockApi(
         return respond(route, { items, total: items.length, page: 1, page_size: 20 })
       }
       if (path === '/videos/new') return respond(route, [])
-      if (path === '/videos/series') return respond(route, seriesProgress)
+      if (path === '/videos/series') {
+        // `seriesProgress.next` 指的是模块级种子，直接回就等于把标签停在了安装前的那份上。
+        return respond(
+          route,
+          seriesProgress.map((row) => ({
+            ...row,
+            next: aliveVideos().find((video) => video.id === row.next.id) ?? null,
+          })),
+        )
+      }
       if (path === '/videos/duplicates') {
         return respond(route, duplicateGroupsFor(aliveVideos(), aliveCopies()))
       }
@@ -782,7 +810,7 @@ export async function mockApi(
           page_size: 20,
         })
       }
-      if (path === '/history/continue') return respond(route, [videos[0]])
+      if (path === '/history/continue') return respond(route, [aliveVideos()[0]])
       if (path === '/history/stats') {
         const days = Number(url.searchParams.get('days') ?? 30)
         const daily = Array.from({ length: days }, (_, index) => ({
@@ -803,7 +831,13 @@ export async function mockApi(
           tags: [{ name: '动作片', color: '#7c6cff', seconds: 7200 }],
         })
       }
-      if (path === '/favorites') return respond(route, { items: [videos[1]], total: 1, page: 1, page_size: 20 })
+      if (path === '/favorites')
+        return respond(route, {
+          items: [aliveVideos()[1]],
+          total: 1,
+          page: 1,
+          page_size: 20,
+        })
       if (path === '/tags') return respond(route, tagRows.map(tagBody))
       const tagVideos = /^\/tags\/(\d+)\/videos$/.exec(path)
       if (tagVideos) {
@@ -913,8 +947,19 @@ export async function mockApi(
       if (/^\/videos\/new\/\d+\/viewed$/.test(path)) return respond(route, { status: 'ok' })
       const videoTagAdd = /^\/tags\/video\/(\d+)$/.exec(path)
       if (videoTagAdd) {
-        const video = aliveVideos().find((item) => item.id === Number(videoTagAdd[1]))
-        if (!video) return respond(route, { detail: '视频不存在' }, 404)
+        const id = Number(videoTagAdd[1])
+        if (!aliveVideos().some((item) => item.id === id)) {
+          return respond(route, { detail: '视频不存在' }, 404)
+        }
+        // 后端那句 `if tag and tag not in video.tags`（`tag_service.py::add_tags_to_video`）：
+        // 认不出的 id 静默跳过、已挂的不挂第二遍，影片不存在才 404。两条都回 204 空体。
+        const body = JSON.parse(request.postData() ?? '{}')
+        const links = videoTagLinks.get(id) ?? []
+        videoTagLinks.set(id, links)
+        for (const tagId of (body.tag_ids ?? []) as number[]) {
+          if (!tagRows.some((tag) => tag.id === tagId) || links.includes(tagId)) continue
+          links.push(tagId)
+        }
         return route.fulfill({ status: 204, body: '' })
       }
       if (/^\/videos\/\d+\/(play|progress)$/.test(path)) return respond(route, { ok: true })
@@ -1016,7 +1061,18 @@ export async function mockApi(
     }
 
     if (method === 'DELETE') {
-      if (/^\/tags\/video\/\d+\/\d+$/.test(path)) {
+      const videoTagTake = /^\/tags\/video\/(\d+)\/(\d+)$/.exec(path)
+      if (videoTagTake) {
+        const id = Number(videoTagTake[1])
+        // `remove_tag_from_video` 同样是「影片不存在才 404」，标签本来没挂就当无事发生，204。
+        if (!aliveVideos().some((item) => item.id === id)) {
+          return respond(route, { detail: '视频不存在' }, 404)
+        }
+        const links = videoTagLinks.get(id) ?? []
+        videoTagLinks.set(
+          id,
+          links.filter((tagId) => tagId !== Number(videoTagTake[2])),
+        )
         return route.fulfill({ status: 204, body: '' })
       }
       const subtitleTake = /^\/videos\/(\d+)\/subtitles\/(\d+)$/.exec(path)
