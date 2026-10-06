@@ -2,6 +2,23 @@
 
 ## 2026-10-06
 
+### 加宽真后端 e2e（#137）：内嵌字幕那一路——真 ffprobe 报出那两条轨、真 ffmpeg 抠出那两句、浏览器把它们渲染出来
+
+- **缝在哪**：`backend/src/utils/media_streams.py` 那两个函数——`probe_streams`（问 ffprobe 这个文件里有哪几条字幕轨、哪条转得了）和 `extract_subtitle_webvtt`（问 ffmpeg 把其中一条抠成 WebVTT，写 stdout、不落盘）。服务层有 9 条用例（`tests/test_utils/test_media_streams.py`），**其中 8 条把 `subprocess.run` 换成一份手写的 ffprobe JSON**、第九条连子进程都不碰（它在「文件不存在」那一步就抛），于是「真容器会被 ffprobe 报成什么样」从没被问过真进程：`WEBVTT_CODECS` 那道 `supported` 闸门、`_LANGUAGE_NAMES` 里 `chi → 中文` 那一格、`stream_index` 与 `position` 的区别（前端拿前者拼提取地址）、`_label_of` 的三级兜底、ffmpeg 自己那句失败原因——全是对着我自己造的字典测出来的。桩用例这一头更直接：`fixtures.ts` 那份 `/subtitles/streams` 处理器永远回 `subtitles: []`，`/subtitles/embedded/{n}/stream` 无论问哪一条都回同一段写死的 `SAMPLE_VTT`（#128 那道守卫只保证地址接得住，语义仍是零）。
+- **夹具为什么长这样**：一部 `ffmpeg` 当场编出来的 mp4，h264 + aac + 两条字幕轨（`mov_text` 挂 `language=chi`、`ttml` 挂 `language=eng`）。**不是 PGS/DVD 那种图像字幕**：本机 ffmpeg 只允许「文字转文字、图像转图像」的字幕编码（`-c:s dvbsub` 直接回 `Subtitle encoding currently only possible from text to text or bitmap to bitmap`），手边没有 bitmap 源，而 `ttml` 是 `WEBVTT_CODECS` 清单外唯一还能由文本编出来的那一格——`supported: false` 因此照样有真容器可对，且它反过来**送出一个真 415**（ffmpeg 没有 ttml 解码器，`-c:s webvtt` 在那条轨上真的失败一次，那句原因是它自己的 stderr 尾巴）。`ttml` 只肯装进 mp4，matroska/webm 回 `-40 Function not implemented`。SRT 写在系统临时目录而不是媒体目录：扫描是递归的，落在媒体目录就会被认成 sidecar 字幕，`subtitles_found` 不再是 0。
+- **七条变异全红，这一单没有拆不红的护栏**（每条改完单独 `-g 内嵌字幕` 跑一次，跑完按字节还原并核对 md5：`utils/media_streams.py` `0537e890…` / `api/subtitles.py` `0eee6f49…` / `components/VideoPlayer.vue` `51ec498d…`）：
+  - `WEBVTT_CODECS` 里加 `ttml` → 红在 `:181`（`supported` 那一栏 false 变 true）；
+  - `_LANGUAGE_NAMES` 删掉 `chi` → 红在 `:181`（label 退回裸码 `chi`）；
+  - `extract_subtitle_webvtt` 去掉那个 subtitle-only 过滤 → 红在 `:241`：视频轨（0）和音频轨（1）从 404「文件里没有编号为 N 的字幕轨」变成 415（`Encoder not found`），这一枪签的是「提取的候选不是用全部流建的」；
+  - `api/subtitles.py` 去掉 `except SubtitleConversionError` → 红在 `:230`：415 变 500，那句 ffmpeg 原话也跟着没了；
+  - `probe_streams` 的 `stream_index` 换成 `position` → 红在 `:181`（2/3 变 0/1）；
+  - `VideoPlayer.vue:446` 去掉 `.filter(track => track.supported)` → 红在 `:260`：菜单里三项 `关闭 / 中文 / 英文`，而「英文」那条点下去只会拿到一个 415；
+  - `_label_of` 的兜底从 `轨道 {position + 1}` 改成 `轨道 {position}` → 红在 `:201`（音频那条 label 变「轨道 0」）。
+- **本单第一次红在哪**：`.subtitle-btn` 等 20 秒等不到。播放器挂在 `VideoDetail.vue` 的 `v-if="isPlaying"` 下面，不点那张海报它压根不存在——快照里前四步全对、页面停在详情页，这一句写进了用例头部。
+- **只有真文件给得出的东西才值得钉**：`stream_index` 必须是 2 和 3 而不是 0 和 1（前端拿它拼提取地址，差一位就问视频轨要字幕）、`container` 是 ffprobe 自己那串 `mov,mp4,m4a,…`、`label` 一栏走的是 `chi → 中文` 和音频那条的三级兜底 `轨道 1`、`supported` 一真一假，反面是同一次请求里播种那部的 `subtitles: []`；提取那一路是 `embedded/2/stream` 200 + `text/vtt` + 现场编进容器的那两句（替身那段和 sidecar 那句都不是这两句）、`embedded/3/stream` 415、`embedded/0` 与 `embedded/1` 404。播放页那一头签的是**浏览器自己解析出来的 cue**：`video.textTracks` 里那条轨的 cue 文本必须等于现场写进容器的那两句——这是整套里唯一「真进程 + 真容器 + 真浏览器」三方都在场的断言。
+- **顺序与编号**：新文件 `video-embedded-subtitles.real.spec.ts` 落在 `video-edit` 与 `video-tags` 之间（字母序的结果），所以只有 `video-tags` 挪号：21→22（含 `video-edit` 与 `users` 两处头部引用）。它必须排在第 9 条（通知）之后——自己那趟扫描会往 `notifications` 真写一行；它起点断的 `files_found=2` 也要求它把现编那个 `.mp4` 由自己的 `finally` 收干净，否则第 22 条那次扫描就不是 2 了。总数 21 → 22：`README.md:391`、`CLAUDE.md:205`、`frontend/CLAUDE.md`（648 那句「那 20 条签」是从 #135 起就欠的账，一并改成 22；671 的逐条段插入本单整段；678 的顺序段与 `-g` 清单各加一条、「第 15~20 条」→ 15~22、「第 15 条排在倒数第七条」→ 第八条并补上内嵌字幕、「第 20 条排在倒数第二条」→ 第三条）。
+- **基线**：真后端 **22 条 2.4m 全绿**（新这条 solo 8.6 秒、整跑 3.4 秒），桩 e2e **100 passed**（第一次整跑就绿）、Vitest **334 / 36 文件**、`typecheck:test` 干净。被变异过的三个文件字节级回到基线（md5 逐个核对），故全量 pytest / `ruff` / `mypy` 未重跑，只把 `test_media_streams.py` 与 `test_subtitles.py` 在还原后的代码上重测一遍（27 passed）。跑完 `data/e2e/media/` 实测回到 `e2e_sample.mp4` 与 `e2e_sample.zh.srt` 两个文件，临时目录里没留下 `e2e-sub-*`。
+
 ### 加宽真后端 e2e（#136）：转码取消那一路——被杀掉的是一个真子进程，半截产物真的从磁盘上没了
 
 - **缝在哪**：`backend/src/utils/ffmpeg.py:126-132` 那段 `except asyncio.CancelledError`（kill → wait → `unlink` 输出 → 再 raise）**在全仓库一处也没有被执行过**。服务层唯一那条 cancel 用例（`tests/test_services/test_transcode_service.py` 的 `test_cancel_stops_the_job_and_records_it`）把 `transcode_video` 整个换成一个挂在 `asyncio.Event().wait()` 上的假函数，于是它签的是"作业状态机记得住 cancelled"，而真进程有没有被杀、半截文件归谁管，两句都不在它的路径上；100 条桩用例那份 cancel 处理器更是只把一个字符串改成 `'cancelled'`，顺带回 200 `{ok:true}`，而真路由回的是 **204 空体**。

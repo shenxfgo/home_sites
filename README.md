@@ -388,7 +388,7 @@ npm run test
 # 前端端到端测试（Playwright，自带接口 mock，无需启动后端）
 npm run test:e2e
 
-# 打真后端的端到端测试（21 条，自己起一份一次性后端）
+# 打真后端的端到端测试（22 条，自己起一份一次性后端）
 npm run test:e2e:real
 # 前置条件：backend/.env 里的 TEST_DATABASE_URL 指向一个名字以 _test 结尾的 PostgreSQL
 # 库，且 ffmpeg 在 PATH 上（封面由真扫描抽出）。它会把那个库整表清空，所以库名不带
