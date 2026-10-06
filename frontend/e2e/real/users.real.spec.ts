@@ -131,7 +131,7 @@ const failure = (page: Page): Locator => page.locator('.el-message--error').last
 /** 表格按 `list_users` 的 id 序渲染，所以先按账号名等到那一行出现，再拿第几行去点。 */
 async function rowFor(page: Page, username: string): Promise<Locator> {
   // 用 poll 而不是读一次：`onMounted(loadUsers)` 还在飞的时候 `.cell-username` 是个空列表，
-  // 那一刻 indexOf 回 -1，报出来的就是「表格里没有这个账号」——和第 22 条那个同一类坑。
+  // 那一刻 indexOf 回 -1，报出来的就是「表格里没有这个账号」——和第 23 条那个同一类坑。
   await expect
     .poll(async () => (await page.locator('.cell-username').allTextContents()).join(','), {
       message: `表格里等不到账号 ${username}`,
