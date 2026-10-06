@@ -575,7 +575,8 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 
 **标签名的裁剪只有一处出处：`TagService._clean_name`**（#130）。建和改两条写路径都先过它，裁完是空串就抛 `BlankTagNameError`（`ValueError` 的子类），路由把它翻成 400 并原样带上那句中文原因。为什么必须在服务层而不在界面收口：`tags.name` 的唯一约束算的是**整串**，`动作片` 与 `动作片␣` 是两行，而界面上是两张分不出来的卡片；`Field(..., min_length=1)` 数的是字符数，`"   "` 照样过校验建出一枚看不见的标签（这两条都是实测出来的现象，不是从文档推的）。只修前端的话任何客户端仍能往库里塞带空格的重复标签。**两处顺序是承重的，改动时别调**：`api/tags.py` 的 `update_tag` 里 `except BlankTagNameError` 必须排在 `except ValueError`（那条翻成 404「标签不存在」）**之前**——它本身就是 `ValueError`，晚一步那个 400 会悄悄降级成 404；`service.update` 里必须**先验名字再动任何 `setattr`**，否则一次带着 `{name, color}` 的失败改名会把颜色留下，`test_renaming_into_only_padding_is_refused_and_changes_nothing` 钉的就是后半句。扫描那条自动标签不需要跟着改：`name_parser._find_group` 早就 `.strip(" -_")` 了。
 
-## 依赖管理
+**ffmpeg 那句原因只有一处出处：`utils/subtitles.ffmpeg_stderr_reason`**（#142）。两条转换路径——外挂机翻 `_ffmpeg_to_webvtt`、内嵌轨翻 `media_streams.extract_subtitle_webvtt`——失败时都从这里取 stderr 的最后一条非空行（ffmpeg 在 `-loglevel error` 下把原因写在最后一行，实测 8.x：内容不是字幕的 `.ass` → 退出码 183，stderr 两行，最后一行是 `Error opening input files: Invalid data found when processing input`），各自只保留自己的那句前缀和"子进程什么也没说"时的兜底。为什么必须收在一处：`api/subtitles.py` 两个路由都是 `detail=str(e)`，而这边丢原因的修法在浏览器那头像"转换失败"四个字——那个人手上只有一部手机，看得到什么取决于走的是哪条路。内嵌那一路原本就带着原因，所以这一条不是把它改坏，是两条原本一边能诊断一边不能。**测试要钉住的是最后一段而不是兜底**：`stderr` 空、`returncode == 0` 但一个字节没转出来这两件事长得很像，只断言消息以「字幕转换失败」开头的话，把 `or not (result.stdout or "").strip()` 那一支删掉照样绿（`test_convert_ass_failure_without_a_reason_still_says_something` 钉的就是这一支）。
+
 
 ```bash
 # 添加依赖

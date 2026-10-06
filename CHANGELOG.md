@@ -1,6 +1,13 @@
 # 更新日志
 
 ## 2026-10-06
+### 外挂字幕转换失败那句把 ffmpeg 的原因丢了（#142）：两条转换路径共用同一句"最后一行"
+
+- **症状**：sidecar 那条路（`utils/subtitles._ffmpeg_to_webvtt`）失败时抛的是写死的「字幕转换失败」，ffmpeg 自己那两行 stderr 一个字都没进消息；而内嵌轨那条路（`utils/media_streams.extract_subtitle_webvtt`）一直把最后一行放进去。两个路由都是 `detail=str(e)` 翻成 415，于是同一件事在浏览器这边一边能诊断、一边只有四个字——那个人点了菜单里那条轨，手上只有一部手机。
+- **修法**：把「取 stderr 最后一条非空行」抽成 `subtitles.ffmpeg_stderr_reason(stderr, fallback)`，两条路各自只留下自己的前缀和"子进程什么也没说"时的那句兜底。顺带把 sidecar 那条 415 的路由用例从"只看状态码"升级成"再看那句话有没有原样走出来"，和内嵌那条对齐。实测真 ffmpeg 8.x：后缀写着 `.ass`、内容不是字幕 → 退出码 183、stderr 两行，最后一行 `Error opening input files: Invalid data found when processing input`；拿不到子进程真消息时那句 `字幕转换失败：…` 只剩兜底。
+- **用例**：`tests/test_utils/test_subtitles.py` 两条新的（前者钉 ffmpeg 那句话在消息里，后者钉 rc=0 而 stdout 空时兜底那句话仍然说完整），`tests/test_api/test_subtitles.py` 那条 415 多一个断言。两条新用例先对着修前的 HEAD 红过：`assert '字幕转换失败' == '字幕转换失败：这个文件没有转出任何字幕'`。基线 746 → **748** passed（真库 PostgreSQL，3:07）。
+- **六次变异**：每次改单点、跑完立刻按字节还原并核 md5。M1 回到写死那句 → 新两条一起红；M2 改成取第一行 → 侧车那条 + 内嵌那条 `test_extract_reports_an_unconvertible_track` 一起红（这条规则两头都有人钉着）；M3 兜底写成空串 → 1 红；M4 把 `or not (result.stdout or "").strip()` 那一支删掉 → 1 红（只看返回码就漏掉"转出一个字节也没有"）；M5 把内嵌那一路改回它自己的内联写法 → **全绿**，记在这儿：共享只是 DRY，内嵌的行为一个字没变；M6 把路由改成写死的 415 消息 → 只有那条路由用例红。
+- **没做的**：播放器对"这条轨加载失败"仍然没有任何可见提示——`VideoPlayer.vue` 的 `bindTrackTiming` 只给 `<track>` 挂 `load`，不挂 `error`，所以这句话到不了界面；这是产品决定，等你点头。真 e2e 第 22 条也没加第四份字幕文件（它钉的是那三轨的 `toEqual`）。
 ### 用户管理那一格把已经死掉的会话也算成一台设备（#141）：读之前先把过期那几行删掉
 
 - **症状**：`sessions` 里过期的那一行，只有被**它自己的**那枚 Cookie 再带回来一次才会被删（`resolve_session` 一边拒绝它一边删它）。可两处按列表读的路径永远等不到那一次——`/api/auth/sessions`（「我的设备」）把它列成一台还登着的浏览器，`/api/users` 的 `signed_in_devices` 把它数进「登录设备」那一格。一台关掉一个月的手机因此会永远挂在那里，旁边那句"30 天前"只会让人以为是自己记错了。`list_sessions` 的 docstring 早就写着"行会随过期自己消失"，这一句在修复前是假的。

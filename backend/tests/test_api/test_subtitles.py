@@ -145,15 +145,18 @@ async def test_stream_reports_unconvertible_subtitle_as_415(client, db_session, 
         f"/api/videos/{video.id}/subtitles", json={"filepath": str(subtitle_path)}
     )
 
+    reason = "Invalid data found when processing input"
     with patch(
         "src.api.subtitles.convert_to_webvtt",
-        side_effect=SubtitleConversionError("字幕转换失败"),
+        side_effect=SubtitleConversionError(f"字幕转换失败：{reason}"),
     ):
         response = await client.get(
             f"/api/videos/{video.id}/subtitles/{created.json()['id']}/stream"
         )
 
     assert response.status_code == 415
+    # 和上面内嵌那一条一样：415 只是状态，真正能用的是 ffmpeg 那句话有没有跟着走出来。
+    assert "Invalid data found when processing input" in response.json()["detail"]
 
 
 async def test_delete_unknown_subtitle_returns_404(client, db_session, tmp_path):

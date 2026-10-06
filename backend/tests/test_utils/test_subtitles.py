@@ -145,6 +145,51 @@ def test_convert_ass_without_ffmpeg_raises(tmp_path):
             convert_to_webvtt(path)
 
 
+# 本机实测的真 ffmpeg 8.x：后缀写着 `.ass`、内容却不是任何字幕时，它连文件都开不了，
+# 而那句原因是它自己给的（`-loglevel error` 下 stderr 只剩这两行，退出码 183）。
+FFMPEG_UNOPENABLE_STDERR = (
+    "Error opening input file movie.ass.\n"
+    "Error opening input files: Invalid data found when processing input\n"
+)
+
+
+def test_convert_ass_failure_shows_ffmpegs_own_reason(tmp_path):
+    """「字幕转换失败」后面得跟着 ffmpeg 那句话——内嵌那一路一直都跟着。
+
+    丢原因的这一头是浏览器：菜单里点了那条轨，屏幕上只有"转换失败"四个字，而这个
+    人手上只有一部手机。同一件事在 `media_streams.extract_subtitle_webvtt` 里是把
+    stderr 的最后一行放进消息里的，两条路因此一边能诊断、一边不能。
+    """
+    path = _touch(str(tmp_path), "movie.ass", "not a subtitle file at all\n")
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=183, stdout="", stderr=FFMPEG_UNOPENABLE_STDERR
+    )
+
+    with patch("src.utils.subtitles.subprocess.run", return_value=completed):
+        with pytest.raises(SubtitleConversionError) as excinfo:
+            convert_to_webvtt(path)
+
+    message = str(excinfo.value)
+    assert message.startswith("字幕转换失败")
+    assert "Invalid data found when processing input" in message
+
+
+def test_convert_ass_failure_without_a_reason_still_says_something(tmp_path):
+    """ffmpeg 不开口的时候（退出码 0 而一个字节也没转出来），那句人话得自己站住。
+
+    这一支挡的是"把 fallback 写成空串"：消息只剩前缀，看起来仍然是失败，而读的人会
+    以为是谁把日志截断了。
+    """
+    path = _touch(str(tmp_path), "movie.ass", "[Script Info]\n")
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    with patch("src.utils.subtitles.subprocess.run", return_value=completed):
+        with pytest.raises(SubtitleConversionError) as excinfo:
+            convert_to_webvtt(path)
+
+    assert str(excinfo.value) == "字幕转换失败：这个文件没有转出任何字幕"
+
+
 # 本机实测的真 ffmpeg 输出（8.x，`-f webvtt` 写 stdout）。ASS 的 `\N` 被 muxer 写成一次真的
 # 换行，于是"以 `\N` 开头的台词"变成「时间戳行 + 空行 + 文本」——而空行在 WebVTT 里就是这条
 # cue 的结束。界面上因此解析出一条空文本的 cue，那句词落在所有 cue 之外，一句也不显示。

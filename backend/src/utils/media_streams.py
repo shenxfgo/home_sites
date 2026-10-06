@@ -9,7 +9,11 @@ import os
 import subprocess
 from typing import Any, cast
 
-from src.utils.subtitles import SubtitleConversionError, fold_blank_lines_inside_cues
+from src.utils.subtitles import (
+    SubtitleConversionError,
+    ffmpeg_stderr_reason,
+    fold_blank_lines_inside_cues,
+)
 
 # Codecs whose cues ffmpeg can hand straight to the WebVTT muxer. Anything else
 # (PGS, DVD and DVB bitmaps) is a picture, and a picture cannot be re-timed.
@@ -194,7 +198,6 @@ def extract_subtitle_webvtt(filepath: str, stream_index: int) -> str:
         raise SubtitleConversionError(f"内嵌字幕提取失败: {exc}") from exc
 
     if result.returncode != 0 or not (result.stdout or "").strip():
-        detail = (result.stderr or "").strip().splitlines()
-        reason = detail[-1] if detail else "该轨无法转成 WebVTT"
+        reason = ffmpeg_stderr_reason(result.stderr, "该轨无法转成 WebVTT")
         raise SubtitleConversionError(f"内嵌字幕提取失败：{reason}")
     return fold_blank_lines_inside_cues(result.stdout)

@@ -192,6 +192,18 @@ def fold_blank_lines_inside_cues(webvtt: str) -> str:
     return "\n".join(kept)
 
 
+def ffmpeg_stderr_reason(stderr: str, fallback: str) -> str:
+    """The last line of ffmpeg's own complaint, which is where it puts the reason.
+
+    Shared by the two conversion paths on purpose: one of them used to drop it and
+    say only "转换失败", so the same failure was diagnosable in the embedded case and
+    meaningless in the sidecar one, from the browser. `fallback` is each caller's own
+    sentence for "the child process said nothing".
+    """
+    lines = (stderr or "").strip().splitlines()
+    return lines[-1] if lines else fallback
+
+
 def _ffmpeg_to_webvtt(filepath: str) -> str:
     """Convert an SSA/ASS subtitle to WebVTT with ffmpeg."""
     try:
@@ -217,5 +229,7 @@ def _ffmpeg_to_webvtt(filepath: str) -> str:
         raise SubtitleConversionError(f"字幕转换失败: {exc}") from exc
 
     if result.returncode != 0 or not (result.stdout or "").strip():
-        raise SubtitleConversionError("字幕转换失败")
+        raise SubtitleConversionError(
+            f"字幕转换失败：{ffmpeg_stderr_reason(result.stderr, '这个文件没有转出任何字幕')}"
+        )
     return result.stdout
