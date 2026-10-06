@@ -2,6 +2,24 @@
 
 ## 2026-10-06
 
+### 加宽真后端 e2e（#135）：用户管理页那五条写路径打真库真中间件——一套里第一次同时开四台浏览器
+
+- **缝在哪**：`frontend/src/views/Users.vue` 那五个写接口（`POST /api/users`、`PUT .../role`、`PUT .../status`、`POST .../password`、`DELETE .../sessions`）在浏览器这一层一次也没被点过。第 7 条只让这个页面**列出**账号、读那一格设备数；替身那侧（`e2e/roles.spec.ts`）有建号、改角色、重置密码、踢下线四条，可它们签的是 `fixtures.ts` 里手写的响应表——那句 400 是前端自己编的，永远不会和后端那句不一样。
+- **为什么接口层那份不算**：`backend/tests/test_api/test_users.py` 把语义签得很死（建完能登录、重名 400、弱密码 400、停用切断会话、重置后旧口令失效、踢下线报数），但它那个假客户端**只有一个 cookie jar**。三段它量不出：① 服务端那句原因要一路走到人眼前——`username` 短了撞的是 pydantic 的 422（`detail` 是数组），账号名不合法、重名、弱密码撞的是服务层的 400（`detail` 是字符串），两路到界面上都只剩 `.el-message--error` 一句话，而这句话是 `client.ts` 摊平再拼前缀出来的；② 一台浏览器的 Cookie 被**另一台**的动作作废；③ 角色是每次请求现查的，不是登录时冻在 Cookie 里的。
+- **`user.id != actor.id` 那半句是全仓库唯一的签字处**：`api/users.py:126` 只在「降级别人」时撤那人的会话，降级自己留着——留着才看得见"我刚把自己降级了"而不是被突然踢下线。接口层那五条只测过「最后一个管理员降不得」，没测过「两个管理员时降级自己不踢自己」；这一条把自己降成成员之后断 `meStatus` 仍是 200、`GET /api/users` 当场 403，再由刚被提拔的那个成员把自己升回去。
+- **支点句是页面顶部那句谁都当装饰看的说明**：「停用的账号会立即在所有浏览器退出，历史与收藏都会保留」。前半句接口层签了，后半句**一层都没有**——少了这一句，把「停用」写成「删号」也能让前面所有断言全绿。所以停用之前先让那台浏览器真收藏一部片子，启用回来之后那张卡片还在原地。
+- **六个变异，五红一绿**（每个改完单独 `-g 用户管理` 跑，跑完整份原字节写回并核对 md5：`client.ts` `bcec5c41…` / `api/users.py` `60c59075…` / `auth_service.py` `e69763b7…` / `middleware/auth.py` `e5d7e4f7…`）：
+  - 拆掉 `flattenDetail` 对数组的摊平 → 红在 `:274`，界面那句退成 `创建失败: Request failed with status code 422`（正是 #74 与 #126 那一族的失效形状）；
+  - 去掉 `user.id != actor.id` → 红在 `:316`，把自己降级的人被自己的动作踢下线；
+  - 降级不撤那人的会话 → 红在 `:329`，那台浏览器拿着成员身份继续跑；
+  - 重置密码不撤会话 → 红在 `:402`，旧口令失效而旧 Cookie 还活着；
+  - 停用不撤会话 → 红在 `:371`，钉住的是那一格设备数（`signed_in_devices` 先断，那句 401 在它后面）；
+  - **绿的那一个是有预期的**：把 `get_current_user` 里的 `not user.is_active` 单独拆掉，整条照绿。停用这一刀实际由「会话行被一起删掉」把关，两道 `is_active` 闸在这一路各挡各的，谁单拆都有另一道兜着——这句写进用例头部，免得后来人以为那半句被签过。
+- **写用例时踩出来的一个界面事实**：「登录设备」那一格只跟着**这一台浏览器自己的写**重读（`Users.vue` 只在四个动作的 `finally` 和 `onMounted` 里调 `loadUsers`）。别的浏览器刚登进来时它停在旧数，而「踢下线」的灰不灰正是按这一个数算出来的（`:disabled="!row.signed_in_devices"`），第一次跑就挂在那颗钮上等 `enabled` 等到超时。用例里用一次 `page.reload()` 跟上，并把这个边界写进头部**而不去钉它新不新鲜**——钉住就等于挡掉将来加的刷新按钮或轮询。
+- **一条超时账**：`playwright.real.config.ts` 没有 `testTimeout`，默认 30 秒，而这条本机绿的那一遍是 17 秒（四次真浏览器登录，每一次都要过一遍 bcrypt）。所以文件里 `test.setTimeout(90_000)`。顺带量到：Playwright 1.63 的 `TestDetails` 没有 `timeout` 字段，`test(title, { timeout }, body)` 那个写法在 `typecheck:test` 下报 TS2353，只能走 `test.setTimeout`。
+- **顺序与编号**：`users` 落在 `transcode` 和 `video-delete` 之间是字母序给的，所以它是执行顺序里的**第 17 条**，后面三条各退一位（`video-delete` 17→18、`video-edit` 18→19、`video-tags` 19→20，含 `video-edit` 头部引用 `video-tags` 的那一处）；总数 19 → 20，`README.md:391`、`CLAUDE.md:205`、`frontend/CLAUDE.md`（648 的替身层那句、671 的逐条段、678 的顺序段与 `-g` 清单）三处跟着改口。顺带纠正 678 里两处陈账：「第 15 条（转码）排在倒数第四条（它后面是转码失败、删除影片、编辑影片）」从 #134 起就少算一条，改成倒数第五条并补齐；「丢失标记排在后面那**五**条之前」同理改成七条。671 里那句「前 18 条一次也没走到那一行」去掉旧数字，改成「在它之前的那十九条」。
+- **基线**：真后端 20 条 1.8m 全绿、桩 e2e 100 全绿、Vitest 334 全绿、`typecheck:test` 干净；后端四个文件字节级回到基线（md5 逐个核对），故 pytest 未重跑。`library.real.spec.ts` 那 13 条和 `playwright.real.config.ts` 一个字没改。
+
 ### 加宽真后端 e2e（#134）：手工挂的那枚标签扛得过一次真扫描——那句 docstring 的后半句以前根本没被执行过
 
 - **缝在哪**：`backend/src/services/scan_service.py:157` 的 docstring 写的是「a title **or tag set** someone curated by hand is left alone」，第 18 条（#127）只签了前半句。后半句那一行是 171 行的 `video.tags = [*video.tags, *[tag for tag in auto if tag not in video.tags]]`，而它在此前 **18 条真后端用例里一次也没被执行过**：那函数开头两道闸门——`if video.series is not None: return`（162–163）、`if parsed.series is None: return`（165–166）——而播种那部 `e2e_sample.mp4` 解析不出 series，第二趟扫描在 166 行就返回了。覆盖率报告上那一行是绿的，绿的是服务层那条用例，浏览器这一层从来没进去过。
