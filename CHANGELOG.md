@@ -2,6 +2,26 @@
 
 ## 2026-10-06
 
+### 加宽真后端 e2e（#134）：手工挂的那枚标签扛得过一次真扫描——那句 docstring 的后半句以前根本没被执行过
+
+- **缝在哪**：`backend/src/services/scan_service.py:157` 的 docstring 写的是「a title **or tag set** someone curated by hand is left alone」，第 18 条（#127）只签了前半句。后半句那一行是 171 行的 `video.tags = [*video.tags, *[tag for tag in auto if tag not in video.tags]]`，而它在此前 **18 条真后端用例里一次也没被执行过**：那函数开头两道闸门——`if video.series is not None: return`（162–163）、`if parsed.series is None: return`（165–166）——而播种那部 `e2e_sample.mp4` 解析不出 series，第二趟扫描在 166 行就返回了。覆盖率报告上那一行是绿的，绿的是服务层那条用例，浏览器这一层从来没进去过。
+- **为什么服务层那条不算**：`test_rescan_backfills_coordinates_into_old_rows` 挂那枚手工标签用的是**同一个 session 里 ORM 直接 append**，而真实世界是两趟事务：浏览器 `POST /api/tags/video/{id}` 提交完，`POST /api/sources/1/scan` 在**另一个请求、另一个 session** 里把同一条影片行重新捞出来。`Video.tags` 是 `lazy="selectin"`，捞出来那一份里有没有别的 session 刚提交的那一枚，只有真 HTTP + 真 PG 说得了谎。
+- **现场怎么安排的，以及哪一句是 SQL 给的**：媒体目录里把播种那部的字节复制成 `morning.squad.s02e03.mp4`（名字必须解析得出 series，否则闸门在第二句就返回），扫一遍得到那一行和它的自动标签 `morning squad`，再从详情页那个「编辑标签」对话框手工挂第二枚——这条写流程 #132 只在替身夹具里走过，真库这一头当时还没人签。然后把三个坐标列**清空**，让它长成 `db_transfer.py` 搬进来的那批行的形状。这一步只能走 SQL：库里没有任何接口能把 `series` 写回 null（`VideoUpdate` 只有 title / description / rating / tag_ids，手工建档的接口压根不存在），所以那是一次性的 `UPDATE` 经 venv 的 python 从 stdin 执行，并断言 `rowcount == 1`——清空的要是别行，后面全部断言就在替空谈话。连接串只进子进程的环境变量，不进 argv、不打印。**被验的因此是"扫描怎么处理标签"，不是"这一列怎么变空的"**。
+- **支点句是坐标，不是标签**：扫描之后三个坐标必须被填回 `morning squad / 2 / 3`。少了这一句，"两枚标签都还在"在「`_backfill_coordinates` 压根没走到那条 append」这个错误世界里同样成立，整条用例就退化成"它没动标签，因为它什么也没做"——和第 18 条那句"改名之前先把旧片名钉住"是同一个办法；用例里那句注释（`:200`）就写着"支点"。
+- **三个变异，两个红一个绿**（每个改完单独 `-g 手工挂` 跑，跑完整份原字节写回并核对 md5：`scan_service.py` `02dbc917…` / `VideoDetail.vue` `1c746268…`）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | M1 `video.tags = list(auto)`（重列，而不是只往里加） | **红** 在 `video-tags.real.spec.ts:203` |
+  | M2 摘掉 `if tag not in video.tags` 那道去重 | **绿**（见下一条） |
+  | M3 `handleSaveTags` 保存后不再重读影片 | **红** 在 :182 那句 `expectAttached` |
+
+- **M2 绿不是台子坏了，是那句护栏在这个缝上拆不红**：`secondary` 关系上 SQLAlchemy 默认带 `AppendsUniqueBehavior`，同一个实例重复 append 本来就被吃掉，所以 `[*video.tags, *auto]` 和带 `if` 的那一份在真库上写出同一个结果。用例里那句 `expect(scanned.tags.length).toBe(2)` 钉的是"这一趟扫描没把关联表写成两条"（那是所有写路径共同的账），不是那句 `if` 的账，注释也跟着改成了这句实话。这是 #115 那把尺子的继续（当时量出 mp4 那行的 `acodec` 谁都拆不红）：**一句断言只有先被拆红过，才有资格说自己签了什么**。
+- **浏览器层的一个坑**：`page.goto()` 只等文档加载完，Vue 那一路的 `getVideo` 还在飞，直接读 `.tags-list .el-tag` 拿回来的是空数组。第一次报红时快照里那一页停在**首页**、顶上写着「影片加载失败：Video not found」，看着像那一行被谁删了——其实是 `VideoDetail.vue:113` 加载失败之后 `router.push({ name: 'home' })`，那句 `Video not found` 出自 `api/videos.py:208`，和服务层那句 `Video with id N not found`（第 18 条签的）不是同一条。这类"要先等界面读回来才能比"的断言一律走 `expect.poll`，用例里收成一处 `expectAttached`，三处调用共用。
+- **收尾按 #120 的规矩**：`finally` 的 body 里不写断言，只做删除（`tryDelete` 连状态码都不核）——影片 → 手工标签 → 自动标签 → 磁盘上那个文件；**在 `finally` 之后**再用真读回核对影片 id 集合与标签名清单回到起点、那个文件确实不在。跑完整套的磁盘现场是 `data/e2e/media/` 只剩播种那部加它的 `.srt`、`thumbnails/` 只剩播种那一张（它自己那一行的封面由删影片那一路带走，那一路是第 17 条签的）。
+- **顺序**：`video-tags` 落在 `video-edit` 后面是字母序，但它现在确实是最后一条，所以两处"第 18 条是这一套的最后一条"的活说法跟着作废（`frontend/CLAUDE.md` 的顺序段和 `video-edit.real.spec.ts` 自己的头部，都改了；CHANGELOG 里当初那几条记录不动，那是历史）。它对起点的断言全是先读后比，起点那次扫描断 `files_found=2 / new_videos=1`，所以第 16、17 条"自己造的文件自己收走"在它这里是前提；它给源 1 连盖三次 `last_scan_at`、留一行通知（后两次 `new_videos=0` 按 #85 那条不发），所以第 9 条那种"整张通知表只有播种那一行"必须在它前面跑完。
+- **验证**：新用例单独 `-g 手工挂` 4.3 秒绿；全套真后端 e2e **19 条 1.5 分钟绿**；`npx vitest run` **334 passed / 36 files**（一条没动）；桩 e2e **100 passed**（同样一条没动）；`npm run typecheck:test` 无输出。`backend/src/` 在变异跑完之后按 md5 复位，所以后端 738 条、`ruff`、`mypy` 都没重跑——这一单在代码里只多了一个 `e2e/real/` 文件。文档同步：`README.md`、`CLAUDE.md`、`frontend/CLAUDE.md` 的计数 18 → 19，`frontend/CLAUDE.md` 那条顺序段添上第 19 条的位置和 `-g 手工挂`。
+
 ### 全站 17 处英文提示扫平成中文（#131），并补上那条谁都看不见的语言闸门
 
 - **缝在哪**：界面文案是中文的，唯独 `ElMessage` 有 **17 处整句英文开头**（`Failed to load tags: …`、`Operation failed: …`、`Delete failed: …`、`Failed: …`），夹在同一张卡片上的「标签已创建」和「删除标签失败」之间。**当初记的 12 处是窄口径**——#129 只数了 `Tags.vue` 和它的邻居，这次按 `ElMessage` 六个方法全站扫，实际分布是 6 个视图 17 处。
