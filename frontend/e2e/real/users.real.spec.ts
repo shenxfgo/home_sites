@@ -25,7 +25,7 @@
  * 后卡片还在原地。少了这一句，把「停用」写成「删号」也能让前面所有断言全绿。
  *
  * 一处顺序风险值得说明：中段要让管理员把自己降级，那一刻全库唯一能把他升回来的只有刚提拔的那个成员，
- * 所以那三步（降级自己 → 由它升回自己 → 把它降回成员）之间任何一步崩掉，后面的第 18、19、20 条都会
+ * 所以那三步（降级自己 → 由它升回自己 → 把它降回成员）之间任何一步崩掉，排在它后面的每一条都会
  * 对着一个没有管理员的库满屏 403。收尾的 `keepAnOwner` 不带断言地补回这个不变量（先试本人自己的
  * 口令，绿的那一路一次登录失败都不产生），跑绿之后仍然真的核对一遍库里的角色。
  *
@@ -131,7 +131,7 @@ const failure = (page: Page): Locator => page.locator('.el-message--error').last
 /** 表格按 `list_users` 的 id 序渲染，所以先按账号名等到那一行出现，再拿第几行去点。 */
 async function rowFor(page: Page, username: string): Promise<Locator> {
   // 用 poll 而不是读一次：`onMounted(loadUsers)` 还在飞的时候 `.cell-username` 是个空列表，
-  // 那一刻 indexOf 回 -1，报出来的就是「表格里没有这个账号」——和第 23 条那个同一类坑。
+  // 那一刻 indexOf 回 -1，报出来的就是「表格里没有这个账号」——和第 24 条那个同一类坑。
   await expect
     .poll(async () => (await page.locator('.cell-username').allTextContents()).join(','), {
       message: `表格里等不到账号 ${username}`,
@@ -443,7 +443,7 @@ test('用户管理那五条写路径打真库：现建的口令能真登录，�
     await keepAnOwner(browser, owner.id)
   }
 
-  // 复原真的生效了：这一条之后还有第 18、19、20 条要用管理员身份动手
+  // 复原真的生效了：排在它后面的每一条用例都要用 owner 身份动手
   const ending = await accounts(page)
   expect(byName(ending, E2E_USERNAME).role).toBe('owner')
   expect(byName(ending, E2E_USERNAME).is_active).toBe(true)

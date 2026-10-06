@@ -1,10 +1,10 @@
 /**
- * 真后端 e2e 的第 23 条：在影片详情页手工挂一枚标签，再让扫描跑过那一行，看那枚标签还在不在。
+ * 真后端 e2e 的第 24 条：在影片详情页手工挂一枚标签，再让扫描跑过那一行，看那枚标签还在不在。
  *
  * 这条用例的动机是 `scan_service._backfill_coordinates` 那句 docstring：「a title **or tag set**
  * someone curated by hand is left alone」。#127 只在真库上签了前半句（标题），后半句从来没被
  * *执行过*：那道闸门是 `if video.series is not None: return`，而播种那部 `e2e_sample.mp4` 解析
- * 不出 series，函数在第 166 行就返回了——那 18 条用例一次也没走到第 171 行那条 append。
+ * 不出 series，函数在第 166 行就返回了——前面那 23 条用例一次也没走到第 171 行那条 append。
  *
  * 服务层确实有一条对着它的（`test_rescan_backfills_coordinates_into_old_rows`），但那一行的
  * 手工标签是**同一个 session 用 ORM 直接插进去的**，而真实世界是两趟：浏览器发

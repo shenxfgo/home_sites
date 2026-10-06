@@ -1,6 +1,23 @@
 # 更新日志
 
 ## 2026-10-06
+### 加宽真后端 e2e（#139）：外挂字幕的编码那一路——GBK / UTF-16 / BOM 四种真字节走到浏览器，少了 BOM 那一份安静地什么都没有
+
+- **缝在哪**：`backend/src/utils/subtitles.py::read_subtitle_text` 那两个编码分支。服务层那 12 条只有一条碰过编码（`test_read_subtitle_text_falls_back_to_gb18030`），而 `utf-16`（BOM 判据）和 `utf-8-sig`（剥 UTF-8 BOM）两支**全仓库零用例**——实测把 `if raw.startswith((b"\xff\xfe", b"\xfe\xff")): return raw.decode("utf-16")` 那两行整个删掉，`tests/test_utils/test_subtitles.py` 与 `tests/test_api/test_subtitles.py` 那 30 条一条都不红。桩用例这一头更直接：`fixtures.ts` 那个 stream 处理器无论问哪一条都回同一段 UTF-8 的 `SAMPLE_VTT`，"这份文件是什么编码"在桩面上结构上不存在。
+- **夹具**：同一部复制的 `.mp4` 旁边四个文件，**同一个句子的四种编码**——GBK 的 `.chi.srt`、UTF-16LE 带 BOM 的 `.eng.srt`、UTF-8 带 BOM 的 `.jpn.vtt`、以及把带 BOM 那一份的前两个字节砍掉的 `.kor.srt`。Node 的 `Buffer` 编不出 GBK，所以那 136 个字节是 base64 抄进 spec 的；它的含义不由注释签，由「响应体逐字等于那两句词」和 `writeEncodingFixtures()` 自己的三道夹具钉子签（GBK 与 UTF-16 那两份里**不许**出现这句话的 UTF-8 字节、必须出现 `0xB1 0xE0`（「编」的 GBK 写法）、带 BOM 与不带 BOM 那两份只差前两字节、`.vtt` 去掉前三字节必须逐字等于写进去的那段）。
+- **这一条量出的现状（只有一句）**：没有 BOM 的 UTF-16LE 会被当成 UTF-8 **成功**解码，回来的是夹着 NUL 的一串，于是 `_TIMESTAMP_RANGE` 和 `isdigit()` 那道过滤双双落空——路由仍然 200、仍然以 `WEBVTT` 开头，浏览器把那条轨标成 loaded（`elementState` 2）而 `cues.length === 0`：菜单里照旧可点，点了照旧一个字节也没有，连 `.subtitle-menu-note` 都不出现。和第 22 条第 5 步那个"200 而零条 cue"是同一个形状。所以这条同时钉两头：认得出编码的三份必须逐字对上服务器交出的那一段，认不出的那一份必须**安静地什么都没有**（断的是 200 + 体里有 `\u0000` + 体里没有那句话 + 磁盘上那份文件本身用 `utf16le` 读仍然带着那句话）。
+- **两件"断言本身的前提"是实测出来的**：① `fetchInPage` 用 `new TextDecoder()` 读 body，它会吃掉前导 U+FEFF，所以 **BOM 在文本断言里是隐形的**——第一次把 `utf-8-sig` 换成 `utf-8` 跑，两支用例全绿，只有 `bytes`（`body.byteLength`）分得开；② **Starlette 对任何 `text/*` 的 media_type 自动补 `; charset=utf-8`**，所以 `api/subtitles.py` 里那句显式 charset 删掉也不 observable（变异 M4 因此全绿——那不是用例写松了，是断言的对象压根不存在，故只记不修）。顺带还量到 Chromium 对**带 BOM 的 WebVTT 响应照收不误**（轨是 loaded、cue 全在），所以服务器剥没剥 BOM 在浏览器那头永远分不出来。
+- **七次变异**（每条改完单跑 `npm run test:e2e:real -- e2e/real/video-sidecar-subtitles.real.spec.ts`，跑完按字节还原并核对 md5：`utils/subtitles.py` `47ee9bcc…` / `api/subtitles.py` `0eee6f49…` / `src/api/subtitles.ts` `2976fd27…`）：
+  - 删掉 UTF-16 BOM 那一支 → 只有第 23 条红，红在 `:547`（UTF-16 那份的响应体整段变乱码）；
+  - `utf-8-sig` → `utf-8`（不再剥 BOM）→ **第一次全绿**，补上字节钉子后红在 `:560`（那句 message 写的就是「BOM 没剥掉的话这里是 +3」）；
+  - `gb18030` → `big5` → 红在 `:530`（GBK 那两句词逐字比对）；
+  - 删掉响应那句 `; charset=utf-8` → **全绿**（原因见上，只记不修）；
+  - media_type 换成 `application/vnd.vtt` → 两支用例一起红（这一枪才是给 `contentType` 那句 `toBe` 上的）；
+  - `.vtt` 改走 `srt_to_webvtt`（不再原样透传）→ 红在 `:554`（CRLF 被折成 LF、索引行跟着被滤掉）；
+  - 把前端 `subtitleTrackUrl` 里的 `/stream` 写成 `/Stream` → **两支用例全红**：第 22 条红在 `:348`「那条外挂 ASS 没有被浏览器拉下来并解析成 cue」，第 23 条红在 `:590`「四种编码的字幕没有都变成浏览器里的 cue」。这是唯一一处从 `<track>` 的地址倒着同时咬住两个文件的变异，也是这条地址第一次被真浏览器签字（`builder-urls.spec.ts` 那把哨兵尺子只保证它拼得出来）。
+- **编号推动**：新这条住在 `video-sidecar-subtitles.real.spec.ts` 里、写在第 22 条后面（同一支文件第二条），所以只有 `video-tags` 那一条从第 23 条变成第 24 条——连带它自己那行头注、`users.real.spec.ts:134` 与 `video-edit.real.spec.ts:23` 两处交叉引用，以及 README / 根 CLAUDE / frontend CLAUDE 的计数和「逐条」段落。顺手修掉一处早就存在的错位：`users.real.spec.ts` 那两处「后面的第 18、19、20 条」是 #136 插入取消那条时留下的（它自己就是第 18 条），现在换成不依赖条数的说法。
+- **基线**：真后端 **24 条全绿**（两次整跑一次 3.3 分钟、一次 2.5 分钟，本机背景负载不同；新这条 solo 3.7 秒、整跑 2.7~3.6 秒，默认 30 秒超时够用；同文件的第 22 条整跑 4.3~5.5 秒），桩 e2e **100 passed**（58 秒），Vitest **334 passed**，`typecheck:test` 干净，`tests/test_utils/test_subtitles.py` + `tests/test_api/test_subtitles.py` **30 passed**——这一单**一行的 `backend/src/` 都没有改**，所以后端全量 738 没有重跑；那两个字幕文件跑的是变异全部按 md5 还原之后的代码。
+
 ### 加宽真后端 e2e（#138）：sidecar 字幕那一路——真 ffmpeg 真转一个 .ass，而"文件没了"在浏览器里有两副样子
 
 - **缝在哪**：`backend/src/utils/subtitles.py`——`_LANGUAGE_ALIASES` 那张别名表、`find_subtitle_files` 的「同名 + 语言后缀」认文件、`srt_to_webvtt`（纯 Python）和 `_ffmpeg_to_webvtt`（真子进程）。服务层有 12 条用例（`tests/test_utils/test_subtitles.py`），认文件那一半是真 tmp_path，**转换那一半只有一条碰 ffmpeg**：`test_convert_ass_uses_ffmpeg` 把 `subprocess.run` 换成一份写死的 `CompletedProcess(stdout="WEBVTT\n\n")`——真 ffmpeg 遇到真 ASS 会吐出什么，从没被问过真进程。桩用例这一头更直接：`fixtures.ts` 的 `/videos/{id}/subtitles` 回的是手抄的两行，那个 stream 处理器无论问哪一条都回同一段 `SAMPLE_VTT`（#128 那道守卫只保证地址接得住，语义仍是零）。页面这一头第 9 条（`library.real.spec.ts`）早就签过播种那部的 `.zh.srt`，缺的是「三种语言一次认全」和「`.ass` 走的是一条子进程而不是那半条 Python」。
