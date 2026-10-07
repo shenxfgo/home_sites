@@ -1,6 +1,32 @@
 # 更新日志
 
 ## 2026-10-07
+### 加宽真后端 e2e（#145）：片单那三条写路径打真库——那句 409 和那一次备注赋值，pytest 里一次也没执行过
+
+- **缝在哪（先量的，不是猜的）**：拿现有那份 `.coverage` 跑 `coverage report`，两行显示**从未执行**：`backend/src/api/watchlists.py:125`（PUT 路由那句 `raise HTTPException(409)`）和 `backend/src/services/watchlist_service.py:129`（`watchlist.description = description`）。原因各自的：409 只在 POST 那一路被撞过（`tests/test_api/test_isolation.py:61`），而没有任何一条用例往一条**已存在**的片单上 PUT 过备注——`test_watchlist_service.py:126` 断的那个 `description is None` 属于一条压根没写过备注的单。真后端 e2e 这一头，第 5 条只签过"从详情页新建一条也进库"，替身夹具那三个处理器（`frontend/e2e/fixtures.ts:1043` PUT、`:1096` 移出、`:1103` 删单）既不查名字撞不撞、也不按账号过滤，404 文案还是它自己编的那句「片单不存在」。
+- **只有真跑答得出的三件事**：
+  - 名字那条索引是 `UniqueConstraint("owner_id", "name")` 而不是全局的，于是"该挡"和"不该挡"分居两步：owner 把自己的片单改成**成员**那条的名字必须放行（第 8 步，200），改成**本人**另一条的名字必须 409（第 6 步）；中间还夹着一道"同名的自己不算撞"的闸门 `if name != watchlist.name`——只改备注那一次 PUT 是带着原名字进来的，去掉闸门它就跟自己撞死。
+  - **回声不算证据**：`Watchlists.vue:85` 和 `:97` 把 PUT / DELETE 的响应直接写进 `lists.value`，所以界面在"库里一个字没变"的那个世界里也照样显示新状态。于是每一步 UI 之后都另发一次 `GET` 读回来比，409 那一步只有真读回可看（名字、备注、`created_at`、队列逐列未动——`created_at` 那一列挡的是"改名走成删了重建"）。
+  - 三条写路由的 404 全是服务层那句**带 id** 的原话 `Watchlist with id N not found`（`update` / `delete` / `remove_video` 三处 raise，路由只把 `str(e)` 塞进 detail），而 `GET /api/watchlists/{id}` 走的是路由自己那句**不带 id** 的 `Watchlist not found`：「这条存在但不归你」和「压根没这条」在读那一路是同一个字节串。这一句是拿 999999 和一条真存在的别人的单各读一次、比 `text` 逐字相等钉下来的，顺带才说明归属过滤没把别人的行存在性漏出去。
+- **移出签的是范围**：同一部片子在另一条片单里那一行必须还在（M4 把删除写成按 `video_id` 全库删，红在这一句），而影片行自己仍 200——删的是 `watchlist_items` 那一行，不是 `videos`；跨页面那一头是详情页的「片单」弹窗，勾的状态和 `1 部` 计数跟着片单页一起改口。
+- **删单那一路量出一个双机制盲区，而预判被推翻**：`Watchlist.items` 上的 `cascade="all, delete-orphan"`（ORM 侧）和 `watchlist_items.watchlist_id` 上的 `ondelete="CASCADE"`（PG 侧）是同一个保证后面的两台机器，原以为去掉任何一条都不会红。实测 M7 去掉 ORM 那一条之后本条**照样红**，只是红在更早的「移出」那一步：关系上没有 `delete-orphan` 时 `items.remove(item)` 走的是把外键置 null，PG 的 NOT NULL 当场 `NotNullViolationError`、路由 500、界面那句移出的成功 toast 不出现（那串 asyncpg 栈直接打在 uvicorn 的输出里）。所以"两条机制挡一件事"这个盲区今天只剩**删单**那一路没被拆开，而 M7 红得比那一步早、压根没走到它——记在这里，只记不拆。
+- **七次变异**（每条改完单跑 `-g 三条写路径`，跑完整份原字节写回并核对 md5：`watchlist_service.py` `e0d4e44d…` / `models/watchlist.py` `07246594…` / `Watchlists.vue` `650561e4…`）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | M1 去掉 `update` 里 `await self._require_free_name(user_id, name)` | **红** 在 :248 那句 409 toast，也就是那句从没执行过的 `api/watchlists.py:125` |
+  | M2 去掉 `if description is not None` | **红** 在 :233——只带名字的 PUT 把备注擦成 null |
+  | M3 放松 `get_watchlist` 的 `owner_id` 谓词 | **红** 在 :304，成员改得动 owner 那一条（200 而不是 404） |
+  | M4 `remove_video` 改成按 `video_id` 删 | **红** 在 :337"另一条里那一行还在" |
+  | M5 去掉 `if name != watchlist.name` 那道自我闸门 | **红** 在 :221，只改备注那次 PUT 撞死在自己身上 |
+  | M6 `Watchlists.vue` 的 `erase` 去掉 `await deleteWatchlist(list.id)` | **红** 在 :366 那次真读回（200 而不是 404），而界面那句「片单已删除」照弹 |
+  | M7 去掉 `Watchlist.items` 的 `cascade="all, delete-orphan"` | **红** 在 :334 的移出 toast（原预判是绿，见上一条） |
+
+- **两句现状，记在这里而不是修掉**：界面那个前缀是中文、后半句是服务端英文原话（`保存失败：Watchlist 'E2E 乙号队列' already exists`），因为 `client.ts` 把 `detail` 摊平之后直接拼进那句 toast——第 18 条签的是同一条通路，只是这一路的英文此前没人读过；`PUT {description: ""}` 落进库里的是空串而不是 null，界面上 `.list-desc` 少一个元素，两种"没有备注"在库里分得开。
+- **编号 26 是字母序白送的**：`watchlists` 排在 `video-transcode-mp4` 之后（`w` > `v`），前面 25 条的编号一个都没动。它对现场的约束只有两条：不扫源（所以第 16、17、19、21~24 条那批"自己造的文件自己收走"的规矩与它无关，`files_found` 那串数也不涨），以及它留下的片单行全部由自己的 `finally` 按身份删干净。整跑时 owner 已经有第 5 条和第 18 条留下的片单、solo 时一条都没有，所以断言一律取差值或"含不含我那几条的 id"；片单名字刻意取成互不为子串，因为 `panel()` 用的是 `hasText`。
+- **收尾按 #120 的规矩**：`finally` 的 body 里不写断言，只做删除（先成员身份删掉成员那条，再换回 owner 删掉那两条），**在 `finally` 之后**用真读回核对 owner 的片单名集合、`GET /api/watchlists?video_id=1` 那份持有人清单回到起点、影片 200、通知数未变。
+- **验证**：新用例单独跑（Windows 控制台是 cp936，`-g 三条写路径` 走不稳，所以按文件路径 solo）**13.5 秒绿**；全套真后端 e2e **26 条 2.3 分钟绿**，报告里第 26 行就是它（13.2 秒）；`npx vitest run` **334 passed / 36 files**（一条没动）；桩 e2e **100 passed**——第一次跑有两条播放器用例在负载下抖红（`player.spec.ts:92` 进度条拖动、`:189` 音量记忆），重跑全绿，这两条是已知的定时器/播放抖动，本单没碰播放器；`npm run typecheck:test` 无输出，`npm run build` ✓ built in 786ms。`backend/src/` 在变异跑完之后按 md5 逐字复位（`watchlist_service.py` `e0d4e44d…` / `models/watchlist.py` `07246594…` / `Watchlists.vue` `650561e4…`），所以后端那 754 条、`ruff`、`mypy` 都没重跑——这一单在代码里只多了一个 `frontend/e2e/real/` 文件。文档同步：`README.md`、`CLAUDE.md`、`frontend/CLAUDE.md` 的计数 25 → 26（含替身覆盖段那句"语义只有 `e2e/real/` 那 26 条签"）、`frontend/CLAUDE.md` 的顺序段添第 26 条的位置与 `-g 三条写路径`（十八条 → 十九条）、`backend/CLAUDE.md` 的薄位置清单里记下那两行现在的签字处在浏览器那一头。
+
 ### 转码表里 mp4 那一行从来没有一个真产物签过（#144）：换掉**源**而不是换掉目标
 
 - **这一格为什么一直漏着**：`utils/ffmpeg.py` 那张四行配方里 `mp4` 那一行是 `{libx264, aac, .mp4}`，检查的是**输出**。播种那部本来就是 `.mp4`，而 `transcode_service.py:83` 的 `output_path` 拿源文件 `with_suffix` 拼，所以"目标 mp4"在第 15 条第 3 步只能换来那句同格式的 400——ffmpeg 从没为那一行起过一个进程。另一半是它不出口：`get_supported_formats` 只回 `codec` 和 `extension`，那两个编码器字面值从不进任何 API 响应。两件事叠起来，改错 `SUPPORTED_FORMATS['mp4']['acodec']` 在当时那 24 条真后端用例和 754 条后端用例里**一格都不红**（#115 量的正是这一格，#117 补的那条音轨只让另外三行红得动）。
