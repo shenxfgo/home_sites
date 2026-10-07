@@ -164,6 +164,7 @@ chore: 构建/工具
 **后端：**
 - 所有 Service 必须有单元测试
 - 所有 API 必须有集成测试
+- **配置表的键要有读者**：一个存进 `settings` 表、界面也给了控件的键，如果除了 `/api/settings` 自己没人读它，它就是装饰而不是配置。这一条不能靠端点的测试来发现——写进去、读回来一路绿灯，恰好是装饰件最像正常工作的样子。判据是 grep 这个键名有没有**第二个**读者（`auto_scan_enabled` 的第二个读者是 `scheduler/tasks.py` 里那两个扫描任务，用例：`tests/test_scheduler_auto_scan_switch.py`）
 - 测试覆盖率 > 80%：这条由 `[tool.coverage.report] fail_under = 80` 强制，但只在 `uv run pytest --cov=src`（全量）上生效——故意不写进 `addopts`，否则"只跑一个文件"也会因总量不足报红，和"测试坏了"分不清。读数依赖 `[tool.coverage.run] concurrency = ["greenlet", "thread"]`：少了它，SQLAlchemy async 引擎里落在 `await` 之后的行会被报成"没执行"，全量少算约 5 个点（2026-10-05 前后的 86% 与 91% 就是这个差别，用例通过数一致）
 - 新增 `/api/*` 端点不必另写鉴权用例：`tests/test_middleware/test_auth.py` 会遍历 openapi 里每个非白名单端点断言匿名 401，`test_roles.py` 同样扫面断言 member 一律 403 —— 两张表（`MEMBER_WRITE_PATHS` / `OWNER_ONLY_READ_PATHS`）漏登记时红的是测试，不是线上
 - **路由表是提交进仓库的产物**：`backend/openapi.json` 由 `python -m src.export_openapi` 生成，`tests/test_openapi_snapshot.py` 断言它和 `app.openapi()` 逐键相等（改接口忘了重跑导出 → 红），`frontend/tests/api/openapi-contract.spec.ts` 再拿它核对前端 14 份请求模块真正请求到的地址（路径 / 方法 / 路径参数类型 / query 键名；72 次 `client` 调用之外还有 4 条只返回字符串的浏览器地址构造器，按 GET 一起对表；#148 起 query 键名那一半不再只覆盖模块自己写死的字面量——`listVideos(params)` 这种把调用方的对象原样转发的函数由一趟哨兵探测单独认出来，键集取自它的参数类型接口）。这条链存在的原因是形状校验看不出段名拼错：`/videos/duplicates` 少个 `s` 在旧钉子下全绿，只有对着真路由表才红

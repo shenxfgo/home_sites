@@ -1,6 +1,26 @@
 # 更新日志
 
 ## 2026-10-07
+### 设置页那个「自动扫描」开关按下去什么都关不掉（#150）：`settings` 表第一次有了写入方之外的读者
+
+- **症状**：owner 在系统配置页把「自动扫描」拨到关、保存、刷新回来仍是关——然后片源照样按各自的间隔一轮一轮被扫。证据只有一条 grep：`auto_scan_enabled` 除了 `/api/settings` 自己（写它、再把它读回来回显），全仓没有任何代码读过它；`scheduler/tasks.py` 那两个扫描任务和 `main.py` 的挂载只看 `video_sources.is_active` 与 `scan_interval`。页面上那句「启用后将按照设定的间隔自动扫描视频源」里，"自动扫描"一直在发生，跟开关没关系。
+- **为什么一层测试都没抓到**：`test_api/test_preferences.py` 把这一面盖得很实——键名白名单、值的可解析性、整份 PUT 的写→读往返，全绿。**往返恰好是装饰件最像正常工作的形状**：断言的是"写进去的能读回来"，从来没有人问"读回来之后是谁在用"。根 `CLAUDE.md` 因此多了一条规则（配置表的键要有读者），这条规则本身也是这一单的产物。
+- **修法**：新增 `src/services/setting_service.py`——`SettingService.is_auto_scan_enabled` 每轮现读，两个扫描任务在真正动手之前问一次，关了就整轮不走，也**不写任何通知**（一轮被开关拦下的扫描不是事件，给它播一条就变回 #85 刚删掉的那种每晚心跳）。解析规则只留 `parse_auto_scan_enabled` 一份：没写过这一行算**开**（新库那张表本来就是空的，一个字没写过的人不该被静默停扫），`GET /api/settings` 改走同一份，否则同一个字符串在后有两个真值。
+- **闸门的位置是这一单唯一不显然的地方**：落在 `scheduler/tasks.py`，不落在 `ScanService.scan_source`。设置页说的是"自动"扫描，人按「立即扫描」那一路不该归它管。而"挪进 service"是完全同一行代码、四条用例照绿——只有第五条会红。M3 就是专门跑这一挪的。
+- **五条用例 + 四次变异**（一次改一个变量，每次跑完按字节还原并核 md5：`src/scheduler/tasks.py` `c062b2c1…` / `src/services/setting_service.py` `ad520b05…` / `src/services/scan_service.py` `dd796a8f…`；绿基线 5 passed）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | M1 删掉 `scan_source_task` 那道闸门 | **红** 2 条：`a_disabled_switch_skips_the_scheduled_round` + `flipping_the_switch_back_on_resumes_scanning`；`full_scan_round…` 照绿——两个任务各问各的，少一处不会一起红 |
+  | M2 没写过这一行时的默认改成"关" | **红** 1 条：`no_row_written_yet_means_auto_scan_is_on`——空表是每一台新机器的常态，这一条挡的是"修好开关顺手把默认扫成关" |
+  | M3 闸门挪进 `ScanService.scan_source`（任务里那道同时删掉） | **红** 1 条：只有 `manual_scan_is_not_governed_by_the_switch`；前三条照绿——**位置错而用例全绿**这一族，第一次被自己人挡住 |
+  | M4 删掉 `scan_all_active_task` 那道闸门 | **红** 1 条：`full_scan_round_honours_the_switch_too` |
+
+- **红在修前**：闸门还不存在时跑这一份用例是 `3 failed, 2 passed in 8.59s`（红的是 M1/M4 各自要抓的那三条：`disabled…` / `flipping…` / `full_scan…`），而 `no_row…` 与 `manual…` 当时就绿——它们钉的是"改完之后也别变坏"的那两侧。
+- **仍然没接的**：`auto_scan_interval`、`default_transcode_format`、`thumbnail_width`、`thumbnail_height` 四项仍是只写不读。第一项最刺眼：它和源级别的 `scan_interval` 撞名，而 `SourceForm.vue` 那个秒数输入框才是真的在管事。要么让它广播给所有启用的源（那源级就退化成会被设置页覆盖的默认值），要么从页面上摘掉——这是产品决定，留给用户，见 #151。
+- **另一处顺手记下的事实**：`scan_all_active_task` 在真机上**没有挂载点**（`main.py` 只按源挂 `scan_source_{id}`，`/api/scheduler/jobs` 那条 POST 也只挂按源的），全仓 grep 只有它自己的定义命中过一次。闸门照加，理由写在这份用例的 docstring 里：将来它被挂上去的时候，这个开关不能再是第二次装饰。
+- **基线**：修前 PostgreSQL 全量 760 passed，修后同一套 **765 passed**（正是新增那 5 条），`--cov=src` TOTAL **92%**（92.01%，17:06 跑完）。`scheduler/tasks.py` 从 62% 到 **93%**——剩下的 44-45、69-70 是"失败通知自己也写不进去"那两层兜底，要有真机才红得起来；新文件 `setting_service.py` **100%**。`ruff check .` 全绿，`mypy src` 34 条与基线持平（新增的两个文件一条没贡献）。前端这次没动：`git status --short` 只有 backend 的 4 个源文件、1 份用例和 4 处文档，所以前端的三层闸门没有重跑的必要。
+
 ### 第五个构造器曾能一声不响地走进来（#149）：哨兵表现在必须和遍历器记到的那一批一一对应
 
 - **症状**：没有。和 #148 同一类——这一单补的还是层，不是修复。`tests/api/builder-urls.spec.ts` 那张管「哪个实参落在哪一段」的哨兵表原先**只按名字手写四条**，所以它的失效方式不是地址写错，而是清单不全。

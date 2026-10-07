@@ -7,6 +7,7 @@ from src.config import settings
 from src.database import async_session_maker
 from src.services.notification_service import NotificationService
 from src.services.scan_service import ScanService
+from src.services.setting_service import SettingService
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,10 @@ logger = logging.getLogger(__name__)
 async def scan_source_task(source_id: int) -> None:
     """Task to scan a specific video source."""
     async with async_session_maker() as session:
+        # 设置页那个「自动扫描」开关管的就是这一行：关了整轮不走。放在任务里而不是
+        # ScanService 里，是因为人按「扫描」按钮那一下从来不该归这个开关管。
+        if not await SettingService(session).is_auto_scan_enabled():
+            return
         try:
             service = ScanService(session)
             await service.scan_source(source_id)
@@ -43,6 +48,10 @@ async def scan_source_task(source_id: int) -> None:
 async def scan_all_active_task() -> None:
     """Task to scan all active video sources."""
     async with async_session_maker() as session:
+        # 这一路目前没有挂载点（`main.py` 只按源挂），闸门照加：将来它被挂上去的
+        # 时候，设置页那个开关不能再是第二次装饰。
+        if not await SettingService(session).is_auto_scan_enabled():
+            return
         try:
             service = ScanService(session)
             await service.scan_all_active()

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
 from src.models.setting import Setting
+from src.services.setting_service import parse_auto_scan_enabled
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -77,7 +78,9 @@ async def get_settings(
     settings = {s.key: s.value for s in result.scalars().all()}
 
     return AllSettingsResponse(
-        auto_scan_enabled=settings.get("auto_scan_enabled", "true").lower() == "true",
+        # 这一项的解析规则和扫描任务读的是同一份（`setting_service`）：这个键现在
+        # 有了第二个读者，两边各写一套的话它就会有两种真值。
+        auto_scan_enabled=parse_auto_scan_enabled(settings.get("auto_scan_enabled")),
         auto_scan_interval=int(settings.get("auto_scan_interval", "3600")),
         default_transcode_format=settings.get("default_transcode_format", "mp4"),
         thumbnail_width=int(settings.get("thumbnail_width", "320")),

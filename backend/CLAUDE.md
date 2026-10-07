@@ -122,6 +122,7 @@ backend/
 │   ├── support.py         # ensure_source / ensure_video：PG 真执行外键，子行必须先有父行
 │   ├── test_api/          # API 测试
 │   ├── test_backup.py     # 备份用例：假子进程演 pg_dump/pg_restore，断言真实 argv/env、读不回即删、轮转只认自己的文件名
+│   ├── test_scheduler_auto_scan_switch.py # 设置页那个总开关：关了整轮不扫 / 没写过算开 / 手工扫描不受它管
 │   ├── test_scheduler_backup.py # 挂载与通知：重新挂载只留一条任务；失败写 backup_error，成功一条都不写
 │   ├── test_db_audit.py   # 审计用例：造一个每类问题各一条的脏库，证明检查还活着
 │   ├── test_db_transfer.py # 搬家用例：空库闸门、对账失败即回滚、时间戳跨方言不偏、报告与审计同一个数
@@ -329,6 +330,8 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 `settings` 与 `user_preferences` 是两张不同的表，别混：前者全家一份（扫描间隔、缩略图尺寸、默认转码格式），改一次所有人的播放都受影响，读写都限 owner；后者一人一份（`user_id` 主键 + `prefs` JSON），走 `/api/preferences`，成员改自己的主题不该碰着别人的屏幕。写入是按键合并（`save_prefs` 只覆盖 patch 里非空的键），响应字段由 API 层的 Pydantic 模型限定，所以加一项偏好只是加一个字段，不必改表。JSON 列的坑：原地 `row.prefs["k"]=v` SQLAlchemy 看不见，必须换一个新 dict 赋回去。
 
 `settings` 那一面有两道校验，别只做一半：键名走 `SYSTEM_SETTING_KEYS` 白名单，值走 `_check_setting_value`。第二道存在的理由是第一道挡不住——`GET /api/settings` 把三个数字键 `int(...)` 回来，而单键 `PUT` 收的是裸字符串，于是"写进去一个读不回来的值"会把整个设置页永久打成 500（整份 `PUT` 有 Pydantic 挡着，从来没这个问题）。校验规则就一条：**写进去的值必须能被读回来的那条路径解析**。范围（负数、0）刻意不管：那三个键目前没有任何消费者，定时扫描读的是源级别的 `scan_interval`，等真有消费者了再按它的约束收口。
+
+`settings` 表里现在**只有一个键真的在管事**：`auto_scan_enabled` 是自动扫描的总开关，读者是 `scheduler/tasks.py` 里那两个扫描包装任务，每轮现读（`SettingService.is_auto_scan_enabled`），关了就整轮不走、也不写任何通知——一轮被开关拦下的扫描不是事件，给它写一条就是 #85 刚删掉的那种心跳。解析规则只留 `setting_service.parse_auto_scan_enabled` 一份：没写过这一行算**开**（新库那张表本来就是空的，一个字没写过的人不该被静默停扫），设置页 `GET` 也走它；两处各写一套的话，同一个字符串就有两种真值。闸门刻意落在**任务**上而不是 `ScanService` 上：设置页说的是"自动"扫描，人按「扫描」按钮那一路不归它管。用例在 `tests/test_scheduler_auto_scan_switch.py`，五条各挡一种改法——把闸门从任务挪进 service，只会红在「手工扫描不该被管」那一条。另外四个键（`auto_scan_interval`、`default_transcode_format`、`thumbnail_width`、`thumbnail_height`）**仍是装饰**：存得进去、读得回来，`Settings.vue` 之外没有任何代码按它们做事——包括那个和源级别的 `scan_interval` 长得很像的间隔。
 
 同一类闸口的另一半是**可空性**：请求模型里标 `X | None` 的字段，那一列必须真的收 `NULL`。`VideoUpdate.rating` 从前标的是 `int | None`（意思是"不填就不改"），而 `videos.rating` 那一列是 NOT NULL，于是 `{"rating": null}` 是一条一路好走的请求——Pydantic 放行、服务层 `setattr` 照单写库、asyncpg 在 `UPDATE videos SET rating=NULL` 上顶回来才炸成 500，而响应模型 `rating: int` 本来就从来发不出 null，那一半契约是假的。收口放在请求模型的 `field_validator` 上（得到一个 422 加一句原话），不放在服务层：这是**表示层的形状**，不是业务规则，而且 422 那套 `detail` 结构前端已经有统一处理。反面那一半同样要钉住——`title` / `description` 那两列可以为空，同样的 null 照旧 200，否则一次修复会顺手把合法输入一起挡在门外（用例：`tests/test_api/test_videos.py` 的 `test_an_explicit_null_rating_is_rejected_instead_of_500` 与 `test_an_explicit_null_title_is_still_allowed`；界面那一侧在 `frontend/e2e/real/video-edit.real.spec.ts`）。Pydantic v2 的口径量清楚过：`field_validator` **不跑**在"根本没提供"的字段上（`VideoUpdate().model_dump(exclude_unset=True)` 实测是 `{}`），只会跑在显式给进来的值上，所以"不填不改"和"填 null"这两件事天然分得开，闸口不必自己判 `model_fields_set`。
 
@@ -569,7 +572,7 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 下面那份薄位置清单是**修正后**重测的（SQLite 全量 717 passed + 1 skipped，TOTAL 92%，2026-10-05 复量；清单里个别条目另标了自己更晚的重量时间）：
 
 - `utils/ffmpeg.py` **23%**——转码要真 FFmpeg 和真片子才跑得动，桩不出真形状没有意义。真跑那一趟现在有了（`frontend/e2e/real/transcode.real.spec.ts` 那三条：第 15 条真 FFmpeg 写出真文件、真读文件头，也用 `ffprobe` 核对产物里那两条流正是配方里那一对编码器；第 16 条让 ffmpeg 真失败一次，签的是那句原因从子进程一路走到接口、页面和真库；第 17 条杀的是一个真子进程，半截产物跟着它一起从磁盘上消失），四行配方现在四行都有真产物签过字——mp4 那一行由第 25 条（另一支文件 `video-transcode-mp4.real.spec.ts`）从一部现场 `-c copy` remux 出来的 .mkv 转出来，此前它的 `-c:a aac` 被**源文件的后缀**挡着（同格式闸门比的是拼出来的路径，不比扩展名），ffmpeg 从没为那一行起过进程；但它活在另一个进程里、不进这份读数，和下面 `api/stream.py` 那条同理
-- `scheduler/tasks.py` **62%**（2026-10-05 补上启动补跑之后重量的，此前 57%）——缺的还是 `scan_source_task` / `scan_all_active_task` 两个包装的函数体（自己开会话、把异常变成一条 `scan_error` 通知）；测试和被调的定时任务都是直接走 `ScanService`，只有两条备份任务（每晚 + 启动补跑）是端到端测过的
+- `scheduler/tasks.py` **93%**（2026-10-07 补上「自动扫描」那道闸门之后重量的，此前 62%）——两个扫描任务现在各有 5 条用例端到端走过（`tests/test_scheduler_auto_scan_switch.py`：闸门、空表默认、开关拨回、手工扫描不归它管、全量那一轮），剩下缺的 44-45 / 69-70 是"失败通知自己也写不进库"那两层兜底，要有真机上的第二次异常才红得起来；只有两条备份任务（每晚 + 启动补跑）另有 `test_scheduler_backup.py` 盖着。**另记两个还没人量的地方**：`api/scheduler.py` **75%**（缺 40、50-58、64、70——那四个管理端点从来没被请求过），`scan_scheduler.py` **81%**（缺 34-37、41-44、128-136、141——`start()` / `stop()` / `get_jobs()` / `is_running` 在 pytest 这一套里没人调过），`source_service.py:87`（关启用时拆任务那一句）也还是 0 引用。
 - `src/e2e_seed.py` **55%**（2026-10-05 加第二个账号之后重量的，PostgreSQL 全量 718 passed，此前 58%）——一次性库的播种与重置，主要活在打真后端的 e2e 那个进程里，pytest 进程只 import 和调其中一部分（`seed()` 整段 177–280 行没人走，它要真 PG、真媒体目录和真 FFmpeg；`seed_user_stats` 从 2026-10-05 起有一条用例直接过它）
 - `api/settings.py` **100%**（2026-10-05 补齐系统配置那一面之后重量的，PostgreSQL 全量 725 passed，此前 71%）——先前缺的就是整份 `PUT` 和单键读写这几条端点：`test_preferences.py` 只测过白名单拒绝和一次单键写入，`GET /api/settings` 的默认值那一路反而没人走
 - `api/stream.py` **72%**——整文件直读那两个分支和"封面文件不在"的兜底；`Range` 分段由打真后端的 e2e 覆盖，不在这份读数里
