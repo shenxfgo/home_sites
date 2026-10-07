@@ -1,6 +1,24 @@
 # 更新日志
 
 ## 2026-10-07
+### 片源删掉之后调度器不知道（#152）：三条同步边第一次有人读，代价是这一族从此红得起来
+
+- **症状**：没有。生产代码是对的——`SourceService` 的 create / update / delete 每一处都在动 `scan_source_{id}` 那个任务。这一单补的还是**层**：全仓 `grep -n "scheduler\." backend/tests` 只命中备份任务那三条断言，**没有任何一条用例读过调度器**；`/api/scheduler` 那四个端点从来没被请求过（`api/scheduler.py` 75%，缺 40、50-58、64、70），`scan_scheduler.py` 81%（缺 `start()` / `stop()` / `get_jobs()` / `is_running` 那四段），`source_service.py` 98% 缺的那一行正是 87（关启用时拆任务）。
+- **为什么这一族值得钉**：少掉的每一行都不改变任何测试结果，改的却是进程内会不会多一个**永远扫不到东西的任务**。以 delete 为例：行没了，被删的片源仍按原间隔醒来，`ScanService.scan_source` 当场 `ValueError`，`scan_source_task` 那句 `except` 把它变成一条「定时扫描失败」通知——每小时一条，直到下次重启。#85 拆的"只会自己长大的通知"就是同一个形状，只是那次长在扫描成功那一侧。
+- **写法**：新增 `tests/test_scheduler_source_lifecycle.py`，12 条用例。每条把 `src.services.source_service` 和 `src.api.scheduler` 里那个全局 `scheduler` 换成新建的 `ScanScheduler()`：真任务、真 APScheduler 作业表，但绝不往那个跨用例存活的全局实例上挂东西（片源接口的每一次 `create` 都在往上挂）。生命周期那七条读的是作业表里的原始 job，**不走** `ScanScheduler.get_jobs()`——未启动的调度器上挂着的任务连 `next_run_time` 这个属性都还没有，那个包装只在启动之后可用；端点那五条先把实例 `start()` 起来，顺带把 `start()` / `get_jobs()` / `is_running` 三段从没被走过的代码走了。
+- **十二条用例 + 五次变异**（一次改一个变量，每次跑完按字节还原并核 md5：`src/services/source_service.py` 还原后与 HEAD 逐字节一致，`git status` 认它没被改过；绿基线 12 passed in 7.18s）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | M1 `delete` 不拆任务了 | **红** 1 条：`deleting_a_source_disarms_its_job`——就是上面那条通知链的起点 |
+  | M2 `update` 关掉那一支不拆任务 | **红** 1 条：`deactivating_a_source_disarms_its_job`；`reactivating…` 照绿——它后来会把任务重新挂上，那条边盖不住这一支 |
+  | M3 `create` 不分启用与否，一律挂上 | **红** 1 条：`an_inactive_source_is_not_armed` |
+  | M4 `update` 末尾整段同步删掉 | **红** 2 条：`deactivating…` + `changing_the_interval…`——比 M2 宽一层，说明那两段不是重复断言 |
+  | M5 `create` 挂的是写死的 3600，不是片源自己的 `scan_interval` | **红** 3 条：`creating…own_interval` + `renaming…leaves_the_job_alone` + `the_jobs_endpoint_lists…`；`changing_the_interval…` 照绿——那条走的是 `update` 那一支，它用的是对的变量 |
+
+- **M5 是这一单里唯一事先没算准的一条**：第一次跑它红了 4 条，多出来的是 `an_inactive_source_is_not_armed`——因为我那个变异顺手把 `if source.is_active:` 一起写没了，一次改了两个变量。把锚点收窄回"只换实参"之后它红 3 条，`battery ok`。这张表的意义恰恰在这：预期写错会被自己的电池打回来，而不是被"全绿"糊过去。
+- **顺带记下但没改的一处**：`ScanScheduler.get_jobs()` 那句 `job.next_run_time.isoformat() if job.next_run_time else None` 在**未启动**的调度器上会 `AttributeError`（挂上去的任务那时还没有这个属性）。生产够不着——uvicorn 只在 lifespan 起完之后就绪，而 `main.py` 是先挂任务再 `start()`，`start()` 会把挂着的任务挨个排上时间轴。所以这一句不加兜底；但它解释了为什么这一份用例分两种读法（生命周期读作业表，端点先启动）。
+- **基线**：修前 PostgreSQL 全量 765 passed、TOTAL 92.01%，修后 **777 passed**（正是新增那 12 条）、TOTAL **93%**（92.52%，9:33 跑完，`--cov=src`）。三处薄位置各自归零：`api/scheduler.py` 75%→**100%**、`scan_scheduler.py` 81%→**100%**、`source_service.py` 98%（缺的就是 87 那一行）→**100%**。`ruff check src tests` 全绿，`mypy src` 34 条与基线持平。前端零改动（`git status --short` 只有那一份新用例和三处文档），三层静态闸门因此没重跑。
 ### 设置页那个「自动扫描」开关按下去什么都关不掉（#150）：`settings` 表第一次有了写入方之外的读者
 
 - **症状**：owner 在系统配置页把「自动扫描」拨到关、保存、刷新回来仍是关——然后片源照样按各自的间隔一轮一轮被扫。证据只有一条 grep：`auto_scan_enabled` 除了 `/api/settings` 自己（写它、再把它读回来回显），全仓没有任何代码读过它；`scheduler/tasks.py` 那两个扫描任务和 `main.py` 的挂载只看 `video_sources.is_active` 与 `scan_interval`。页面上那句「启用后将按照设定的间隔自动扫描视频源」里，"自动扫描"一直在发生，跟开关没关系。

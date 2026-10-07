@@ -124,6 +124,7 @@ backend/
 │   ├── test_backup.py     # 备份用例：假子进程演 pg_dump/pg_restore，断言真实 argv/env、读不回即删、轮转只认自己的文件名
 │   ├── test_scheduler_auto_scan_switch.py # 设置页那个总开关：关了整轮不扫 / 没写过算开 / 手工扫描不受它管
 │   ├── test_scheduler_backup.py # 挂载与通知：重新挂载只留一条任务；失败写 backup_error，成功一条都不写
+│   ├── test_scheduler_source_lifecycle.py # 片源的增删改与调度任务同步：挂上/拆掉/换间隔各钉一次，另外 /api/scheduler 那四个端点第一次被请求
 │   ├── test_db_audit.py   # 审计用例：造一个每类问题各一条的脏库，证明检查还活着
 │   ├── test_db_transfer.py # 搬家用例：空库闸门、对账失败即回滚、时间戳跨方言不偏、报告与审计同一个数
 │   ├── test_e2e_seed.py  # 播种闸门：库名不带 _test 就拒绝、整目录删除只允许发生在 backend/data/e2e 之下、媒体字节没被搬坏
@@ -572,7 +573,7 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 下面那份薄位置清单是**修正后**重测的（SQLite 全量 717 passed + 1 skipped，TOTAL 92%，2026-10-05 复量；清单里个别条目另标了自己更晚的重量时间）：
 
 - `utils/ffmpeg.py` **23%**——转码要真 FFmpeg 和真片子才跑得动，桩不出真形状没有意义。真跑那一趟现在有了（`frontend/e2e/real/transcode.real.spec.ts` 那三条：第 15 条真 FFmpeg 写出真文件、真读文件头，也用 `ffprobe` 核对产物里那两条流正是配方里那一对编码器；第 16 条让 ffmpeg 真失败一次，签的是那句原因从子进程一路走到接口、页面和真库；第 17 条杀的是一个真子进程，半截产物跟着它一起从磁盘上消失），四行配方现在四行都有真产物签过字——mp4 那一行由第 25 条（另一支文件 `video-transcode-mp4.real.spec.ts`）从一部现场 `-c copy` remux 出来的 .mkv 转出来，此前它的 `-c:a aac` 被**源文件的后缀**挡着（同格式闸门比的是拼出来的路径，不比扩展名），ffmpeg 从没为那一行起过进程；但它活在另一个进程里、不进这份读数，和下面 `api/stream.py` 那条同理
-- `scheduler/tasks.py` **93%**（2026-10-07 补上「自动扫描」那道闸门之后重量的，此前 62%）——两个扫描任务现在各有 5 条用例端到端走过（`tests/test_scheduler_auto_scan_switch.py`：闸门、空表默认、开关拨回、手工扫描不归它管、全量那一轮），剩下缺的 44-45 / 69-70 是"失败通知自己也写不进库"那两层兜底，要有真机上的第二次异常才红得起来；只有两条备份任务（每晚 + 启动补跑）另有 `test_scheduler_backup.py` 盖着。**另记两个还没人量的地方**：`api/scheduler.py` **75%**（缺 40、50-58、64、70——那四个管理端点从来没被请求过），`scan_scheduler.py` **81%**（缺 34-37、41-44、128-136、141——`start()` / `stop()` / `get_jobs()` / `is_running` 在 pytest 这一套里没人调过），`source_service.py:87`（关启用时拆任务那一句）也还是 0 引用。
+- `scheduler/tasks.py` **93%**（2026-10-07 补上「自动扫描」那道闸门之后重量的，此前 62%）——两个扫描任务现在各有 5 条用例端到端走过（`tests/test_scheduler_auto_scan_switch.py`：闸门、空表默认、开关拨回、手工扫描不归它管、全量那一轮），剩下缺的 44-45 / 69-70 是"失败通知自己也写不进库"那两层兜底，要有真机上的第二次异常才红得起来；只有两条备份任务（每晚 + 启动补跑）另有 `test_scheduler_backup.py` 盖着。**另记一处已经补上的**：#150 那次量到 `api/scheduler.py` **75%**（那四个管理端点从来没被请求过）、`scan_scheduler.py` **81%**（`start()` / `stop()` / `get_jobs()` / `is_running` 四段没人走）、`source_service.py:87`（关启用时拆任务那一句）0 引用——这三处于 2026-10-07 由 `tests/test_scheduler_source_lifecycle.py` 一起清到 **100%**，钉的是片源 create / update / delete 与调度任务那三条同步边（少一行不会红任何一条库里的用例，代价是进程里留一个永远扫不到东西的任务，每轮换回一条失败通知）。
 - `src/e2e_seed.py` **55%**（2026-10-05 加第二个账号之后重量的，PostgreSQL 全量 718 passed，此前 58%）——一次性库的播种与重置，主要活在打真后端的 e2e 那个进程里，pytest 进程只 import 和调其中一部分（`seed()` 整段 177–280 行没人走，它要真 PG、真媒体目录和真 FFmpeg；`seed_user_stats` 从 2026-10-05 起有一条用例直接过它）
 - `api/settings.py` **100%**（2026-10-05 补齐系统配置那一面之后重量的，PostgreSQL 全量 725 passed，此前 71%）——先前缺的就是整份 `PUT` 和单键读写这几条端点：`test_preferences.py` 只测过白名单拒绝和一次单键写入，`GET /api/settings` 的默认值那一路反而没人走
 - `api/stream.py` **72%**——整文件直读那两个分支和"封面文件不在"的兜底；`Range` 分段由打真后端的 e2e 覆盖，不在这份读数里
