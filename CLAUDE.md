@@ -172,7 +172,7 @@ chore: 构建/工具
 **前端：**
 - 关键组件有单元测试
 - E2E 测试覆盖主要流程
-- `src/api/*.ts` 的每一份都会被自动遍历（清单从 `tests/api/emitted-calls.ts` 里那份 `import.meta.glob` 推导，不需要登记，三层守卫共用同一个遍历器；#148 起这份遍历器内部还有第二趟——按哨兵探测认出「第一个参数就是查询对象、原样交给 axios」的那类函数，键集取自它的参数类型接口）：`tests/api/paths.spec.ts` 钉 URL 形状，`tests/api/openapi-contract.spec.ts` 钉它是否真的存在于后端路由表上，`tests/api/stub-coverage.spec.ts` 钉 `e2e/fixtures.ts` 那份替身接不接得住它（接不住时红的是守卫，不是某天界面里那句假 500）。前提是**视图自己不许拼 URL**——`tests/api/inline-requests.spec.ts` 扫 `src/`，`src/api/` 之外任何默认导入 axios 实例的文件都会红（#123 之前 `Sources.vue` / `Transcode.vue` 里那 7 条内联请求就在这层之外，改成死路径也不影响任何钉子），出现 `/api/` 字面量也一样（#124：`<img>` / `<video>` / `<track>` 的 `src` 一次 axios 都不走，那条流地址原本谁都不钉）
+- `src/api/*.ts` 的每一份都会被自动遍历（清单从 `tests/api/emitted-calls.ts` 里那份 `import.meta.glob` 推导，不需要登记，三层守卫共用同一个遍历器；#148 起这份遍历器内部还有第二趟——按哨兵探测认出「第一个参数就是查询对象、原样交给 axios」的那类函数，键集取自它的参数类型接口）：`tests/api/paths.spec.ts` 钉 URL 形状，`tests/api/openapi-contract.spec.ts` 钉它是否真的存在于后端路由表上，`tests/api/stub-coverage.spec.ts` 钉 `e2e/fixtures.ts` 那份替身接不接得住它（接不住时红的是守卫，不是某天界面里那句假 500）。前提是**视图自己不许拼 URL**——`tests/api/inline-requests.spec.ts` 扫 `src/`，`src/api/` 之外任何默认导入 axios 实例的文件都会红（#123 之前 `Sources.vue` / `Transcode.vue` 里那 7 条内联请求就在这层之外，改成死路径也不影响任何钉子），出现 `/api/` 字面量也一样（#124：`<img>` / `<video>` / `<track>` 的 `src` 一次 axios 都不走，那条流地址原本谁都不钉）。那几个只返回字符串的构造器还有一层：`tests/api/builder-urls.spec.ts` 钉的是"哪个实参落在哪一段"（路由表对此是瞎的），而 #149 起那张哨兵表的键集必须等于遍历器记到的构造器集合——新加一个构造器而没人给它算期望地址，红的是守卫）
 
 ## 运行命令
 
