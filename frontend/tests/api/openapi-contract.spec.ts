@@ -4,7 +4,13 @@ import { fileURLToPath } from 'node:url'
 
 import { beforeAll, describe, expect, it } from 'vitest'
 
-import { moduleKeys, walkApiModules, type Recorded } from './emitted-calls'
+import {
+  moduleKeys,
+  querySurfaces,
+  walkApiModules,
+  type QuerySurface,
+  type Recorded,
+} from './emitted-calls'
 
 /**
  * 前端 URL 对着后端真实路由表核对——补上 `paths.spec.ts` 那一层看不见的东西。
@@ -23,6 +29,12 @@ import { moduleKeys, walkApiModules, type Recorded } from './emitted-calls'
  *
  * 这份 schema 由 `python -m src.export_openapi` 生成，`backend/tests/test_openapi_snapshot.py`
  * 保证它与代码一致。两半缺一条都不成立。
+ *
+ * #148 起还钉**查询名**。前面那些规则看的都是「地址」，而一句地址还带着查询串：
+ * `listVideos(params)` 这类函数的查询名既不写在 `src/api/` 里（它原样转发调用方给的对象），
+ * 也不在遍历器塞进去的 `1` 里（序列化不了就被丢掉），所以 #122/#124 各记下了一份「没签到的键」。
+ * 现在由 `querySurfaces()` 用哨兵探出这类函数，再把它参数类型接口上声明的整套键逐个发出去核对。
+ * 症状不是报错：实测 `?searsh=abc` 回 200、回的是**没筛过的**第一页，筛选就此无声失效。
  */
 
 interface ParameterObject {
@@ -106,12 +118,16 @@ function pathValuesFit(template: string, operation: OperationObject, url: string
 }
 
 /** 该 URL 是否命中某个"声明了此方法、且路径参数类型收得下"的模板。 */
-function matchedTemplate(call: Recorded): string | undefined {
-  const method = call.method.toLowerCase()
-  return candidates(call.url).find((template) => {
-    const operation = operationFor(template, method)
-    return operation !== undefined && pathValuesFit(template, operation, call.url)
+function templateFor(url: string, method: string): string | undefined {
+  const lower = method.toLowerCase()
+  return candidates(url).find((template) => {
+    const operation = operationFor(template, lower)
+    return operation !== undefined && pathValuesFit(template, operation, url)
   })
+}
+
+function matchedTemplate(call: Recorded): string | undefined {
+  return templateFor(call.url, call.method)
 }
 
 function label(call: Recorded): string {
@@ -123,9 +139,11 @@ function label(call: Recorded): string {
 }
 
 const calls: Recorded[] = []
+const surfaces: QuerySurface[] = []
 
 beforeAll(async () => {
   calls.push(...(await walkApiModules()))
+  surfaces.push(...(await querySurfaces()))
 })
 
 describe('api URLs against the backend route table', () => {
@@ -173,5 +191,58 @@ describe('api URLs against the backend route table', () => {
         )
     })
     expect(undocumented).toEqual([])
+  })
+
+  it('finds the query-forwarding functions by probe, not by a written list', () => {
+    // 实测这一族只有一条：`videos.ts#listVideos`。下限钉的是探测本身——哨兵要哪天不再生效
+    // （适配器换错、axios 改了序列化），surfaces 会静默空掉，而"没有未声明的键"照样全绿。
+    // 这是本仓第四次踩在「空匹配集不报错，只是绿」上（#122 glob 深度、#128 空遍历、#131 切片偏移）。
+    expect(surfaces.length).toBeGreaterThanOrEqual(1)
+    expect(surfaces.map((s) => `${s.module}#${s.name}`)).toContain('videos.ts#listVideos')
+  })
+
+  it('reads a key set off the parameter type of every surface', () => {
+    // 新加一条查询转发函数却没给它声明具名参数接口，就落在这儿红，而不是悄悄躲过核对。
+    const unreadable = surfaces
+      .filter((surface) => surface.keys.length === 0)
+      .map((surface) => `${surface.module}#${surface.name}（参数类型 ${surface.paramType}）读不出键集`)
+    expect(unreadable).toEqual([])
+  })
+
+  it('sends only the query names the backend declares', () => {
+    const undocumented = surfaces.flatMap((surface) => {
+      const template = templateFor(surface.url, 'GET')
+      if (!template) {
+        return [`${surface.module}#${surface.name} 带整套键的地址 ${surface.url} 命不中任何模板`]
+      }
+      const operation = operationFor(template, 'get')
+      const declared = new Set(
+        (operation?.parameters ?? []).filter((p) => p.in === 'query').map((p) => p.name),
+      )
+      return surface.emitted
+        .filter((key) => !declared.has(key))
+        // 症状写进消息里：后端不是 422，是 200 加一句没筛过的结果（实测见 emitted-calls 顶部）。
+        .map(
+          (key) =>
+            `${surface.module}#${surface.name} 发出去的查询名 ${key} 后端没声明（模板 ${template} 只认 ${[...declared].join(' / ')}）——真后端会 200 回一句没筛过的结果`,
+        )
+    })
+    expect(undocumented).toEqual([])
+  })
+
+  it('sends every query name the parameter interface declares', () => {
+    // 反向不是缺陷：后端声明了前端没用的键只是那半能力没接，所以这里钉的是**子集**，不是集合相等。
+    // 这一条管的是另一半：界面声明了、也真发给了模块，模块却没把它放到线上——筛子无声少一个。
+    const dropped = surfaces
+      .filter((surface) => [...surface.emitted].sort().join() !== [...surface.keys].sort().join())
+      .map(
+        (surface) =>
+          `${surface.module}#${surface.name} 接口 ${surface.paramType} 声明的是 [${surface.keys.join(' ')}]，发出去的是 [${surface.emitted.join(' ')}]`,
+      )
+    expect(dropped).toEqual([])
+    const listVideos = surfaces.find((s) => `${s.module}#${s.name}` === 'videos.ts#listVideos')
+    expect(listVideos?.keys).toEqual(
+      expect.arrayContaining(['source_id', 'tag_id', 'search', 'page', 'page_size']),
+    )
   })
 })

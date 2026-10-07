@@ -431,7 +431,8 @@ class Video(Base):
 - **`python -m src.export_openapi` 生成/更新根目录的 `openapi.json`**（`--out` 换目标路径，`--check` 只比较不写盘，不一致就退出码 1）。产物是 `json.dumps(..., indent=2, sort_keys=True)` + 尾换行：键排序、缩进固定，diff 里才会只出现接口本身的变化。当前 65 条路径 / 84 个操作、5575 行。
 - **导出不需要起服务**：`app.openapi()` 是离线构建的（实测把 `DATABASE_URL` 指到一个没人监听的端口照样出 65 条路径）。别顺手写"先启动 uvicorn 再抓 `/openapi.json`"的流程。
 - **改了接口就要重跑一次导出**，否则红的是快照而不是调用方。`tests/test_openapi_snapshot.py` 是防腐钉子（比 `--check` 更严：直接把提交的文件和 `app.openapi()` 逐键比对象，注释、格式差异不会造成假红），删掉提交文件里的任何一条路径都会让它红——实测删 `/api/auth/sessions` 时 3 条用例红 2 条。
-- **这份快照有个下游消费者**：`frontend/tests/api/openapi-contract.spec.ts` 拿它核对前端真正会请求的地址（路径 + 方法 + 路径参数类型 + query 键名）。它读的是磁盘上的 JSON，不 import 后端，所以跨语言、不需要后端进程；代价就是上面那条——快照滞后，那边红的是快照。
+- **这份快照有个下游消费者**：`frontend/tests/api/openapi-contract.spec.ts` 拿它核对前端真正会请求的地址（路径 + 方法 + 路径参数类型 + query 键名）。它读的是磁盘上的 JSON，不 import 后端，所以跨语言、不需要后端进程；代价就是上面那条——快照滞后，那边红的是快照。**两节各红各的，实测（#148）**：把 `src/api/videos.py` 里路由声明的 `search` 改名，红的是 `test_openapi_snapshot.py`（钉的是代码↔文件），前端那层照绿——因为它读的文件还没变；只改提交文件里的声明名，红的是前端那层（钉的是文件↔接口）。两段接起来才钉住「路由代码 ↔ 前端接口」，别指望任何单独一层。
+- **没声明的查询参数会被静默忽略**（实测：`GET /api/videos?searsh=abc&page=1` 回 **200**，返回的是**没筛过**的第一页）。FastAPI 只把声明过的查询参数绑进函数签名，而 `backend/src` 无一处读 `request.query_params`（grep 零命中），所以前端拼错键名既不会 422 也不会 400，只会让筛选无声失效——这正是前端那层 query 钉子存在的理由（`frontend/CLAUDE.md` #148）。
 - **别指望 `app.routes` 能枚举路由表**（这条在「共享的 HTTP fixtures」一节也写过）：这版 FastAPI 把 include 进来的路由存成 `_IncludedRouter` 对象，没有 `.path`，只列得到顶层 21 条。想核对"声明的路径确实注册了"，走 `app.openapi()`，不要走 `app.routes`。
 
 ## 测试规范

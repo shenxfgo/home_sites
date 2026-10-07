@@ -65,7 +65,6 @@ const anyData = new Proxy(
     get: () => [],
   },
 )
-
 function queryNames(url: string): string[] {
   return (url.split('?')[1] ?? '')
     .split('&')
@@ -91,8 +90,8 @@ export async function walkApiModules(): Promise<Recorded[]> {
   client.defaults.adapter = (config) => {
     // 遍历器给每个函数都传 `(1, 2, 3)`（或登记表里那几条的样本），于是"第一个参数是查询对象"
     // 的那几个（`listVideos(params)`）会拿到 `params: 1`；axios 序列化非对象查询串会直接抛
-    // `target must be an object`。那是测试脚手架的产物而不是界面行为，这里丢掉它，
-    // 代价是这几个函数的查询名在本测试里没有签名（见 openapi-contract 文件末的说明）。
+    // `target must be an object`。那是测试脚手架的产物而不是界面行为，这里丢掉它。
+    // 这一类函数的查询名由下面那趟哨兵探测（`querySurfaces`）签名，不靠这里。
     const params = config.params && typeof config.params === 'object' ? config.params : undefined
     const url = client.getUri({ ...config, params })
     calls.push({
@@ -146,4 +145,149 @@ export async function walkApiModules(): Promise<Recorded[]> {
     client.defaults.adapter = originalAdapter
   }
   return calls
+}
+
+/**
+ * 查询面：那些「第一个参数就是查询对象、原样交给 axios」的请求函数。
+ *
+ * 为什么要单独走一趟：这类函数的查询名**不写在 `src/api/` 里**，它们来自调用方（`Home.vue` 按
+ * 筛选状态拼 `{page, page_size, source_id, tag_id, search}`），而声明在参数类型接口上。上面那趟
+ * 遍历给它们塞的是 `1`，序列化不了就丢掉，于是 `/api/videos` 那句查询串在这三份守卫里是空的——
+ * #122/#124 各自记下的那半盲区。
+ *
+ * 症状不是报错。实测（一次性探针，跑完即删）：`GET /api/videos?searsh=abc` 回 **200**，返回的是
+ * **没筛过**的第一页。FastAPI 只把它声明过的查询参数绑进函数签名，没声明的连 `request.query_params`
+ * 都没人读（全仓 grep 无一处），所以查询名拼错 = 筛选无声失效。
+ *
+ * 认「谁是查询转发函数」用的是**哨兵探测**而不是读代码的形状：把一个只含 `PROBE_KEY` 的对象塞进
+ * 每一位参数，真发出去的地址里出现这个键，就说明这一位会原样落到查询串上。这是问函数本身，不是猜
+ * 它怎么写——`{ params }` 简写、`{ params: xxx }`、`{ ...extra }` 摊平，形状全都不重要。
+ */
+export interface QuerySurface {
+  /** `videos.ts` 这种短名。 */
+  module: string
+  name: string
+  /** 第一个参数的类型标注（`VideoQueryParams`）；红了要说清去哪个接口读键。 */
+  paramType: string
+  /** 从那个接口里读出来的查询名；空数组意味着读不到，由守卫判红而不是放过。 */
+  keys: string[]
+  /** 把整套键交给这个函数之后，浏览器真会发出去的那句地址。 */
+  url: string
+  /** 那句地址里的查询名（用来核对「我发出去的就是我声明的那一套」）。 */
+  emitted: string[]
+}
+
+const PROBE_KEY = '__qprobe__'
+
+const rawApiSources = import.meta.glob('../../src/api/*.ts', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>
+
+const rawTypeSources = import.meta.glob('../../src/types/*.ts', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>
+
+/** 函数第一个参数的类型名——查询键就声明在它身上。 */
+function firstParamType(moduleKey: string, fnName: string): string | undefined {
+  const source = rawApiSources[moduleKey]
+  if (!source) return undefined
+  // 工作区里这些文件是 CRLF（#127/#131 量过），`\s` 一并吃掉 `\r`，`\S` 不吃，所以这里只用 `\s`。
+  const re = new RegExp(
+    `function\\s+${fnName}\\s*\\(\\s*[A-Za-z_$][\\w$]*\\s*:\\s*([A-Za-z_$][\\w$]*)`,
+  )
+  return re.exec(source)?.[1]
+}
+
+/** 具名接口顶层的字段名。这些接口都是平铺的，所以两个空格开头、带冒号的那一行就是一个键。 */
+function interfaceFields(iface: string): string[] {
+  for (const source of Object.values(rawTypeSources)) {
+    // `[\s\S]` 而不是 `\S`/`.`：接口体里有换行和缩进，而 `.` 不吃 `\n`（#139 那条教训的反面——
+    // 这里的锚 `\n}` 本身要跨过 CRLF 的 `\r`，所以体段只能整段吞下）。
+    const block = new RegExp(`export interface ${iface} \\{([\\s\\S]*?)\\n\\}`).exec(source)
+    if (!block) continue
+    return [...block[1].matchAll(/^[ \t]+([A-Za-z_$][\w$]*)\??:/gm)].map((m) => m[1])
+  }
+  return []
+}
+
+export async function querySurfaces(): Promise<QuerySurface[]> {
+  const surfaces: QuerySurface[] = []
+  const originalAdapter = client.defaults.adapter
+  let sink: Recorded[] = []
+  let currentModule = ''
+  let currentName = ''
+
+  client.defaults.adapter = (config) => {
+    const params = config.params && typeof config.params === 'object' ? config.params : undefined
+    const url = client.getUri({ ...config, params })
+    sink.push({
+      method: String(config.method ?? 'get').toUpperCase(),
+      url,
+      rawUrl: String(config.url ?? ''),
+      query: queryNames(url),
+      module: currentModule,
+      name: currentName,
+      viaClient: true,
+    })
+    return Promise.resolve({ data: anyData, status: 200, statusText: 'OK', headers: {}, config })
+  }
+
+  try {
+    for (const key of moduleKeys) {
+      currentModule = key
+      const apiModule = (await loaders[key]()) as Record<string, unknown>
+      const shortName = key.split('/').pop() ?? key
+      for (const [exportName, value] of Object.entries(apiModule)) {
+        const members =
+          typeof value === 'function'
+            ? [[exportName, value] as const]
+            : value && typeof value === 'object'
+              ? Object.entries(value as Record<string, unknown>).filter(
+                  ([, item]) => typeof item === 'function',
+                )
+              : []
+        for (const [name, member] of members) {
+          const fn = member as (...rest: unknown[]) => unknown
+          const base = SAMPLE_ARGS[`${shortName}#${name}`] ?? [1, 2, 3]
+          currentName = name
+          // 哨兵探测：逐位替换（位数拿不到——`params = {}` 这种带默认值的函数 `.length` 是 0，
+          // 所以按登记表那三位一路探过去，够覆盖本仓所有形状）。
+          for (let slot = 0; slot < base.length; slot++) {
+            const probeArgs = [...base]
+            probeArgs[slot] = { [PROBE_KEY]: 'on' }
+            sink = []
+            try {
+              await fn(...probeArgs)
+            } catch {
+              // 参数形状不合它的心意（比如把对象递给要 `string` 的模板）——那就不是查询转发，跳过。
+              // 探的是「我的对象有没有落到查询串上」，函数在拿到对象时抛异常本身就是答案：没有。
+            }
+            if (!sink.some((call) => call.query.includes(PROBE_KEY))) continue
+            const paramType = firstParamType(key, name)
+            const keys = paramType ? interfaceFields(paramType) : []
+            const fullArgs = [...base]
+            fullArgs[slot] = Object.fromEntries(keys.map((k) => [k, '1']))
+            sink = []
+            await fn(...fullArgs)
+            const call = sink[0]
+            surfaces.push({
+              module: shortName,
+              name,
+              paramType: paramType ?? '（读不到第一个参数的类型名）',
+              keys,
+              url: call?.url ?? '',
+              emitted: call ? call.query.filter((q) => q !== PROBE_KEY) : [],
+            })
+          }
+        }
+      }
+    }
+  } finally {
+    client.defaults.adapter = originalAdapter
+  }
+  return surfaces
 }

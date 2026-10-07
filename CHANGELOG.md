@@ -1,6 +1,31 @@
 # 更新日志
 
 ## 2026-10-07
+### 钉住前端会发出的每一个查询参数名（#148）：`?searsh=abc` 回的是 200 和**没筛过的**第一页
+
+- **症状**：没有。这一单补的是一层，不是修复——今天这份应用一个拼错的查询名都没有，守卫的**自然红条数是 0**。写在这儿是为了别把它读成"修好了什么"。
+- **盲区在哪**：`frontend/tests/api/emitted-calls.ts` 给每个参数位塞的是 `[1,2,3]`，而 `client.getUri` 对非对象 `params` 会抛 `TypeError`，遍历因此把它丢掉——于是 `listVideos(params)` 这种「第一个参数就是查询对象、原样交给 axios」的函数，在三份静态守卫里发出的**查询串是空的**。它的查询名不写在 `src/api/` 里（`Home.vue:160-232` 三处调用按筛选状态拼 `{page, page_size, source_id, tag_id, search}`），而是声明在参数类型接口 `VideoQueryParams` 上：TS 管的是调用方↔接口那一段，**接口↔后端那一段此前没有任何东西在看**。
+- **先量失效的形状**（一次性探针，跑完即删）：`GET /api/videos?searsh=abc&page=1` 回 **200**，返回的是**没筛过**的第一页（`['items','page','page_size','total']`）。FastAPI 只把声明过的查询参数绑进函数签名，`backend/src` 全仓 grep 无一处读 `request.query_params`（零命中）。所以这一族的失效方式不是报错，是**筛选无声停掉**——界面上搜了等于没搜。
+- **认「谁是查询转发函数」用的是哨兵探测，不是读代码形状**：把一个只含 `__qprobe__` 的对象逐位塞进参数位，真发出去的地址里出现这个键，才算它是查询转发函数。`{ params }` 简写、`{ params: xxx }`、`{ ...extra }` 摊平——形状全都不重要，这是问函数本身而不是猜它怎么写（同一理由见 #128「守卫 import 它检查的东西，强过抄一份匹配器」）。位数拿不到（`listVideos(params = {})` 的 `.length` 是 0，所以按 `function.length` 循环会一位也不探），于是固定探样本参数那三位。命中之后键集取自那个参数**声明的类型接口**（`firstParamType` + `interfaceFields`，两份 `import.meta.glob('?raw')` 读源码），再把整套键回喂一次，记下浏览器真会发出的那一句和里面真落线的键。
+- **断言的是子集，不是集合相等**：接口里有个后端没声明的键 = 真缺陷；后端声明了而前端不用的键 ≠ 缺陷。四条新用例（`openapi-contract.spec.ts` 从 5 条到 9 条）：认得出转发函数（下限 `>= 1` **并且**点名 `videos.ts#listVideos`）、每个查询面都读得出键集（读不到判红而不是放过）、发出去的键后端全都声明、接口声明的键全都真落到线上（外加 `expect.arrayContaining` 把那五个已知键钉住）。
+- **「空匹配集不报错，它只是绿」这一族第四次**：#122 glob 深度、#128 遍历空跑、#131 切片偏移，这次轮到探测本身——所以"认得出转发函数"那条同时设下限和点模块名。
+- **六次变异**（每次改单点、跑完按字节还原并核 md5：`src/types/video.ts` `3d28606b…` / `src/api/videos.ts` `f413e168…` / `tests/api/emitted-calls.ts` `3ab11800…` / `backend/openapi.json` `253253cd…`；绿基线该文件 9 passed）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | M1 接口里把 `search` 拼成 `searsh`（前端这一半） | **红** 2 条：`sends only the query names the backend declares` + `sends every query name the parameter interface declares` |
+  | M2 只把 `openapi.json` 里声明的 `search` 改成 `q`，前端一个字没动（后端那一半） | **红** 1 条：`sends only the query names the backend declares` |
+  | M3 模块不再转发调用方给的对象（`{ params })` → `{})`） | **红** 2 条：`finds the query-forwarding functions by probe` + `sends every query name…`——这一族整个静默消失 |
+  | M4 模块只转发 `search` 与 `page` 两个键 | **红** 2 条，判决与 M3 **完全相同** |
+  | M5 守卫自己读键那一步锚错（`export  interface` 双空格） | **红** 2 条：`reads a key set off the parameter type of every surface` + `sends every query name…` |
+  | M6 仍转发对象、却把 `page` 按死成 `undefined` | **红** 1 条：`sends every query name the parameter interface declares`——"少发"那条规则全绿，只有反向这条抓得到 |
+
+  M4 那条如实记下来：对「我给的对象有没有原样落到查询串上」这一问，"完全不转发"和"只转发两个键"是**同一个答案**——两者都意味着这一族的查询串由模块自己决定。探测答不出"落了几个"，要区分得换问法，那是另一单的活。
+- **跨层量的那一半**（另一次单点字节变异，跑完还原）：把 `backend/src/api/videos.py` 路由签名里的 `search` 改名，红的是 `backend/tests/test_openapi_snapshot.py` 两条（`test_committed_openapi_matches_the_route_table`、`test_check_mode_agrees_with_the_snapshot`），而前端那层照绿——因为它读的 JSON 还没变；只改 JSON 则红的是前端那层。也就是说这条契约是**两节各红各的**（代码↔文件、文件↔接口），接起来才钉住「路由代码 ↔ 前端接口」，没有哪一层单独钉得住。已写进 `backend/CLAUDE.md` 与 `README.md` 的快照命令注释。
+- **自己踩到、并且改掉的三个错**：一是变异电池第一版只在 `finally` 里还原，于是 M4 的锚点已被 M3 吃掉、脚本死在「锚点出现 0 次」——**变异必须单变量**，改成每轮循环开头回写原始字节；二是 M5 那一版的替换字节和 needle 一模一样，是个空变异（跑了等于没跑），重锚到双空格才真的把读取器打断；三是本机控制台 cp936 在打印 vitest 的 `×` 行时抛 `UnicodeEncodeError`，电池炸在 M1 之后——`finally` 把四份文件都按字节还原并核了 md5，没漏，加 `sys.stdout.reconfigure(encoding='utf-8')` 和 ANSI 剥离之后重跑。另有两处是跑之前重读代码抓到的：`interfaceFields` 用 `(\S*?)` 永远匹配不上接口体（接口体里全是换行和缩进 → 改 `([\s\S]*?)`），以及第二次回喂时假定命中的是 0 号位（探测可能命中 1/2 位 → 改成按 `slot` 回写）。
+- **没做的**：`tests/api/builder-urls.spec.ts` 那份「构造器清单」仍是手写的四条，第五个只返回字符串的构造器可以走进来而不受任何钉子——下一单 #149 让它从遍历器 `viaClient === false` 的记录推导；`src/api/` 之外不许拼 URL 那条由 `inline-requests.spec.ts` 守，与本单无交集。
+- **基线**：Vitest 339 → **343 passed / 36 files**（+4）、`typecheck:test` 无输出、`npm run build` ✓ 805ms、桩 e2e **100 passed（37.6s）**。真后端 e2e（26 条）与后端套件（760 条）**没有重跑**，证据写清楚：`git status --short` 只有 `frontend/tests/api/` 那两份文件，Playwright 只收 `./e2e` 与 `./e2e/real`，而变异电池碰过的后端文件全部按字节还原（`api/videos.py` `d95de0dd…`、`openapi.json` `253253cd…`）。文档同步：`CLAUDE.md`（契约链那句 + 三层守卫那句）、`frontend/CLAUDE.md`（`getUri` 丢 `params` 那句 + 新增 #148 一段）、`backend/CLAUDE.md`（下游消费者那句 + 新增"没声明的查询参数会被静默忽略"）、`README.md` 快照命令注释、`CHANGELOG.md` 本条。
+
 ### 扫描只登记字幕、从不核对（#147）：文件移走之后那条轨道永远挂在菜单上
 
 - **症状**：字幕文件被移走、改名或删掉之后，`GET /api/videos/{id}/subtitles` 照旧列出那一条，CC 菜单照旧给着那个名字，点下去才是 #146 那句「字幕「英文」没能加载」。这一格是 #146 收尾时点名留给下一单的「没做的」：那一单只让界面**说实话**，没替谁把行收拾干净。

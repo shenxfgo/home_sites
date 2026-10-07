@@ -380,6 +380,8 @@ uv run pytest --cov=src
 # 得显式清空：TEST_DATABASE_URL= uv run pytest（报通过数前先确认方言）。
 
 # 接口清单快照：改完后端路由要重跑，否则后端快照钉子与前端的契约用例会红在快照上
+# 两节各红各的：改路由代码红的是后端快照钉子（代码↔文件），只改这份 JSON 红的是前端契约用例
+# （文件↔接口，含 query 键名——见 frontend/tests/api/openapi-contract.spec.ts）。
 uv run python -m src.export_openapi          # 写 backend/openapi.json（离线，不需要起服务）
 uv run python -m src.export_openapi --check  # 只检查是否落后，落后退出码 1
 
