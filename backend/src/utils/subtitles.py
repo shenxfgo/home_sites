@@ -26,6 +26,34 @@ _LANGUAGE_ALIASES = {
     "spa": "es",
 }
 
+# How the player's menu names a language. Both subtitle sources land in one dropdown, so
+# this table is shared by the embedded path (`media_streams`) and the sidecar one; keys are
+# the codes ffprobe and filename suffixes actually use, which is why the 3- and 2-letter
+# forms of the same language both appear.
+LANGUAGE_NAMES = {
+    "chi": "中文",
+    "zho": "中文",
+    "zh": "中文",
+    "eng": "英文",
+    "en": "英文",
+    "jpn": "日文",
+    "ja": "日文",
+    "kor": "韩文",
+    "ko": "韩文",
+    "fra": "法文",
+    "fre": "法文",
+    "fr": "法文",
+    "deu": "德文",
+    "ger": "德文",
+    "de": "德文",
+    "spa": "西班牙文",
+    "es": "西班牙文",
+    "rus": "俄文",
+    "ru": "俄文",
+    "yue": "粤语",
+    "pt": "葡萄牙文",
+    "it": "意大利文",
+}
 
 class SubtitleConversionError(Exception):
     """Raised when a subtitle file cannot be turned into WebVTT."""
@@ -41,7 +69,7 @@ def find_subtitle_files(video_filepath: str) -> list[dict]:
     """
     base = os.path.basename(video_filepath)
     directory = os.path.dirname(video_filepath) or "."
-    stem, video_ext = os.path.splitext(base)
+    stem = os.path.splitext(base)[0]
 
     try:
         entries = list(os.scandir(directory))
@@ -55,23 +83,20 @@ def find_subtitle_files(video_filepath: str) -> list[dict]:
         ext = os.path.splitext(entry.name)[1].lower()
         if ext not in SUBTITLE_EXTENSIONS:
             continue
-        prefix = entry.name[: -len(ext)]
-        if prefix != stem and not prefix.startswith(stem + "."):
-            continue
 
-        suffix = prefix[len(stem):]
-        if suffix.lower().startswith(video_ext.lower()):
-            suffix = suffix[len(video_ext):]
-        elif any(suffix.lower().startswith(other) for other in VIDEO_EXTENSIONS):
+        suffix = _sidecar_suffix(video_filepath, entry.path)
+        if suffix is None:
+            continue
+        if any(suffix.lower().startswith(other) for other in VIDEO_EXTENSIONS):
             # Belongs to a sibling file, e.g. movie.mkv.zh.srt next to movie.mp4
             continue
 
-        language = _parse_language(suffix)
+        language, label = _identity_of_suffix(suffix, stem)
         results.append(
             {
                 "filepath": entry.path,
                 "language": language,
-                "label": suffix.lstrip(".") or stem,
+                "label": label,
             }
         )
 
@@ -87,6 +112,67 @@ def _parse_language(suffix: str) -> str | None:
     primary, _, region = code.partition("-")
     normalized = _LANGUAGE_ALIASES.get(primary, primary)
     return f"{normalized}-{region}" if region else normalized
+
+
+def language_display_name(code: str) -> str:
+    """Name a language code the way the player's menu should show it.
+
+    Unknown codes come back unchanged: inventing a name for a language I don't have would
+    be worse than showing the suffix the person wrote themselves. A region stays visible
+    because the table only knows language families — without it ``zh-CN`` and ``zh-TW``
+    would be two menu entries both called 「中文」, which cannot be clicked apart.
+    """
+    primary, _, region = code.partition("-")
+    name = LANGUAGE_NAMES.get(primary)
+    if name is None:
+        return code
+    return f"{name}（{region.upper()}）" if region else name
+
+
+def sidecar_identity(video_filepath: str, subtitle_filepath: str) -> tuple[str | None, str]:
+    """The ``(language, label)`` pair a sidecar file should be registered with.
+
+    Both write paths ask for this: the scan (through ``find_subtitle_files``) and a manual
+    registration. The manual one used to slice the filename a second time, with a looser
+    rule, so the same file got ``language='chi'`` by hand and ``'zh'`` by scan, and
+    ``movie.mp4.zh.srt`` came out as ``mp4.zh`` in *both* columns — while ``language`` is
+    ``VARCHAR(10)`` on the live database and a descriptive suffix longer than ten characters
+    turned a plain registration into a 500.
+    """
+    stem = os.path.splitext(os.path.basename(subtitle_filepath))[0]
+    suffix = _sidecar_suffix(video_filepath, subtitle_filepath)
+    return _identity_of_suffix(suffix if suffix is not None else "", stem)
+
+
+def _sidecar_suffix(video_filepath: str, subtitle_filepath: str) -> str | None:
+    """The part of a sidecar's name between the video's stem and its extension.
+
+    ``movie.srt`` next to ``movie.mp4`` has no suffix; ``movie.zh.srt`` has ``.zh``; and a
+    video's own extension may appear a second time (``movie.mp4.zh.srt``), which is part of
+    the name and not a language. ``None`` means the file is not named after this video.
+
+    The only place a sidecar's name is sliced — the scan and a manual registration used to
+    each cut it their own way, and that is where #143's four wrong labels came from.
+    """
+    stem, video_ext = os.path.splitext(os.path.basename(video_filepath))
+    prefix = os.path.splitext(os.path.basename(subtitle_filepath))[0]
+    if prefix == stem:
+        return ""
+    if not prefix.startswith(stem + "."):
+        return None
+    suffix = prefix[len(stem):]
+    if suffix.lower().startswith(video_ext.lower()):
+        return suffix[len(video_ext):]
+    return suffix
+
+
+def _identity_of_suffix(suffix: str, fallback_label: str) -> tuple[str | None, str]:
+    raw = suffix.lstrip(".")
+    language = _parse_language(suffix)
+    if language is None:
+        # A suffix that is not a language code is the name the person gave the file.
+        return None, raw or fallback_label
+    return language, language_display_name(language)
 
 
 def read_subtitle_text(filepath: str) -> str:

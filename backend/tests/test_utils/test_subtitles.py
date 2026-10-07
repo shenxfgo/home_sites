@@ -58,11 +58,82 @@ def test_find_subtitle_files_parses_language_codes(tmp_path):
     }
 
     assert by_name["movie.zh-CN.srt"]["language"] == "zh-cn"
-    assert by_name["movie.zh-CN.srt"]["label"] == "zh-CN"
+    assert by_name["movie.zh-CN.srt"]["label"] == "中文（CN）"
     assert by_name["movie.chi.srt"]["language"] == "zh"
+    assert by_name["movie.chi.srt"]["label"] == "中文"
     # Non-ASCII suffixes are kept as the label but are not valid language tags
     assert by_name["movie.中文.srt"]["language"] is None
     assert by_name["movie.中文.srt"]["label"] == "中文"
+
+
+def test_find_subtitle_files_labels_a_sidecar_the_way_the_menu_reads_it(tmp_path):
+    """同一个字幕菜单里，内嵌那条叫「中文」，外挂这条不能叫 `chi`。
+
+    `media_streams` 那张名字表一直把 ffprobe 的语言标签翻成中文（第 21 条钉的是界面上点
+    「中文」这一格），而 sidecar 的 `label` 存的是文件名后缀的原文，于是两条来源的轨在同一个
+    下拉里一边中文、一边英文代码。真库现在就躺着一行 `label='en'`，也就是用户自己打开播放页
+    看到的那一格。
+    """
+    video = _touch(str(tmp_path), "movie.mp4")
+    _touch(str(tmp_path), "movie.chi.srt")
+    _touch(str(tmp_path), "movie.eng.srt")
+    _touch(str(tmp_path), "movie.jpn.ass")
+
+    by_name = {
+        os.path.basename(s["filepath"]): s for s in find_subtitle_files(video)
+    }
+    names = ("movie.chi.srt", "movie.eng.srt", "movie.jpn.ass")
+
+    assert [by_name[name]["label"] for name in names] == ["中文", "英文", "日文"]
+    # `language` 存的仍是归一化后的代码，不是界面上的名字：那是 `srclang` 的出处。
+    assert [by_name[name]["language"] for name in names] == ["zh", "en", "ja"]
+
+
+def test_sidecar_label_keeps_an_unknown_language_code_as_is(tmp_path):
+    """名字表里没有的代码不能编出一个名字，更不能丢掉后缀里的信息。
+
+    这一条挡的是"把未知代码一律显示成 `未知语言`"那种写法——那个人知道自己片子叫什么，
+    而我不知道。
+    """
+    video = _touch(str(tmp_path), "movie.mp4")
+    _touch(str(tmp_path), "movie.nor.srt")
+
+    found = find_subtitle_files(video)
+
+    assert found[0]["language"] == "nor"
+    assert found[0]["label"] == "nor"
+
+
+def test_sidecar_label_of_a_region_keeps_the_region(tmp_path):
+    """`zh-CN` 和 `zh-TW` 不能都显示成「中文」。
+
+    一部片子的简中和繁中两条字幕在菜单里变成同一个名字，就再也点不开了——名字表只认到
+    语族，所以地区得由显示名字自己带下去。
+    """
+    video = _touch(str(tmp_path), "movie.mp4")
+    _touch(str(tmp_path), "movie.zh-CN.srt")
+    _touch(str(tmp_path), "movie.zh-TW.srt")
+
+    by_name = {
+        os.path.basename(s["filepath"]): s for s in find_subtitle_files(video)
+    }
+
+    assert by_name["movie.zh-CN.srt"]["label"] == "中文（CN）"
+    assert by_name["movie.zh-TW.srt"]["label"] == "中文（TW）"
+
+
+def test_sidecar_with_no_language_suffix_is_labelled_by_the_video_stem(tmp_path):
+    """`movie.srt` 挂在 `movie.mp4` 旁边：没有后缀可认，名字就用影片自己的主干名。
+
+    这一格改修前后都是同一个结果（#143 动的是"有后缀"那一半），留着是因为它是兜底那一步唯一的
+    钉子：`_identity_of_suffix` 一旦连兜底也交给名字表，菜单里那一条就会变成空格。
+    """
+    video = _touch(str(tmp_path), "movie.mp4")
+    _touch(str(tmp_path), "movie.srt")
+
+    found = find_subtitle_files(video)
+
+    assert (found[0]["language"], found[0]["label"]) == (None, "movie")
 
 
 def test_find_subtitle_files_supports_fullname_sidecars(tmp_path):
@@ -72,7 +143,7 @@ def test_find_subtitle_files_supports_fullname_sidecars(tmp_path):
     found = find_subtitle_files(video)
 
     assert found[0]["language"] == "zh"
-    assert found[0]["label"] == "zh"
+    assert found[0]["label"] == "中文"
 
 
 def test_find_subtitle_files_on_missing_directory_returns_empty():

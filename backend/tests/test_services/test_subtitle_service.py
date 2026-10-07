@@ -56,7 +56,7 @@ async def test_add_registers_sidecar_and_derives_language(db_session, tmp_path):
 
     assert subtitle.id is not None
     assert subtitle.language == "zh"
-    assert subtitle.label == "zh"
+    assert subtitle.label == "中文"
 
 
 async def test_add_keeps_explicit_language_and_label(db_session, tmp_path):

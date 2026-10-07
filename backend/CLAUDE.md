@@ -577,6 +577,8 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 
 **ffmpeg 那句原因只有一处出处：`utils/subtitles.ffmpeg_stderr_reason`**（#142）。两条转换路径——外挂机翻 `_ffmpeg_to_webvtt`、内嵌轨翻 `media_streams.extract_subtitle_webvtt`——失败时都从这里取 stderr 的最后一条非空行（ffmpeg 在 `-loglevel error` 下把原因写在最后一行，实测 8.x：内容不是字幕的 `.ass` → 退出码 183，stderr 两行，最后一行是 `Error opening input files: Invalid data found when processing input`），各自只保留自己的那句前缀和"子进程什么也没说"时的兜底。为什么必须收在一处：`api/subtitles.py` 两个路由都是 `detail=str(e)`，而这边丢原因的修法在浏览器那头像"转换失败"四个字——那个人手上只有一部手机，看得到什么取决于走的是哪条路。内嵌那一路原本就带着原因，所以这一条不是把它改坏，是两条原本一边能诊断一边不能。**测试要钉住的是最后一段而不是兜底**：`stderr` 空、`returncode == 0` 但一个字节没转出来这两件事长得很像，只断言消息以「字幕转换失败」开头的话，把 `or not (result.stdout or "").strip()` 那一支删掉照样绿（`test_convert_ass_failure_without_a_reason_still_says_something` 钉的就是这一支）。
 
+**外挂字幕的名字只有一处出处：`utils/subtitles.sidecar_identity`**（#143）。扫描（`find_subtitle_files`）和手工挂载（`SubtitleService.add`）两条写路径都向它要同一对 `(language, label)`，文件名怎么切也只有一处（`_sidecar_suffix`：返回 `None` 表示「这不是这部片子的字幕」，扫描据此跳过兄弟文件的字幕，比如 `movie.mp4` 旁边的 `movie.mkv.zh.srt`）。为什么必须收在一处：手工那条路原先自己再切一次、规则还更松，于是同一个文件两种结果——`movie.chi.srt` 扫描给 `zh`、手工给 `chi`（那一列是界面 `srclang` 的出处），`movie.mp4.zh.srt` 手工两条字段都切成 `mp4.zh`。菜单上的名字来自 `LANGUAGE_NAMES` + `language_display_name`，这张表原本只住在 `media_streams`（内嵌那一路），现在两条来源共用一张，因为两类轨落在**同一个下拉框**里：一边「中文」一边 `chi` 就是那个人打开播放页看到的样子（真库里现在就躺着 `en` 和 `zh` 两行）。两条政策是承重的，别顺手改：认不出的代码**原样返回**（不给它编名字，也不用「未知语言」顶掉后缀里的信息）；**地区留在显示名里**（`zh-CN` → `中文（CN）`），否则简中繁中两条在菜单里同名、再也点不开。`language` 那一列在真库上是 `VARCHAR(10)`：客户端传来的值有 `Field(max_length=10)` 挡成 422，服务端自己派生的值没人挡——手工那条路以前把整个后缀塞进去，一部 `movie.这条是导演评论加长版说明.srt` 在 PostgreSQL 上就是 `value too long` → 500；现在非语言代码的后缀 `language` 一律留 `None`，说明性文字只在 `label` 里。**测试要钉的是两条路各算一次**：把内嵌那一路换成它自己的一张同名表（M8）全绿，这一层的共享只是 DRY；把手工那条路退回它自己的切法（M6）红 4 条，那才是这一单的签名线。
+
 
 ```bash
 # 添加依赖

@@ -47,7 +47,7 @@ async def test_create_list_and_delete_subtitle(client, db_session, tmp_path):
     assert created.status_code == 201
     subtitle_id = created.json()["id"]
     assert created.json()["language"] == "zh"
-    assert created.json()["label"] == "zh"
+    assert created.json()["label"] == "中文"
 
     listed = await client.get(f"/api/videos/{video.id}/subtitles")
     assert [item["id"] for item in listed.json()] == [subtitle_id]
@@ -59,6 +59,57 @@ async def test_create_list_and_delete_subtitle(client, db_session, tmp_path):
 
     after = await client.get(f"/api/videos/{video.id}/subtitles")
     assert after.json() == []
+
+
+async def test_a_hand_registered_sidecar_gets_the_same_two_fields_as_a_scanned_one(
+    client, db_session, tmp_path
+):
+    """手工 POST 和扫描必须派生出同一对 (language, label)。
+
+    以前是两套：扫描走 `find_subtitle_files`（`language` 归一化、`label` 是后缀原文），
+    手工这条路走 `subtitle_service._language_of/_label_of`，它自己从文件名里再切一次后缀，
+    于是 `movie.chi.srt` 在这条路上 `language` 是 **`chi`**（没归一化，而那一列还要拿去当
+    `srclang`），`movie.mp4.zh.srt` 更离谱——它切出来的是 `mp4.zh`，两个字段都是。
+    """
+    video, _ = await _video_with_subtitle(db_session, tmp_path)
+    alias = tmp_path / "media" / "movie.chi.srt"
+    alias.write_text("1\n00:00:01,000 --> 00:00:02,000\n哈喽\n", encoding="utf-8")
+    fullname = tmp_path / "media" / "movie.mp4.zh.srt"
+    fullname.write_text("1\n00:00:01,000 --> 00:00:02,000\n你好\n", encoding="utf-8")
+
+    aliased = await client.post(
+        f"/api/videos/{video.id}/subtitles", json={"filepath": str(alias)}
+    )
+    doubled = await client.post(
+        f"/api/videos/{video.id}/subtitles", json={"filepath": str(fullname)}
+    )
+
+    assert aliased.status_code == 201
+    assert (aliased.json()["language"], aliased.json()["label"]) == ("zh", "中文")
+    assert doubled.status_code == 201
+    assert (doubled.json()["language"], doubled.json()["label"]) == ("zh", "中文")
+
+
+async def test_registering_a_sidecar_whose_suffix_is_not_a_language_leaves_it_null(
+    client, db_session, tmp_path
+):
+    """后缀不是语言代码时 `language` 得留空——那一列在真库上是 VARCHAR(10)。
+
+    手工那条路以前把整个后缀当 `language` 存：`movie.导演评论.srt` 存成 `导演评论`（4 个字，
+    刚好没炸），而任何超过 10 个字的说明性后缀在 PostgreSQL 上就是一次 `value too long`，
+    界面上是一个 500。扫描那条路早就留空了，所以这是同一族文件、两种结果。
+    """
+    video, _ = await _video_with_subtitle(db_session, tmp_path)
+    commentary = tmp_path / "media" / "movie.这条是导演评论加长版说明.srt"
+    commentary.write_text("1\n00:00:01,000 --> 00:00:02,000\n旁白\n", encoding="utf-8")
+
+    created = await client.post(
+        f"/api/videos/{video.id}/subtitles", json={"filepath": str(commentary)}
+    )
+
+    assert created.status_code == 201
+    assert created.json()["language"] is None
+    assert created.json()["label"] == "这条是导演评论加长版说明"
 
 
 async def test_create_rejects_non_subtitle_extension(client, db_session, tmp_path):

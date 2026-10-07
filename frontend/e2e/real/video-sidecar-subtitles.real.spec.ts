@@ -16,8 +16,10 @@
  * `SAMPLE_VTT`。
  *
  * 所以核对的全是只有真文件给得出的东西：三条 sidecar 认出来的是 `zh`/`en`/`ja` 而不是文件名里
- * 那三个后缀（别名表）、而界面上的名字是**没归一化**的 `chi`/`eng`/`jpn`（`label` 存的是原始
- * 后缀——内嵌那一路给的是「中文」，这一路给的是「chi」，两边不对称是真的，本条把它钉成现状）；
+ * 那三个后缀（别名表）、而界面上的名字和内嵌那一路**同一张表**（`subtitles.LANGUAGE_NAMES`：
+ * `chi`/`eng`/`jpn` 三个后缀在这条路上现在给出「中文」「英文」「日文」。#143 之前这一路存的是
+ * 原始后缀，于是同一个下拉框里「中文」和 `chi` 并存——本条曾经把那个不对称钉成现状，把它翻回
+ * 来就是这里的红）；
  * 同一次转换里两条时间轴方言：Python 手写的那条保留小时（`00:00:03.000 -->`），ffmpeg 那条把
  * 小时省了（`00:05.000 -->`），谁把两边统一成一种写法就说明其中一路没走真进程；`{\an8}` 在
  * WebVTT 里必须消失而 `Dialogue:` 和 `ScriptType` 必须整个不见（原样吐回一个 `.ass` 是这一路
@@ -246,7 +248,7 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     expect(created, `扫描没有把 ${PARSED_TITLE} 变成一行`).toBeDefined()
     videoId = created!.id
 
-    // ---- 2. 认文件：`language` 走的是别名表，`label` 是原始后缀
+    // ---- 2. 认文件：`language` 走的是别名表，`label` 走的是那张中文名字表（#143）
     const rows = await requestJson<SubtitleRow[]>(page, `/api/videos/${videoId}/subtitles`)
     // 下面的整表比对押的是接口自己的排序，所以先钉一遍它真按 id 升序回。`sort` 是原地改，
     // 所以比的是副本——直接 `rows.map(...).sort()` 对 `rows.map(...)` 永远成真。
@@ -263,19 +265,19 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
       {
         video_id: videoId,
         language: 'zh',
-        label: 'chi',
+        label: '中文',
         filepath: ASS_FILE.replace(/\\/g, '/'),
       },
       {
         video_id: videoId,
         language: 'en',
-        label: 'eng',
+        label: '英文',
         filepath: SRT_FILE.replace(/\\/g, '/'),
       },
       {
         video_id: videoId,
         language: 'ja',
-        label: 'jpn',
+        label: '日文',
         filepath: BROKEN_FILE.replace(/\\/g, '/'),
       },
     ])
@@ -326,7 +328,7 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     expect(readFileSync(BROKEN_FILE, 'utf8')).toContain(CUE_BROKEN)
     expect(broken.text).not.toContain(CUE_BROKEN)
 
-    // ---- 6. 界面上：三条都在菜单里，名字是那个没归一化的后缀；点下去浏览器真有词
+    // ---- 6. 界面上：三条都在菜单里，名字和内嵌那一路同一张表（#143）；点下去浏览器真有词
     // 播放器挂在 `VideoDetail.vue` 的 `v-if="isPlaying"` 下面——不点这张海报，`.subtitle-btn`
     // 永远不存在（第 21 条实测过的那次超时）。
     await page.goto(`/videos/${videoId}`)
@@ -338,9 +340,9 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     // 这部片子容器里一条字幕轨都没有（复制来的 mp4 只有视频轨 + 音轨），所以「文件内嵌」那一段
     // 不该出现：这一句挡的是"菜单把两条来源合起来渲染"这种写法。
     await expect(page.locator('.subtitle-menu-group')).toHaveCount(0)
-    expect(await subtitleMenuItems(page)).toEqual(['关闭', 'chi', 'eng', 'jpn'])
+    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文'])
 
-    await page.locator('.subtitle-menu-item', { hasText: 'chi' }).click()
+    await page.locator('.subtitle-menu-item', { hasText: '中文' }).click()
     // 两句都在：ASS 那句以 `\N` 开头，muxer 把它写成空行、浏览器就在那儿结束了这条 cue，第 22 条
     // 上线时这里解析出的是 `[CUE_ASS_ONE, '']`——词在响应体里，却一句也不显示。#140 修的是转换器。
     await expect
@@ -393,12 +395,12 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     // 就够触发一次拉取）就把这条轨解析完了，之后改 `mode` 不再发请求。所以磁盘上那个文件
     // 没了，播放器照样把那两句词放出来——接口那句 404 谁也没听见。
     // 菜单在这里必须重新点开：`selectTrack` 收尾会把 `showSubtitleMenu` 关掉（第 6 步点完
-    // 'chi' 之后条目就不在了，直接点第二次的话 Playwright 是在等永远不出现的元素——实测症状
+    // '中文' 之后条目就不在了，直接点第二次的话 Playwright 是在等永远不出现的元素——实测症状
     // 是本条超时报在 `.click()` 上，而不是报在断言上）。
     await page.locator('.subtitle-btn').click()
     await expect(page.locator('.subtitle-menu')).toBeVisible()
-    expect(await subtitleMenuItems(page)).toEqual(['关闭', 'chi', 'eng', 'jpn'])
-    await page.locator('.subtitle-menu-item', { hasText: 'eng' }).click()
+    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文'])
+    await page.locator('.subtitle-menu-item', { hasText: '英文' }).click()
     await expect
       .poll(() => trackStates(page), {
         message: '那条轨没有被切成 showing，或者浏览器把它的旧 cue 丢了',
@@ -417,8 +419,8 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     await expect(page.locator('.subtitle-btn')).toBeVisible({ timeout: 20_000 })
     await page.locator('.subtitle-btn').click()
     await expect(page.locator('.subtitle-menu')).toBeVisible()
-    expect(await subtitleMenuItems(page)).toEqual(['关闭', 'chi', 'eng', 'jpn'])
-    await page.locator('.subtitle-menu-item', { hasText: 'eng' }).click()
+    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文'])
+    await page.locator('.subtitle-menu-item', { hasText: '英文' }).click()
     await expect
       .poll(() => trackStates(page), {
         message: '那条已经不在磁盘上的轨没有被浏览器标成失败',
@@ -434,7 +436,7 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     // 用它报「1 条图像字幕浏览器放不出来」）对这条死轨一个字都不提。
     await page.locator('.subtitle-btn').click()
     await expect(page.locator('.subtitle-menu')).toBeVisible()
-    expect(await subtitleMenuItems(page)).toEqual(['关闭', 'chi', 'eng', 'jpn'])
+    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文'])
     await expect(page.locator('.subtitle-menu-note')).toHaveCount(0)
   } finally {
     // `finally` 里只收场、不抛（#136 的规矩：这里抛出的异常会顶掉真正的失败原因）。
@@ -521,7 +523,7 @@ test('外挂字幕的四种编码：GBK 与 UTF-16 真文件走到浏览器变�
       expect(row, `清单里没有 ${target} 这一行`).toBeDefined()
       return `/api/videos/${videoId}/subtitles/${row!.id}/stream`
     }
-    expect(rows.map((row) => row.label)).toEqual(['chi', 'eng', 'jpn', 'kor'])
+    expect(rows.map((row) => row.label)).toEqual(['中文', '英文', '日文', '韩文'])
     expect(rows.map((row) => row.language)).toEqual(['zh', 'en', 'ja', 'ko'])
 
     // ---- 3. 三路识别成功的响应体：整段相等，一个字符都不许差
@@ -581,9 +583,9 @@ test('外挂字幕的四种编码：GBK 与 UTF-16 真文件走到浏览器变�
     await page.locator('.subtitle-btn').click()
     await expect(page.locator('.subtitle-menu')).toBeVisible()
     await expect(page.locator('.subtitle-menu-group')).toHaveCount(0)
-    expect(await subtitleMenuItems(page)).toEqual(['关闭', 'chi', 'eng', 'jpn', 'kor'])
+    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文', '韩文'])
 
-    await page.locator('.subtitle-menu-item', { hasText: 'chi' }).click()
+    await page.locator('.subtitle-menu-item', { hasText: '中文' }).click()
     // cue 是浏览器自己解析出来的 UTF-8 文本：服务器嗅错编码的话这里不会是那三句中文。
     // 第四条的加载状态是 2（=已加载）而不是 3：那份响应合法、只是没有一条 cue，浏览器完全不
     // 觉得有事——和第 22 条第 5 步那个"200 而零条 cue"同一个形状。
@@ -600,7 +602,7 @@ test('外挂字幕的四种编码：GBK 与 UTF-16 真文件走到浏览器变�
     // （`selectTrack` 收尾会把菜单关掉，第 22 条那次的挂起），点下去切得动、字一个没有。
     await page.locator('.subtitle-btn').click()
     await expect(page.locator('.subtitle-menu')).toBeVisible()
-    await page.locator('.subtitle-menu-item', { hasText: 'kor' }).click()
+    await page.locator('.subtitle-menu-item', { hasText: '韩文' }).click()
     await expect
       .poll(() => trackStates(page), { message: '那条没 BOM 的轨切不上 showing，或者它其实有 cue' })
       .toContainEqual({ src: idOf(ENC_NOBOM_FILE), mode: 'showing', elementState: 2, cues: [] })

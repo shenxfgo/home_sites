@@ -13,37 +13,12 @@ from src.utils.subtitles import (
     SubtitleConversionError,
     ffmpeg_stderr_reason,
     fold_blank_lines_inside_cues,
+    language_display_name,
 )
 
 # Codecs whose cues ffmpeg can hand straight to the WebVTT muxer. Anything else
 # (PGS, DVD and DVB bitmaps) is a picture, and a picture cannot be re-timed.
 WEBVTT_CODECS: set[str] = {"subrip", "ass", "ssa", "mov_text", "webvtt", "text"}
-
-# ISO 639-2/T codes ffprobe reports for the tracks people actually ship.
-_LANGUAGE_NAMES = {
-    "chi": "中文",
-    "zho": "中文",
-    "zh": "中文",
-    "eng": "英文",
-    "en": "英文",
-    "jpn": "日文",
-    "ja": "日文",
-    "kor": "韩文",
-    "ko": "韩文",
-    "fra": "法文",
-    "fre": "法文",
-    "fr": "法文",
-    "deu": "德文",
-    "ger": "德文",
-    "de": "德文",
-    "spa": "西班牙文",
-    "es": "西班牙文",
-    "rus": "俄文",
-    "ru": "俄文",
-    "yue": "粤语",
-    "pt": "葡萄牙文",
-    "it": "意大利文",
-}
 
 
 class StreamNotFoundError(Exception):
@@ -94,14 +69,18 @@ def _language_of(stream: dict) -> str | None:
 
 
 def _label_of(stream: dict, position: int) -> str:
-    """Name a track the way the player's menu should show it."""
+    """Name a track the way the player's menu should show it.
+
+    The names come from `subtitles.LANGUAGE_NAMES`, which the sidecar path uses too: both
+    sources land in one dropdown, so they must be spelled the same way (#143).
+    """
     tags = stream.get("tags") or {}
     title: str | None = tags.get("title") or tags.get("TITLE")
     if title:
         return title.strip()
     language = _language_of(stream)
     if language:
-        return _LANGUAGE_NAMES.get(language, language)
+        return language_display_name(language)
     return f"轨道 {position + 1}"
 
 

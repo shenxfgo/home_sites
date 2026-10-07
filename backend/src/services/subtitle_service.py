@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.subtitle import Subtitle
 from src.models.video import Video
 from src.storage import storage_for_locator
+from src.utils.subtitles import sidecar_identity
 
 
 class SubtitleService:
@@ -59,11 +60,12 @@ class SubtitleService:
         if not _within(video_dir, os.path.abspath(normalized)):
             raise ValueError("字幕文件必须位于视频所在目录内")
 
+        derived_language, derived_label = sidecar_identity(video.filepath, normalized)
         subtitle = Subtitle(
             video_id=video_id,
             filepath=normalized,
-            language=language or _language_of(normalized, video.filepath),
-            label=label or _label_of(normalized, video.filepath),
+            language=language or derived_language,
+            label=label or derived_label,
         )
         self.session.add(subtitle)
         await self.session.commit()
@@ -133,16 +135,3 @@ def _within(root: str, path: str) -> bool:
     except ValueError:
         # Different drives on Windows
         return False
-
-
-def _language_of(subtitle_path: str, video_path: str) -> str | None:
-    stem = os.path.splitext(os.path.basename(video_path))[0]
-    prefix = os.path.splitext(os.path.basename(subtitle_path))[0]
-    suffix = prefix[len(stem):] if prefix.startswith(stem) else ""
-    return suffix.lstrip(".") or None
-
-
-def _label_of(subtitle_path: str, video_path: str) -> str:
-    return _language_of(subtitle_path, video_path) or os.path.splitext(
-        os.path.basename(subtitle_path)
-    )[0]
