@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { recordPlay, updateProgress } from '@/api/videos'
 import {
   embeddedSubtitleTrackUrl,
@@ -60,6 +61,8 @@ const audioTracks = ref<AudioTrack[]>([])
 /** Bitmap tracks (PGS/DVD/DVB) are inside the file but cannot be rendered. */
 const unsupportedTrackCount = ref(0)
 const activeTrackKey = ref<string | null>(null)
+/** Keys whose WebVTT the browser could not fetch — the only tracks the menu marks. */
+const failedTrackKeys = ref<string[]>([])
 const showSubtitleMenu = ref(false)
 const playbackRate = ref(playerPrefs.rate)
 const showRateMenu = ref(false)
@@ -156,12 +159,33 @@ function refreshCueTiming() {
   })
 }
 
-function bindTrackTiming() {
+/**
+ * 一条字幕取不到只有浏览器知道：那段 WebVTT 是它自己去拉的，接口那句 404 到这里只剩一个
+ * `error` 事件，原因在不在磁盘上都问不出来，所以话只说这一句。
+ */
+function markTrackFailed(key: string, label: string) {
+  if (failedTrackKeys.value.includes(key)) return
+  failedTrackKeys.value.push(key)
+  ElMessage.error(`字幕「${label}」没能加载`)
+}
+
+function failedSuffix(key: string): string {
+  return failedTrackKeys.value.includes(key) ? '（加载失败）' : ''
+}
+
+function bindTrackEvents() {
   const video = videoRef.value
   if (!video) return
   const tracks = video.textTracks
   const elements = Array.from(video.querySelectorAll('track')) as HTMLTrackElement[]
   playableTracks.value.forEach((item, index) => {
+    // 失败和 load 一样只发在 <track> 元素上（TextTrack 上那个事件 Chromium 从来不发），
+    // 所以绑在这里、赶在 `video.textTracks` 那一层之前——那一层还没有时元素已经在了。
+    elements[index]?.addEventListener(
+      'error',
+      () => markTrackFailed(item.key, item.label),
+      { once: true },
+    )
     const track = tracks[index]
     if (!track) return
     if (track.cues?.length) {
@@ -427,6 +451,7 @@ async function loadTracks() {
   activeTrackKey.value = null
   showSubtitleMenu.value = false
   cueBases.clear()
+  failedTrackKeys.value = []
   subtitles.value = []
   embeddedTracks.value = []
   audioTracks.value = []
@@ -451,7 +476,7 @@ async function loadTracks() {
   }
 
   await nextTick()
-  bindTrackTiming()
+  bindTrackEvents()
 }
 
 function applyTrackMode() {
@@ -810,7 +835,7 @@ watch(() => props.videoId, () => {
               :class="{ 'is-active': activeTrackKey === `sidecar-${subtitle.id}` }"
               @click.stop="selectTrack(`sidecar-${subtitle.id}`)"
             >
-              {{ subtitleLabel(subtitle) }}
+              {{ subtitleLabel(subtitle) }}{{ failedSuffix(`sidecar-${subtitle.id}`) }}
             </button>
             <p v-if="embeddedTracks.length" class="subtitle-menu-group">文件内嵌</p>
             <button
@@ -820,7 +845,7 @@ watch(() => props.videoId, () => {
               :class="{ 'is-active': activeTrackKey === `embedded-${track.stream_index}` }"
               @click.stop="selectTrack(`embedded-${track.stream_index}`)"
             >
-              {{ track.label }}
+              {{ track.label }}{{ failedSuffix(`embedded-${track.stream_index}`) }}
             </button>
             <p v-if="unsupportedTrackCount" class="subtitle-menu-note">
               {{ unsupportedTrackCount }} 条图像字幕浏览器放不出来

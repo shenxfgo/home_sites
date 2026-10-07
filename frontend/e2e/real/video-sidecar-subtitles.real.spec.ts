@@ -25,9 +25,12 @@
  * WebVTT 里必须消失而 `Dialogue:` 和 `ScriptType` 必须整个不见（原样吐回一个 `.ass` 是这一路
  * 最像"成功"的失败）；以及两句只有真文件才会给的现状——**一个 cue 都解析不出来的转换仍然回
  * 200**，而**字幕文件被人删掉之后界面上有两副样子**：不重载时那条轨放的是浏览器早就解析完存在
- * 内存里的旧 cue（接口那句 404 谁也没听见，切过去照样那两句词），重载之后 `<track>` 才真的去
- * 拉一次、`readyState` 变成 3，而菜单里那个条目照旧在、照旧可点、照旧什么都不提示。第 7 步两头
- * 都钉住了。播放页那一头签的还是浏览器自己解析出的 cue，和上一条同一族"真进程 + 真文件 +
+ * 内存里的旧 cue（接口那句 404 谁也没听见，切过去照样那两句词），重载之后要等那一条被点下去、
+ * `mode` 从 `disabled` 拨走，`<track>` 才真的去拉这一次、`readyState` 变成 3。本条曾经把这一刻
+ * 的「条目照旧在、照旧可点、照旧什么都不提示」钉成现状，#146 把它翻了过来：从浏览器报出失败的
+ * 那一刻起，toast 说一句"刚刚没取到"、菜单条目上带着「（加载失败）」说给 toast 消失之后的用户，
+ * 而**没被点过的那一条仍然一声不响**（它连一个请求都没发出去，界面就没有任何东西该说）。第 7 步
+ * 两头都钉住了。播放页那一头签的还是浏览器自己解析出的 cue，和上一条同一族"真进程 + 真文件 +
  * 真浏览器"三方都在场的断言。
  *
  * 一个踩过的坑写在这里省后人半天：`selectTrack` 收尾会把 `showSubtitleMenu` 关掉，所以**连着点
@@ -193,6 +196,14 @@ async function subtitleMenuItems(page: Page): Promise<string[]> {
     text.trim(),
   )
 }
+
+/**
+ * 界面上那句"这条字幕取不到"唯一的出处：element-plus 的错误 toast。
+ *
+ * 播放器只可能从一处得知失败——`<track>` 元素上那个 `error` 事件，接口那句 404 的原话到浏览
+ * 器这一头一个字都不剩（#142 把原因留在**响应体**里，那是给直接 fetch 那一路看的）。
+ */
+const errorToasts = (page: Page) => page.locator('.el-message--error')
 
 /**
  * 浏览器自己那条轨的此刻状态：地址、模式、加载状态、以及它解析出了哪几句（读不到 cue 时给空清单）。
@@ -391,9 +402,11 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     expect(gone.status, gone.text).toBe(404)
     expect(gone.text).toContain('字幕文件不存在')
 
-    // 切过去用的还是**已经在内存里的那份** WebVTT：`<track>` 在插入时（`mode` 默认 `hidden`
-    // 就够触发一次拉取）就把这条轨解析完了，之后改 `mode` 不再发请求。所以磁盘上那个文件
-    // 没了，播放器照样把那两句词放出来——接口那句 404 谁也没听见。
+    // 切过去用的还是**已经在内存里的那份** WebVTT：这条轨早在第 6 步那一次点击里就拉下来了
+    //（`applyTrackMode` 把三条一起从 `disabled` 拨到 `showing`/`hidden`，而那一次拨动就是第一个
+    // 请求的来处——两条没选中的 `hidden` 轨也是 `readyState` 2、cue 齐全，就是这么来的）。之后
+    // 再改 `mode` 不再发请求，所以磁盘上那个文件没了，播放器照样把那两句词放出来——接口那句
+    // 404 谁也没听见。
     // 菜单在这里必须重新点开：`selectTrack` 收尾会把 `showSubtitleMenu` 关掉（第 6 步点完
     // '中文' 之后条目就不在了，直接点第二次的话 Playwright 是在等永远不出现的元素——实测症状
     // 是本条超时报在 `.click()` 上，而不是报在断言上）。
@@ -412,15 +425,30 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
         cues: [CUE_SRT_ONE, CUE_SRT_TWO],
       })
 
-    // 重载一次才轮到那个 404 走到浏览器：行还在，所以应用照样列出这条轨、照样给它拼出地址，
-    // 而拉取失败之后界面上没有任何东西说它坏了——条目还在、还能点、点下去什么都没有。
+    // 磁盘上那个文件此刻确实已经没了，而界面上一个字都不许报：那句话说的是"浏览器取不到"，
+    // 不是"行还在、文件没了"。这是整个修复的反面——标记的来处只能是那个 `error` 事件。
+    await expect(errorToasts(page)).toHaveCount(0)
+    await page.locator('.subtitle-btn').click()
+    await expect(page.locator('.subtitle-menu')).toBeVisible()
+    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文'])
+
+    // 重载一次才轮到那个 404 走到浏览器：行还在，所以应用照样列出这条轨、照样给它拼出地址。
+    // 但刚重载完的那一刻它和好轨长得一模一样，这不是漏——本机实测：重载后三条轨的 `mode` 全是
+    // `disabled`、`readyState` 停在 0，一个字节也没发出去（`<track>` 上没有 `default` 时 Chromium
+    // 就是这么起步的，`hidden` 是我们自己拨上去的）；拨到 `showing`/`hidden` 才有第一个请求，
+    // 于是也才有第一次失败。浏览器此刻确实还不知道，界面就没有任何东西该说。
     await page.goto(`/videos/${videoId}`)
     await page.locator('.preview-area').click()
     await expect(page.locator('.subtitle-btn')).toBeVisible({ timeout: 20_000 })
     await page.locator('.subtitle-btn').click()
     await expect(page.locator('.subtitle-menu')).toBeVisible()
     expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文'])
+    await expect(errorToasts(page)).toHaveCount(0)
+
+    // 点下去浏览器才去拉，而它拉到的就是接口那句 404。从这一刻起界面上必须有一句话说得出是
+    // 哪一条取不到：toast 说的是"刚刚没取到"，菜单条目上那五个字是说给 toast 消失之后的。
     await page.locator('.subtitle-menu-item', { hasText: '英文' }).click()
+    await expect(errorToasts(page).last()).toContainText('字幕「英文」没能加载')
     await expect
       .poll(() => trackStates(page), {
         message: '那条已经不在磁盘上的轨没有被浏览器标成失败',
@@ -431,12 +459,12 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
         elementState: 3,
         cues: [],
       })
-    // 到这一步为止，界面对"字幕文件不见了"的全部反应就是：什么都没有。重新点开菜单核对最后
-    // 这一句——条目还在、还是可点，而那一段唯一会说话的位置（`.subtitle-menu-note`，内嵌那一路
-    // 用它报「1 条图像字幕浏览器放不出来」）对这条死轨一个字都不提。
+
+    // 而那一段唯一会说话的两个位置现在都说话了：条目带着标记，`.subtitle-menu-note`
+    //（内嵌那一路用它报「1 条图像字幕浏览器放不出来」）依旧一个字都不加。
     await page.locator('.subtitle-btn').click()
     await expect(page.locator('.subtitle-menu')).toBeVisible()
-    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文'])
+    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文（加载失败）', '日文'])
     await expect(page.locator('.subtitle-menu-note')).toHaveCount(0)
   } finally {
     // `finally` 里只收场、不抛（#136 的规矩：这里抛出的异常会顶掉真正的失败原因）。

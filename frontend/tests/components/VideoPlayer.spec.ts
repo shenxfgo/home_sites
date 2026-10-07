@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { ElMessage } from 'element-plus'
 import VideoPlayer from '@/components/VideoPlayer.vue'
 import { playerPrefs } from '@/composables/playerPrefs'
 import { makeSubtitle } from '../factories'
@@ -389,6 +390,123 @@ describe('VideoPlayer subtitles', () => {
     expect(wrapper.find('video').exists()).toBe(true)
     expect(wrapper.findAll('track')).toHaveLength(0)
     expect(wrapper.find('.subtitle-btn').exists()).toBe(false)
+  })
+
+  // 浏览器拉不到那条 WebVTT 时，`error` 只发在 `<track>` **元素**上（`TextTrack` 上那个事件
+  // Chromium 从来不发，和第 22 条记的 `load` 同一个不对称）。这一族核的是播放器拿到那个事件之后
+  // 说些什么——在它之前，界面对"字幕取不到"的全部反应是什么都不说。
+  it('names the track the browser could not fetch', async () => {
+    listSubtitles.mockResolvedValue([
+      makeSubtitle({ id: 3, language: 'zh', label: '中文' }),
+      makeSubtitle({ id: 4, language: 'en', label: '英文' }),
+    ])
+    const wrapper = mountPlayer()
+    await flushPromises()
+    const error = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+
+    await wrapper.findAll('track')[1].trigger('error')
+
+    expect(error).toHaveBeenCalledTimes(1)
+    expect(error).toHaveBeenCalledWith('字幕「英文」没能加载')
+    await wrapper.find('.subtitle-btn').trigger('click')
+    expect(wrapper.findAll('.subtitle-menu-item').map((item) => item.text())).toEqual([
+      '关闭',
+      '中文',
+      '英文（加载失败）',
+    ])
+  })
+
+  it('marks only the track the browser reported, and only after it reports it', async () => {
+    // 标记必须来自那个事件，不能来自"这一行在清单里"：否则一份好字幕也会被标死。
+    listSubtitles.mockResolvedValue([
+      makeSubtitle({ id: 3, language: 'zh', label: '中文' }),
+      makeSubtitle({ id: 4, language: 'en', label: '英文' }),
+    ])
+    const wrapper = mountPlayer()
+    await flushPromises()
+
+    await wrapper.find('.subtitle-btn').trigger('click')
+    expect(wrapper.findAll('.subtitle-menu-item').map((item) => item.text())).toEqual([
+      '关闭',
+      '中文',
+      '英文',
+    ])
+
+    await wrapper.findAll('track')[1].trigger('error')
+
+    // 菜单还开着，标记就得跟着出现——写进界面那一刻已经读过的东西不算数。
+    expect(wrapper.findAll('.subtitle-menu-item').map((item) => item.text())).toEqual([
+      '关闭',
+      '中文',
+      '英文（加载失败）',
+    ])
+  })
+
+  it('keeps the marker but does not repeat the toast for the same track', async () => {
+    listSubtitles.mockResolvedValue([makeSubtitle({ id: 4, language: 'en', label: '英文' })])
+    const wrapper = mountPlayer()
+    await flushPromises()
+    const error = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+
+    await wrapper.findAll('track')[0].trigger('error')
+    await wrapper.findAll('track')[0].trigger('error')
+
+    expect(error).toHaveBeenCalledTimes(1)
+    // toast 自己会消失，留下说话的是菜单里那一条
+    await wrapper.find('.subtitle-btn').trigger('click')
+    expect(wrapper.findAll('.subtitle-menu-item').map((item) => item.text())).toEqual([
+      '关闭',
+      '英文（加载失败）',
+    ])
+  })
+
+  it('marks a failed embedded track by the label the probe gave it', async () => {
+    listMediaStreams.mockResolvedValue({
+      probed: true,
+      container: 'mp4',
+      subtitles: [
+        {
+          stream_index: 5,
+          position: 0,
+          codec: 'mov_text',
+          language: 'zho',
+          label: '中文',
+          supported: true,
+        },
+      ],
+      audio: [],
+    })
+    const wrapper = mountPlayer()
+    await flushPromises()
+    const error = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+
+    await wrapper.findAll('track')[0].trigger('error')
+
+    expect(error).toHaveBeenCalledWith('字幕「中文」没能加载')
+    await wrapper.find('.subtitle-btn').trigger('click')
+    expect(wrapper.findAll('.subtitle-menu-item').map((item) => item.text())).toEqual([
+      '关闭',
+      '中文（加载失败）',
+    ])
+  })
+
+  it('forgets the failure when the next file loads', async () => {
+    listSubtitles.mockResolvedValue([makeSubtitle({ id: 4, language: 'en', label: '英文' })])
+    const wrapper = mountPlayer(1)
+    await flushPromises()
+    const error = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+
+    await wrapper.findAll('track')[0].trigger('error')
+    expect(error).toHaveBeenCalledTimes(1)
+
+    await wrapper.setProps({ videoId: 2 })
+    await flushPromises()
+
+    await wrapper.find('.subtitle-btn').trigger('click')
+    expect(wrapper.findAll('.subtitle-menu-item').map((item) => item.text())).toEqual([
+      '关闭',
+      '英文',
+    ])
   })
 })
 
