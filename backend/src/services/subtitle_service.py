@@ -98,6 +98,28 @@ class SubtitleService:
         )
         return {_norm(row[0]) for row in result.all()}
 
+    async def prune_missing(self, source_id: int) -> int:
+        """Delete the tracks whose file is no longer on disk; return how many.
+
+        Without this half, registration is one-way: a sidecar that gets moved,
+        renamed or deleted stays listed forever, and the player keeps offering a
+        track that can only 404. The question asked is「文件还在吗」rather than
+        「这轮扫描认得它吗」, so a track someone registered by hand under a name
+        the sidecar pattern never matches survives its own scan.
+
+        The caller commits, same as with ``register``.
+        """
+        result = await self.session.execute(
+            select(Subtitle)
+            .join(Video, Video.id == Subtitle.video_id)
+            .where(Video.source_id == source_id)
+        )
+        rows = list(result.scalars().all())
+        gone = [row for row in rows if not os.path.isfile(row.filepath)]
+        for row in gone:
+            await self.session.delete(row)
+        return len(gone)
+
     def register(
         self,
         video_id: int,

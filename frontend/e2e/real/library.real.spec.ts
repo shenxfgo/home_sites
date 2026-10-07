@@ -410,7 +410,7 @@ type NotificationRow = {
   title: string
   message: string
   read: boolean
-  data: { source_id: number; new_count: number; subtitles_found: number; missing_changed: number }
+  data: { source_id: number; new_count: number; subtitles_found: number; missing_changed: number; subtitles_gone: number }
 }
 type NotificationList = { items: NotificationRow[]; total: number }
 
@@ -429,7 +429,13 @@ test('通知是广播的、已读是按人的：同批文件再扫一遍零新�
   expect(only?.read).toBe(false)
   expect(only?.message).toContain('发现 1 个新视频')
   expect(only?.message).toContain('1 条字幕')
-  expect(only?.data).toEqual({ source_id: 1, new_count: 1, subtitles_found: 1, missing_changed: 0 })
+  expect(only?.data).toEqual({
+    source_id: 1,
+    new_count: 1,
+    subtitles_found: 1,
+    missing_changed: 0,
+    subtitles_gone: 0,
+  })
 
   // 铃铛：角标是未读数，弹层里那一行就是库里那一行
   await expect(page.locator('.notification-badge .el-badge__content')).toHaveText('1')
@@ -871,6 +877,7 @@ test('片子从磁盘上消失再挂回来：行只翻 is_missing，横幅、算
       new_count: 0,
       subtitles_found: 0,
       missing_changed: 1,
+      subtitles_gone: 0,
     })
 
     // 首页那条横幅：`丢失` 探针报的数、卡片角上的标记、横幅里那句话，三处必须同源
@@ -910,6 +917,7 @@ test('片子从磁盘上消失再挂回来：行只翻 is_missing，横幅、算
       new_count: 0,
       subtitles_found: 0,
       missing_changed: 1,
+      subtitles_gone: 0,
     })
 
     await page.goto('/')

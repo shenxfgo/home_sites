@@ -187,7 +187,7 @@ class ScanService:
         """Scan a single video source for new videos and subtitles.
 
         Returns a summary dict with keys: source_id, files_found, new_videos,
-        subtitles_found, foreign_paths.
+        subtitles_found, subtitles_gone, foreign_paths.
         """
         source_result = await self.session.execute(
             select(VideoSource).where(VideoSource.id == source_id)
@@ -206,6 +206,9 @@ class ScanService:
         files_lost = 0
         files_found_again = 0
         foreign_paths = 0
+        # 字幕那一半的核对方向正好相反：影片行留着改标记，字幕行除了"这条轨存在"
+        # 什么都不表达，文件没了它就是假的，而菜单照样把它列出来、照样能点。
+        subtitles_gone = 0
 
         with _tracked_scan():
             _scan_state["current_source"] = source.name
@@ -345,13 +348,18 @@ class ScanService:
                             files_lost += 1
                         else:
                             files_found_again += 1
+                # 能力闸门不是装饰：源类型可以由 PUT /api/sources/{id} 从本地改成
+                # 对象存储，而那些 s3:// 地址在本地 isfile 看来永远"不存在"——不看
+                # 能力就核对，一次扫描能把这类历史行整批删掉。
+                if storage.capabilities.sidecar_subtitles:
+                    subtitles_gone = await subtitle_service.prune_missing(source_id)
             await self.session.commit()
 
             # 库没变就不发通知：一轮定时扫描六个源各发一条"发现 0 个新视频"，
             # 三个小时就能把通知流刷成一堵墙。扫过没扫过本来就记在
             # source.last_scan_at 上，不需要靠通知当心跳。
             missing_changed = files_lost + files_found_again
-            if new_videos or subtitles_found or missing_changed:
+            if new_videos or subtitles_found or missing_changed or subtitles_gone:
                 message = f"视频源 {source.name} 扫描完成，发现 {new_videos} 个新视频"
                 if subtitles_found:
                     message += f"、{subtitles_found} 条字幕"
@@ -359,6 +367,8 @@ class ScanService:
                     message += f"，{files_lost} 个文件已找不到"
                 if files_found_again:
                     message += f"，{files_found_again} 个文件已找回"
+                if subtitles_gone:
+                    message += f"，{subtitles_gone} 条字幕文件已不存在"
                 notification_service = NotificationService(self.session)
                 await notification_service.create(
                     type="scan_complete",
@@ -369,6 +379,7 @@ class ScanService:
                         "new_count": new_videos,
                         "subtitles_found": subtitles_found,
                         "missing_changed": missing_changed,
+                        "subtitles_gone": subtitles_gone,
                     },
                 )
 
@@ -377,6 +388,7 @@ class ScanService:
             "files_found": files_found,
             "new_videos": new_videos,
             "subtitles_found": subtitles_found,
+            "subtitles_gone": subtitles_gone,
             "foreign_paths": foreign_paths,
         }
 

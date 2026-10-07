@@ -9,6 +9,7 @@ import pytest
 
 from src.config import settings
 from src.models.source import VideoSource
+from src.models.subtitle import Subtitle
 from src.models.video import Video
 from src.services.scan_service import ScanService
 
@@ -58,6 +59,42 @@ async def test_empty_but_reachable_source_marks_rows_missing(db_session, tmp_pat
     await db_session.refresh(video)
 
     assert video.is_missing is True
+
+
+@pytest.mark.asyncio
+async def test_unreachable_share_keeps_registered_subtitles(db_session, tmp_path):
+    """没挂载好的盘上"看不见字幕文件"不是证据，不能据此删掉登记。
+
+    和上面那条同一个理由，只是对象换成 `subtitles` 表：核对读的是本地文件系统，
+    而挂载盘没就绪时 `isfile` 对每一个字幕文件都回 False —— 一次凭证失误或一次
+    没挂载，就能把整库的字幕登记删干净，而它们一条都没坏。
+    """
+    gone = str(tmp_path / "not-mounted")
+    source, video = await _seed_video(
+        db_session,
+        path=gone,
+        type_="local",
+        locator=os.path.join(gone, "01.mkv"),
+    )
+    db_session.add(
+        Subtitle(
+            video_id=video.id,
+            filepath=os.path.join(gone, "01.zh.srt"),
+            language="zh",
+        )
+    )
+    await db_session.commit()
+
+    result = await ScanService(db_session).scan_source(source.id)
+
+    assert result["files_found"] == 0
+    assert result["subtitles_gone"] == 0
+    rows = (
+        await db_session.execute(
+            Subtitle.__table__.select().where(Subtitle.video_id == video.id)
+        )
+    ).all()
+    assert len(rows) == 1
 
 
 @pytest.mark.asyncio

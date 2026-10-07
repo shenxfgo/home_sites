@@ -797,3 +797,149 @@ async def test_a_foreign_path_does_not_take_the_rest_of_the_listing_down(
         await db_session.execute(select(Video.filepath).where(Video.source_id == second.id))
     ).scalars().all()
     assert list(owned) == ["/lib/只有这轮才出现.mp4"]
+
+
+# ---------------------------------------------------------------------------
+# 字幕核对：登记过之后，扫描还要问一句「文件还在吗」
+#
+# 影片那一行早就有 is_missing 核对（见上面那三条），字幕这一半从来没有：
+# _register_subtitles 只会 add，谁也没删。于是 sidecar 文件被移走、改名或删掉之后，
+# 那条 Subtitle 行永远留在库里，GET /api/videos/{id}/subtitles 照旧把它列出来，
+# 播放器的 CC 菜单照旧给一个能点的入口，而点开必定 404。#146 只是让那句失败
+# 说得出是谁，并没有让这条轨消失。
+
+
+@pytest.mark.asyncio
+async def test_scan_prunes_subtitle_row_whose_file_is_gone(db_session, tmp_path):
+    """字幕文件没了，那一行就该跟着消失，而不是永远挂在菜单上。"""
+    root = str(tmp_path)
+    _write_video(root, "movie.mp4")
+    srt = _write_text(os.path.join(root, "movie.zh.srt"))
+    source = await _create_source(db_session, name="字幕核对源", path=root)
+
+    with _no_media_probe():
+        await ScanService(db_session).scan_source(source.id)
+        video = (await db_session.execute(select(Video))).scalars().one()
+        assert len(await _subtitles_of(db_session, video.id)) == 1
+
+        os.remove(srt)
+        result = await ScanService(db_session).scan_source(source.id)
+
+    # 症状本身：文件已经不在了，那一行还在库里被列出来
+    assert [s.filepath for s in await _subtitles_of(db_session, video.id)] == []
+    assert result["subtitles_gone"] == 1
+    # 影片本身还在盘上，不该被这次核对连带标记成丢失
+    await db_session.refresh(video)
+    assert video.is_missing is False
+
+
+@pytest.mark.asyncio
+async def test_scan_keeps_subtitle_rows_whose_files_are_still_there(db_session, tmp_path):
+    """对照用例：盘上什么都没动，第二遍扫描一条也不许删。"""
+    root = str(tmp_path)
+    _write_video(root, "movie.mp4")
+    _write_text(os.path.join(root, "movie.zh.srt"))
+    _write_text(os.path.join(root, "movie.en.vtt"))
+    source = await _create_source(db_session, name="安静源", path=root)
+
+    with _no_media_probe():
+        await ScanService(db_session).scan_source(source.id)
+        result = await ScanService(db_session).scan_source(source.id)
+
+    video = (await db_session.execute(select(Video))).scalars().one()
+    stored = await _subtitles_of(db_session, video.id)
+    assert result["subtitles_gone"] == 0
+    assert [s.language for s in stored] == ["en", "zh"]
+
+
+@pytest.mark.asyncio
+async def test_scan_keeps_hand_registered_subtitle_the_scanner_never_matches(
+    db_session, tmp_path
+):
+    """人手挂上去的字幕扛得过一次真扫描。
+
+    核对问的是「文件还在吗」，不是「扫描那套命名认不认得它」：`另一组字幕.srt`
+    不符合 sidecar 的命名，find_subtitle_files 永远匹配不上，按「这轮没扫到就删」
+    来写就会每轮悄悄抹掉一条人工登记的轨 —— #134 那条「手工挂的要活得下来」
+    是同一个理由。
+    """
+    from src.services.subtitle_service import SubtitleService
+
+    root = str(tmp_path)
+    _write_video(root, "movie.mp4")
+    hand = _write_text(os.path.join(root, "另一组字幕.srt"))
+    source = await _create_source(db_session, name="手工登记源", path=root)
+
+    with _no_media_probe():
+        await ScanService(db_session).scan_source(source.id)
+        video = (await db_session.execute(select(Video))).scalars().one()
+        await SubtitleService(db_session).add(video.id, hand)
+        result = await ScanService(db_session).scan_source(source.id)
+
+    assert result["subtitles_gone"] == 0
+    stored = await _subtitles_of(db_session, video.id)
+    assert [s.filepath for s in stored] == [os.path.normpath(hand)]
+
+
+@pytest.mark.asyncio
+async def test_gone_subtitle_announces_once_and_a_quiet_rescan_does_not(
+    db_session, tmp_path
+):
+    """字幕文件没了是变化，要说出口；说完之后没再变的那一轮不能再刷。
+
+    这句同时钉住通知闸门：`subtitles_gone` 不进去的话，#85 那条「零变化的定时
+    扫描不发通知」会被一轮又一轮的「1 条字幕文件已不存在」重新撑开。
+    """
+    root = str(tmp_path)
+    _write_video(root, "movie.mp4")
+    srt = _write_text(os.path.join(root, "movie.zh.srt"))
+    source = await _create_source(db_session, name="字幕消失源", path=root)
+
+    with _no_media_probe():
+        await ScanService(db_session).scan_source(source.id)
+        os.remove(srt)
+        await ScanService(db_session).scan_source(source.id)
+        await ScanService(db_session).scan_source(source.id)
+
+    assert await _notifications(db_session) == [
+        ("scan_complete", "视频源 字幕消失源 扫描完成，发现 1 个新视频、1 条字幕"),
+        ("scan_complete", "视频源 字幕消失源 扫描完成，发现 0 个新视频，1 条字幕文件已不存在"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_source_without_sidecar_capability_is_not_pruned_locally(
+    db_session, monkeypatch
+):
+    """外挂字幕对它关闭的源，那句本地 isfile 不许去处置它的行。
+
+    源类型是可以通过 `PUT /api/sources/{id}` 改的（本地 → 对象存储），库里就可能留着
+    指向 `s3://…` 的外挂字幕行；而 `os.path.isfile("s3://…")` 永远是 False。不看能力
+    就核对，一次扫描能把这些行整批删掉 —— 而这条路径上根本没有"文件丢了"这回事。
+    """
+    _patch_storage(
+        monkeypatch,
+        _FakeStorage(files=[], reachable=True, sidecar_subtitles=False),
+    )
+    source = VideoSource(name="桶", path="s3://media/shows", type="minio")
+    db_session.add(source)
+    await db_session.commit()
+    video = Video(
+        source_id=source.id,
+        filepath="s3://media/shows/movie.mp4",
+        title="movie",
+    )
+    db_session.add(video)
+    await db_session.commit()
+    leftover = Subtitle(
+        video_id=video.id,
+        filepath="s3://media/shows/movie.zh.srt",
+        language="zh",
+    )
+    db_session.add(leftover)
+    await db_session.commit()
+
+    result = await ScanService(db_session).scan_source(source.id)
+
+    assert result["subtitles_gone"] == 0
+    assert len(await _subtitles_of(db_session, video.id)) == 1

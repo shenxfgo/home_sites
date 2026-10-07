@@ -33,6 +33,12 @@
  * 两头都钉住了。播放页那一头签的还是浏览器自己解析出的 cue，和上一条同一族"真进程 + 真文件 +
  * 真浏览器"三方都在场的断言。
  *
+ * 第 8 步（#147）走的是另一头：扫描**核对**字幕。在那之前 `_register_subtitles` 只会 add、谁也不
+ * 删，所以文件被移走之后那一行能永远留在库里——影片那一行早就有 `is_missing` 这一说，字幕这一半
+ * 从来没有。这一步签的三样只有真后端给得了：那一行确实从库里没了（重读接口，不读界面的回声）、
+ * 通知里那句「1 条字幕文件已不存在」是服务算出来写进 JSON 列的（替身夹具的文案是前端自己抄的），
+ * 以及重载之后菜单只剩三条、活下来那条的 cue 还在。
+ *
  * 一个踩过的坑写在这里省后人半天：`selectTrack` 收尾会把 `showSubtitleMenu` 关掉，所以**连着点
  * 两个字幕条目必须在中间重新点开菜单**。不重开的症状不是断言失败，是那条 `.click()` 一直等到
  * 用例超时——Playwright 等一个永远不出现的元素时不会替你分辨"没这个元素"和"元素没可见"。
@@ -236,7 +242,7 @@ test.beforeEach(async ({ page }) => {
   await signIn(page)
 })
 
-test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转掉 ASS 的标记、文件没了浏览器标成 error', async ({
+test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转掉 ASS 的标记、文件没了浏览器标成 error、扫一次那一行跟着文件走', async ({
   page,
 }) => {
   expect(existsSync(SEEDED_FILE), '播种那部不在，复制不出第二部').toBe(true)
@@ -395,7 +401,8 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     // ---- 7. 文件从磁盘上没了（行还在）：接口换 404 那句原话，浏览器那一头两段都安静
     rmSync(SRT_FILE, { force: true })
     expect(existsSync(SRT_FILE)).toBe(false)
-    // 扫描没有"字幕丢了"这一说：行仍然在清单里，界面也仍然列着它。这是现状，不是本条要的修法。
+    // 文件没了**不会**立刻动库里那一行：核对是扫描那一步做的事（第 8 步）。在这儿它仍然被列出、
+    // 仍然能点，而这一点正是本条要签的两种样子——同一件事在接口、内存和界面上各有一副面孔。
     const afterLoss = await requestJson<SubtitleRow[]>(page, `/api/videos/${videoId}/subtitles`)
     expect(afterLoss.map((row) => row.id)).toEqual(rows.map((row) => row.id))
     const gone = await fetchInPage(page, `/api/videos/${videoId}/subtitles/${srtId}/stream`)
@@ -466,6 +473,48 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     await expect(page.locator('.subtitle-menu')).toBeVisible()
     expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文（加载失败）', '日文'])
     await expect(page.locator('.subtitle-menu-note')).toHaveCount(0)
+
+    // ---- 8. 扫一次，那一行跟着文件走（#147：扫描以前只会登记字幕，从不核对）
+    // 界面这一侧没有"核对字幕"这个按钮，用户说的是"扫描"——那一趟 POST 就是这条轨唯一的出路。
+    expect(await scanSource(page, 1)).toEqual({
+      files_found: 2,
+      new_videos: 0,
+      subtitles_found: 0,
+    })
+
+    // 先核接口，不看界面的回声（#145 那条教训：视图会把响应直接写进本地列表，所以绿的不算证词）。
+    // 删掉的必须是**走过的那一条**，另外两条一根手指都不能碰。
+    const afterScan = await requestJson<SubtitleRow[]>(page, `/api/videos/${videoId}/subtitles`)
+    expect(afterScan.map((row) => row.id), JSON.stringify(afterScan)).not.toContain(srtId)
+    expect([...afterScan.map((row) => row.filepath.replace(/\\/g, '/'))].sort()).toEqual(
+      [ASS_FILE, BROKEN_FILE].map((file) => file.replace(/\\/g, '/')).sort(),
+    )
+    // 库里那一行也说得出是谁没了：这句只有真库给得了，替身那侧的文案是前端自己写的。
+    const announced = await requestJson<{ items: { message: string }[] }>(page, '/api/notifications')
+    expect(announced.items[0]?.message).toContain('1 条字幕文件已不存在')
+
+    // 浏览器那一头：重载之后，菜单不再给那条轨一个能点的入口——#146 那个标记这时是多余的，
+    // 因为它标的那条目已经不在菜单上了。
+    await page.goto(`/videos/${videoId}`)
+    await page.locator('.preview-area').click()
+    await expect(page.locator('.subtitle-btn')).toBeVisible({ timeout: 20_000 })
+    await page.locator('.subtitle-btn').click()
+    await expect(page.locator('.subtitle-menu')).toBeVisible()
+    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '日文'])
+    await expect(errorToasts(page)).toHaveCount(0)
+
+    // 剩下那两条不是空壳：挑一条真的点开，cue 必须还在（核对删错人长得和删对一样安静）。
+    await page.locator('.subtitle-menu-item', { hasText: '中文' }).click()
+    await expect
+      .poll(() => trackStates(page), {
+        message: '扫描之后活下来的那条 ASS 轨放不出原来的两句词',
+      })
+      .toContainEqual({
+        src: `/api/videos/${videoId}/subtitles/${rows[0].id}/stream`,
+        mode: 'showing',
+        elementState: 2,
+        cues: [CUE_ASS_ONE, CUE_ASS_TWO],
+      })
   } finally {
     // `finally` 里只收场、不抛（#136 的规矩：这里抛出的异常会顶掉真正的失败原因）。
     if (videoId) {
