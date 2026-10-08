@@ -439,6 +439,52 @@ export async function mockApi(
   let transcode: TranscodeState = 'idle'
   let transcodeProgress = 0
   let transcodeFormat: string | null = null
+  /**
+   * 转码产物表。真后端只在任务**成功那一刻**往 `transcode_outputs` 写这一行（#154），
+   * 替身跟着同一个时刻写：失败和取消都不写。路径也是真后端的那个布局——产物在片源目录
+   * 之外，按影片 id 分子目录，文件名取源文件去扩展。
+   */
+  const products: Array<{
+    id: number
+    video_id: number
+    target_format: string
+    output_path: string
+    size_bytes: number
+    created_at: string
+    deleted_at: string | null
+  }> = []
+  let nextProductId = 1
+  /** `product_path` 的替身形状：`<输出目录>/<影片 id>/<源文件名去扩展>.<格式>`。 */
+  const productPath = (videoId: number, format: string) => {
+    const name = videos.find((item) => item.id === videoId)?.filepath ?? 'video'
+    const stem = (name.split(/[/\\]/).pop() ?? 'video').replace(/\.[^.]+$/, '')
+    return `/data/transcode/${videoId}/${stem}.${format}`
+  }
+  /** 真后端当场 stat 出来的那个字节数；替身没有磁盘，给一个固定的假大小。 */
+  const PRODUCT_BYTES = 1_048_576
+  /** 只有成功那一路才登记；同一片同一种容器是更新那一行，不是多一行（真库上有唯一索引）。 */
+  const recordProduct = (videoId: number) => {
+    if (!transcodeFormat) return
+    const outputPath = productPath(videoId, transcodeFormat)
+    const existing = products.find(
+      (item) => item.video_id === videoId && item.target_format === transcodeFormat,
+    )
+    if (existing) {
+      existing.output_path = outputPath
+      existing.created_at = hoursAgo(0)
+      existing.deleted_at = null
+      return
+    }
+    products.push({
+      id: nextProductId++,
+      video_id: videoId,
+      target_format: transcodeFormat,
+      output_path: outputPath,
+      size_bytes: PRODUCT_BYTES,
+      created_at: hoursAgo(0),
+      deleted_at: null,
+    })
+  }
   const readNotifications = new Set<number>()
   const removedNotifications = new Set<number>()
   /** 退出过的设备：真后端删掉那一行 sessions，替身就从这份名单里划掉它。 */
@@ -542,7 +588,7 @@ export async function mockApi(
     status: transcode,
     progress: transcodeProgress,
     target_format: transcodeFormat,
-    output_path: transcodeFormat ? `/tmp/out.${transcodeFormat}` : null,
+    output_path: transcodeFormat ? productPath(videoId, transcodeFormat) : null,
     error: null,
   })
 
@@ -888,11 +934,23 @@ export async function mockApi(
         })
       }
       if (path === '/transcode/formats') return respond(route, formats)
+      const outputs = /^\/transcode\/(\d+)\/outputs$/.exec(path)
+      if (outputs) {
+        // 真后端按完成时间倒序给，并且当场 stat 一次；替身没有磁盘，所以永远是在的那一份。
+        const id = Number(outputs[1])
+        return respond(
+          route,
+          products.filter((item) => item.video_id === id).sort((a, b) => b.id - a.id),
+        )
+      }
       const status = /^\/transcode\/(\d+)\/status$/.exec(path)
       if (status) {
         if (transcode === 'running') {
           transcodeProgress = Math.min(100, transcodeProgress + 45)
-          if (transcodeProgress === 100) transcode = 'completed'
+          if (transcodeProgress === 100) {
+            transcode = 'completed'
+            recordProduct(Number(status[1]))
+          }
         }
         return respond(route, statusBody(Number(status[1])))
       }

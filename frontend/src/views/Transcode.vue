@@ -8,9 +8,10 @@ import {
   cancelTranscode,
   getTranscodeStatus,
   listTranscodeFormats,
+  listTranscodeProducts,
   startTranscode,
 } from '@/api/transcode'
-import type { TranscodeFormat, TranscodeStatus } from '@/types/transcode'
+import type { TranscodeFormat, TranscodeProduct, TranscodeStatus } from '@/types/transcode'
 import type { Video } from '@/types/video'
 
 const route = useRoute()
@@ -19,6 +20,7 @@ const videoId = ref(Number(route.params.id))
 
 const video = ref<Video | null>(null)
 const formats = ref<TranscodeFormat[]>([])
+const products = ref<TranscodeProduct[]>([])
 const selectedFormat = ref('')
 const transcodeStatus = ref<TranscodeStatus | null>(null)
 const statusFetchError = ref<string | null>(null)
@@ -35,6 +37,21 @@ function errorReason(error: unknown): string | null {
 const filename = computed(
   () => video.value?.filepath.split(/[/\\]/).pop() ?? '',
 )
+
+/** 产物落在输出目录里的哪一格：只显示文件名，完整路径另有的一列给。 */
+const productName = (path: string) => path.split(/[/\\]/).pop() ?? path
+
+function formatSize(bytes: number | null): string {
+  if (bytes === null) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function formatDate(iso: string): string {
+  return iso ? new Date(iso).toLocaleString() : '—'
+}
 
 const statusLabels: Record<string, string> = {
   idle: '空闲',
@@ -79,12 +96,23 @@ const fetchFormats = async () => {
   }
 }
 
+const fetchProducts = async () => {
+  try {
+    products.value = await listTranscodeProducts(videoId.value)
+  } catch (error) {
+    // 表格里一行都不显示和"这部片子没转过码"在界面上是同一个样子，得说出原因
+    ElMessage.error(`获取转码产物失败：${errorReason(error) ?? '未知原因'}`)
+  }
+}
+
 const fetchStatus = async () => {
   try {
     transcodeStatus.value = await getTranscodeStatus(videoId.value)
     statusFetchError.value = null
     if (transcodeStatus.value?.status === 'completed' && pollTimer) {
       ElMessage.success('转码完成')
+      // 产物表里那一行是任务成功那一刻才写进去的，不重读一次就得刷新页面才看得到
+      await fetchProducts()
     }
     if (transcodeStatus.value?.status === 'failed' && pollTimer) {
       ElMessage.error(transcodeStatus.value.error ?? '转码失败')
@@ -181,12 +209,13 @@ watch(
     videoId.value = Number(id)
     transcodeStatus.value = null
     statusFetchError.value = null
+    products.value = []
     loadAll()
   }
 )
 
 const loadAll = async () => {
-  await Promise.all([fetchVideo(), fetchFormats(), fetchStatus()])
+  await Promise.all([fetchVideo(), fetchFormats(), fetchStatus(), fetchProducts()])
   if (transcodeStatus.value?.is_transcoding) {
     startPolling()
   }
@@ -290,6 +319,39 @@ onUnmounted(stopPolling)
 
       <el-divider />
 
+      <div class="products-section">
+        <h3>转码产物</h3>
+
+        <el-table :data="products" style="width: 100%" empty-text="还没有转码产物">
+          <el-table-column prop="target_format" label="格式" width="90">
+            <template #default="{ row }">{{ row.target_format.toUpperCase() }}</template>
+          </el-table-column>
+          <el-table-column label="文件名" width="180">
+            <template #default="{ row }">{{ productName(row.output_path) }}</template>
+          </el-table-column>
+          <el-table-column label="大小" width="110">
+            <template #default="{ row }">{{ formatSize(row.size_bytes) }}</template>
+          </el-table-column>
+          <el-table-column label="完成时间" width="190">
+            <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="110">
+            <template #default="{ row }">
+              <el-tag :type="row.deleted_at ? 'danger' : 'success'">
+                {{ row.deleted_at ? '已不在' : '在磁盘上' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="位置">
+            <template #default="{ row }">
+              <span class="product-path">{{ row.output_path }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <el-divider />
+
       <div class="formats-section">
         <h3>支持的格式</h3>
 
@@ -325,12 +387,14 @@ onUnmounted(stopPolling)
 
 .transcode-section,
 .status-section,
+.products-section,
 .formats-section {
   margin-top: 20px;
 }
 
 .transcode-section h3,
 .status-section h3,
+.products-section h3,
 .formats-section h3 {
   margin-bottom: 15px;
   color: var(--text-glass);
@@ -339,6 +403,12 @@ onUnmounted(stopPolling)
 .status-error {
   color: var(--el-color-danger);
   word-break: break-all;
+}
+
+/* 产物在输出目录里的绝对路径，长起来没有边界，窄屏上必须能断行 */
+.product-path {
+  word-break: break-all;
+  color: var(--text-glass);
 }
 
 /* 状态接口挂了时面板上还留着上一次的值，用告警色和「失败原因」的红色区分开 */

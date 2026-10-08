@@ -25,3 +25,18 @@ export interface TranscodeResult {
   target_format: string
   output_path: string
 }
+
+/**
+ * 一份转码产物，从 `GET /transcode/{id}/outputs`（#154）。
+ *
+ * `size_bytes` 是后端**当场**从磁盘 stat 出来的，不是库里抄的：库里那份会说谎，
+ * 产物被人手工删掉腾磁盘是真会发生的事。删掉之后 `deleted_at` 才有值。
+ */
+export interface TranscodeProduct {
+  id: number
+  target_format: string
+  output_path: string
+  size_bytes: number | null
+  created_at: string
+  deleted_at: string | null
+}

@@ -10,6 +10,7 @@ const env = vi.hoisted(() => ({
   video: null as Record<string, unknown> | null,
   status: null as Record<string, unknown> | null,
   formats: [] as Record<string, unknown>[],
+  products: [] as Record<string, unknown>[],
   // 拦截器（src/api/client.ts）在服务端返回 detail 时 reject 的是一个新的
   // Error，只留一句人话，不再带 response。替身照这个形状失败，用例才测得到
   // 视图有没有把那句原因显示出来。
@@ -28,6 +29,7 @@ vi.mock('@/api/client', () => ({
       const failure = rejectionFor(env.failGet, url)
       if (failure) return Promise.reject(new Error(failure))
       if (url === '/transcode/formats') return Promise.resolve({ data: env.formats })
+      if (url.endsWith('/outputs')) return Promise.resolve({ data: env.products })
       if (url.endsWith('/status')) return Promise.resolve({ data: env.status })
       return Promise.resolve({ data: env.video })
     },
@@ -65,6 +67,7 @@ describe('Transcode view', () => {
     env.failGet = []
     env.failPost = []
     env.formats = [{ format: 'webm', codec: 'libvpx-vp9', extension: 'webm' }]
+    env.products = []
     env.video = {
       id: 7,
       title: '深夜测试',
@@ -83,12 +86,96 @@ describe('Transcode view', () => {
     vi.useRealTimers()
   })
 
-  it('requests the video, formats and status through the proxied api paths', async () => {
+  it('requests the video, formats, status and products through the proxied api paths', async () => {
     const wrapper = mount(Transcode)
     await flushPromises()
 
-    expect(env.get).toEqual(['/videos/7', '/transcode/formats', '/transcode/7/status'])
+    expect(env.get).toEqual([
+      '/videos/7',
+      '/transcode/formats',
+      '/transcode/7/status',
+      '/transcode/7/outputs',
+    ])
     expect(wrapper.text()).toContain('深夜测试.mp4')
+    wrapper.unmount()
+  })
+
+  it('lists a product with its size and where it landed', async () => {
+    env.products = [
+      {
+        id: 3,
+        target_format: 'mkv',
+        output_path: 'D:\\transcode\\7\\深夜测试.mkv',
+        size_bytes: 1_572_864,
+        created_at: '2026-10-08T03:00:00+00:00',
+        deleted_at: null,
+      },
+    ]
+
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    const row = wrapper.find('.products-section .el-table__body tr')
+    expect(row.text()).toContain('MKV')
+    expect(row.text()).toContain('深夜测试.mkv')
+    expect(row.text()).toContain('1.5 MB')
+    expect(row.text()).toContain('在磁盘上')
+    wrapper.unmount()
+  })
+
+  it('says 已不在 for a product whose file is gone instead of hiding the row', async () => {
+    env.products = [
+      {
+        id: 3,
+        target_format: 'mkv',
+        output_path: 'D:\\transcode\\7\\深夜测试.mkv',
+        size_bytes: null,
+        created_at: '2026-10-08T03:00:00+00:00',
+        deleted_at: '2026-10-08T04:00:00+00:00',
+      },
+    ]
+
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    const row = wrapper.find('.products-section .el-table__body tr')
+    expect(row.text()).toContain('已不在')
+    // 大小那一格只能是一个破折号：库里那份数字已经不作数了
+    expect(row.text()).toContain('—')
+    wrapper.unmount()
+  })
+
+  it('shows an empty product table rather than pretending nothing exists', async () => {
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    expect(wrapper.find('.products-section').text()).toContain('还没有转码产物')
+    wrapper.unmount()
+  })
+
+  it('says why the product list is empty when the endpoint fails', async () => {
+    env.failGet = [{ on: '/outputs', message: '产物表读取失败' }]
+
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    expect(ElMessage.error).toHaveBeenCalledWith(expect.stringContaining('产物表读取失败'))
+    wrapper.unmount()
+  })
+
+  it('re-reads the products when a polled job completes', async () => {
+    env.status = idleStatus({ is_transcoding: true, status: 'running' })
+    vi.useFakeTimers()
+
+    const wrapper = mount(Transcode)
+    await flushPromises()
+    expect(env.get.filter((url) => url.endsWith('/outputs'))).toHaveLength(1)
+
+    env.status = idleStatus({ status: 'completed', target_format: 'mkv' })
+    await vi.advanceTimersByTimeAsync(1500)
+
+    // 那一行是任务成功那一刻才写进库的，不重读就得刷新页面才看得到
+    expect(env.get.filter((url) => url.endsWith('/outputs'))).toHaveLength(2)
     wrapper.unmount()
   })
 

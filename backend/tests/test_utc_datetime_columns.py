@@ -135,7 +135,8 @@ def test_every_timestamp_column_uses_the_shared_type_and_compiles_unchanged():
         if is_datetime_column(col.type)
     ]
     # 遍历器一个也没找到的话，下面两个断言都是空的，这一条就什么都没钉住。
-    assert len(columns) == 21, f"时间列数目变了：{[f'{t}.{c}' for t, c, _ in columns]}"
+    # 23 = #162 那 21 处 + #154 给 transcode_outputs 新加的 created_at / deleted_at。
+    assert len(columns) == 23, f"时间列数目变了：{[f'{t}.{c}' for t, c, _ in columns]}"
 
     naked = [f"{t}.{c}" for t, c, coltype in columns if not isinstance(coltype, UTCDateTime)]
     assert naked == [], "这些列还是裸的 DateTime(timezone=True)，读回来不带时区"

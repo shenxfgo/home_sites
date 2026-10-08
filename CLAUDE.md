@@ -224,6 +224,7 @@ DATABASE_URL=postgresql+asyncpg://home_sites_app:<口令>@127.0.0.1:5432/home_si
 TEST_DATABASE_URL=postgresql+asyncpg://home_sites_app:<口令>@127.0.0.1:5432/home_sites_test
 VIDEO_STORAGE_PATH=./data/videos
 THUMBNAIL_PATH=./data/thumbnails
+TRANSCODE_OUTPUT_DIR=./data/transcode   # 转码产物落这里；必须在任何片源目录之外，否则下一轮扫描会把它当成一部新片子
 API_HOST=0.0.0.0
 API_PORT=8000
 CORS_ORIGINS=http://localhost:3000,http://localhost:5173

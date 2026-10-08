@@ -22,6 +22,12 @@ export const BACKEND_DIR = resolve(HERE, '../../../backend')
 export const E2E_DIR = resolve(BACKEND_DIR, 'data/e2e')
 export const MEDIA_DIR = resolve(E2E_DIR, 'media')
 export const THUMBNAIL_DIR = resolve(E2E_DIR, 'thumbnails')
+/**
+ * 转码产物的去处（#154）。它**不能**在 `MEDIA_DIR` 里面：那条片源目录是被扫的，
+ * 产物落进去就会被下一轮扫描登记成库里第二行影片，用例「转码不往库里加片子」就成了
+ * 一句靠运气才说的话。和真机一样，另起一处。
+ */
+export const TRANSCODE_DIR = resolve(E2E_DIR, 'transcode')
 
 export const E2E_USERNAME = 'e2e_owner'
 
@@ -79,7 +85,7 @@ export function testDatabaseUrl(): string {
 }
 
 /**
- * 一次性后端进程的环境：连接串指向测试库，封面写进一次性目录，每日备份关掉。
+ * 一次性后端进程的环境：连接串指向测试库，封面和转码产物各写进一次性目录，每日备份关掉。
  *
  * 备份那条不是可选项——这个进程连的是真方言，不关掉它就会在凌晨挂着一份读不回来的
  * 测试库快照，还往共享的备份目录里写文件。
@@ -89,6 +95,7 @@ export function backendEnv(extra: Record<string, string> = {}): Record<string, s
     ...(process.env as Record<string, string>),
     DATABASE_URL: testDatabaseUrl(),
     THUMBNAIL_PATH: THUMBNAIL_DIR,
+    TRANSCODE_OUTPUT_DIR: TRANSCODE_DIR,
     BACKUP_ENABLED: 'false',
     PYTHONIOENCODING: 'utf-8',
     ...extra,

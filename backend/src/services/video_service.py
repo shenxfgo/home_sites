@@ -18,6 +18,7 @@ from src.models.read_state import NewVideoRead
 from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
 from src.models.tag import Tag, video_tags
+from src.models.transcode_output import TranscodeOutput
 from src.models.video import Video
 from src.models.watch_event import WatchEvent
 from src.models.watchlist import WatchlistItem
@@ -53,6 +54,7 @@ VIDEO_CHILD_TABLES: tuple[Table, ...] = cast(
         Favorite.__table__,
         NewVideo.__table__,
         Subtitle.__table__,
+        TranscodeOutput.__table__,
         WatchEvent.__table__,
         WatchlistItem.__table__,
         video_tags,

@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # Video Storage
     video_storage_path: str = "./data/videos"
     thumbnail_path: str = "./data/thumbnails"
+    # 转码产物的去处。必须是**任何片源目录之外**的一处：扫描只走 `VideoSource.path`
+    # 那几张表，也没有排除机制（`file_scanner.scan_directory` 的 `os.walk` 一路下潜），
+    # 产物落在片源里面就会被扫成库里的第二行，同一个片子又能再转一遍（#154）。
+    transcode_output_dir: str = "./data/transcode"
 
     # Object storage (any S3-compatible endpoint: MinIO, RustFS, Ceph, cloud)
     s3_endpoint_url: str = ""
@@ -73,15 +77,17 @@ class Settings(BaseSettings):
     # 留空则按 PATH 找 pg_dump / pg_restore。
     pg_bindir: str = ""
 
-    @field_validator("thumbnail_path", "backup_dir")
+    @field_validator("thumbnail_path", "backup_dir", "transcode_output_dir")
     @classmethod
     def _anchor_under_backend(cls, value: str) -> str:
-        """把相对的封面/备份目录按 backend/ 展开成绝对路径。
+        """把相对的封面/备份/转码产物目录按 backend/ 展开成绝对路径。
 
         ``Video.thumbnail_path`` 存的是当时算出来的字符串，读取端
         （``stream.py`` 的 ``os.path.isfile``）按进程的工作目录去解析它。
         于是从仓库根目录启动服务就会让全库封面变成"无封面"。备份同理：
-        相对目录会随启动位置写到不同的地方，等于没有固定去处。
+        相对目录会随启动位置写到不同的地方，等于没有固定去处。转码产物更是
+        如此 —— 那串路径会**写进库里**（``transcode_outputs.output_path``），
+        换个工作目录就读到自己昨天产的那一份了。
         """
         if not value or os.path.isabs(value):
             return value

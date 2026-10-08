@@ -16,6 +16,12 @@
  * 就得带一条音轨，见 `backend/src/e2e_seed.py`）、后台任务写进真库的那条通知带着自己的格式
  * 与影片 id，以及三种拒绝（同格式、不认识、已经结束的任务）各有原话可说。
  *
+ * #154 之后这条流程多了一段真库可证的账：产物不再写在源文件旁边，而是写进
+ * `<输出目录>/<影片 id>/<源名去扩展>.<格式>`，成功那一路另有一行 `transcode_outputs`。
+ * 于是末尾那一步除了"转码不往库里加片子"，还要真扫一遍磁盘——产物正躺在同一个 sandbox
+ * 之下，扫描器要是能看见它，那一行影片就会自己冒出来；而产物表里那三行（webm / avi / mkv）
+ * 就是"只有成功的任务才登记"这句话在真库上的样子。
+ *
  * 那张配方表（`CONTAINER` / `STREAMS`）和读产物的那几句断言住在 `transcode_support.ts`：
  * 第 25 条（`video-transcode-mp4.real.spec.ts`）查的是同一张表的第四行，抄一份就变成两张表
  * 各自红。这里只留下本文件那三条自己用的夹具。
@@ -40,7 +46,9 @@ import {
   chooseFormat,
   confirmMessageBox,
   expectRealOutput,
+  productPath,
   readNotifications,
+  readProducts,
   readStatus,
   sha1,
   waitSettled,
@@ -103,8 +111,10 @@ test.beforeEach(async ({ page }) => {
 })
 
 test.afterEach(() => {
-  // 产物留在媒体目录里，下一轮扫描就会把它当成一部新片子——那时"共 1 个视频"那些断言
-  // 全都要跟着变，所以这一条用例自己造的文件自己收走（源文件一个字节都没动）。
+  // 自 #154 起产物不在被扫的目录里，留下它们不会改掉下一轮的扫描计数；但仍然要收走：
+  // `produced` 里那些路径正是下一轮同一趟里 `expectRealOutput` 要读的那几个文件，磁盘上
+  // 要是早就躺着一份，"这一趟真的写出了一个文件"就成了一句读旧文件也能过的话。
+  // （源文件一个字节都没动。）
   for (const path of produced.splice(0)) {
     rmSync(path, { force: true })
   }
@@ -164,10 +174,12 @@ test('转码：真 FFmpeg 写出真文件，通知由后台任务写进真库，
   expect(announced.items[0]?.message).toContain('webm')
 
   // ---- 3. 同格式必须被拦住，而且说的是原话（替身那份 POST 处理器根本不校验）
+  // 那句原话从 #154 起换过理由：产物不再写在源旁边，同格式不会覆盖源文件了，但它会让
+  // 产物和源同名——库里一行 `movie.mkv`、产物表一行 `movie.mkv`，在人眼里是同一行。
   await chooseFormat(page, 'mp4 (.mp4)')
   await page.getByRole('button', { name: '开始转码' }).click()
   await confirmMessageBox(page)
-  await expect(page.locator('.el-message--error')).toContainText('overwrite the original file')
+  await expect(page.locator('.el-message--error')).toContainText('same filename as the original')
 
   // 被拒绝的任务不留痕迹：上一条 completed 记录还在、没有新通知、源文件一个字节没动
   expect(await readStatus(page)).toEqual(done)
@@ -245,7 +257,29 @@ test('转码：真 FFmpeg 写出真文件，通知由后台任务写进真库，
   // 拒绝不能顺手把记录改掉
   expect(await readStatus(page)).toEqual(mkv)
 
-  // ---- 8. 转码不往库里加片子：产物只是媒体目录里多出来的文件，没扫过就不是影片
+  // ---- 8. 产物表里是这三份真文件：只有成功的任务登记，一行一个格式
+  // 页面这一头不需要刷新：那 1.5 秒一次的轮询在 mkv 任务完成时顺带重读了一次产物表
+  await expect(page.locator('.products-section .el-table__body tr')).toHaveCount(3)
+  const products = await readProducts(page)
+  expect(products.map((row) => row.target_format)).toEqual(['mkv', 'avi', 'webm'])
+  expect(products.map((row) => asUrlPath(row.output_path))).toEqual([
+    asUrlPath(productPath(1, 'e2e_sample', 'mkv')),
+    asUrlPath(productPath(1, 'e2e_sample', 'avi')),
+    asUrlPath(productPath(1, 'e2e_sample', 'webm')),
+  ])
+  // `size_bytes` 是这一次请求当场 stat 出来的：三份都在磁盘上，所以三行都不是 null；
+  // `deleted_at` 因此还没被写过——它是"哪一次核对发现它没了"，不是现状
+  expect(products.map((row) => (row.size_bytes ?? 0) > 0)).toEqual([true, true, true])
+  expect(products.map((row) => row.deleted_at)).toEqual([null, null, null])
+
+  // ---- 9. 转码不往库里加片子：**真扫一遍磁盘**之后还是那一行影片
+  // 这一步是 #154 的签字。产物和片源同在 `backend/data/e2e` 之下、只是不同子目录，把
+  // `product_path` 改回"源的旁边"，这一趟扫描就会当场数出 4 个文件、新建 3 行影片。
+  expect(await scanSource(page, 1)).toEqual({
+    files_found: 1,
+    new_videos: 0,
+    subtitles_found: 0,
+  })
   expect((await requestJson<{ total: number }>(page, '/api/videos')).total).toBe(1)
 })
 
@@ -267,6 +301,9 @@ test('转码：真 FFmpeg 写出真文件，通知由后台任务写进真库，
 test('转码失败：ffmpeg 那句原话从子进程走到页面和真库，失败不产出文件', async ({ page }) => {
   const beforeList = await requestJson<{ items: VideoListItem[] }>(page, '/api/videos')
   const beforeIds = beforeList.items.map((item) => item.id).sort((a, b) => a - b)
+  // 产物路径要写进 `finally`，所以这个 id 得在 try 外面就存在（扫不出来时它是 0，
+  // 拼出来的那个路径压根不在磁盘上，`rmSync(force)` 于是在那里是个空操作）
+  let brokenId = 0
 
   try {
     // ---- 1. 扫描把磁盘上这个"只有后缀是真的"文件变成库里的一行
@@ -278,7 +315,7 @@ test('转码失败：ffmpeg 那句原话从子进程走到页面和真库，失�
     })
     const listed = await requestJson<{ items: VideoListItem[] }>(page, '/api/videos')
     const broken = listed.items.find((item) => !beforeIds.includes(item.id))
-    const brokenId = broken?.id ?? 0
+    brokenId = broken?.id ?? 0
     expect(brokenId).toBeGreaterThan(0)
     // 抽不出封面（ffmpeg 非零退出，`generate_thumbnail` 回 ""，扫描那一步再把不存在的路径
     // 清成 null），时长读不出来——所以第 3 步那句 progress=0 是这里来的，不是编码器的细节
@@ -321,8 +358,13 @@ test('转码失败：ffmpeg 那句原话从子进程走到页面和真库，失�
     // ---- 4. 失败不产出文件：这一趟 ffmpeg 连输入都没打开，磁盘上不该多出任何东西
     // 只说这一次失败模式（`transcode_video` 只在 cancel 分支 unlink），不是一句通用保证
     const claimed = failed.output_path ?? ''
-    expect(asUrlPath(claimed)).toBe(`${asUrlPath(MEDIA_DIR)}/e2e_broken.webm`)
+    expect(asUrlPath(claimed)).toBe(asUrlPath(productPath(brokenId, 'e2e_broken', 'webm')))
     expect(existsSync(claimed), claimed).toBe(false)
+    // 产物表里也不该有这一行：`_record_output` 只挂在成功那一路。库里躺一条"存在过、其实
+    // 没有"的行，正是 #154 要修掉的那种谎，所以这一句和上面那句是一对——路径算得对、文件
+    // 不在，但登记了也照样是假的
+    expect(await readProducts(page, brokenId)).toEqual([])
+    await expect(page.locator('.products-section')).toContainText('还没有转码产物')
 
     // ---- 5. 后台任务写进真库的那条是失败那一条
     const announced = await readNotifications(page)
@@ -343,9 +385,10 @@ test('转码失败：ffmpeg 那句原话从子进程走到页面和真库，失�
     expect(afterDelete.items.map((item) => item.id).sort((a, b) => a - b)).toEqual(beforeIds)
   } finally {
     // 排在本文件之后的 `video-delete.real.spec.ts` 按 `files_found=2 / new_videos=1` 数媒体
-    // 目录，所以这两个文件（万一存在的产物 + 那个垃圾文件）都必须由这一条自己带走。
+    // 目录，所以那个垃圾文件必须由这一条自己带走。产物那一路径（这一趟不该有，万一有了也
+    // 该由这一条收）住在输出目录里，扫描器够不着，但留着会让下一轮读到一份旧文件。
     rmSync(BROKEN_FILE, { force: true })
-    rmSync(join(MEDIA_DIR, 'e2e_broken.webm'), { force: true })
+    rmSync(productPath(brokenId, 'e2e_broken', 'webm'), { force: true })
   }
 })
 
@@ -385,6 +428,8 @@ test('转码取消：子进程真被杀掉、半截产物从磁盘上消失，�
 
   writeSlowClip()
   const slowDigest = sha1(readFileSync(SLOW_FILE))
+  // 同上一条转码失败：产物路径要出现在 `finally` 里，所以这个 id 得在 try 外面就存在
+  let slowId = 0
 
   try {
     // ---- 1. 扫描把这部新片子变成库里的一行
@@ -395,7 +440,7 @@ test('转码取消：子进程真被杀掉、半截产物从磁盘上消失，�
     })
     const listed = await requestJson<{ items: VideoListItem[] }>(page, '/api/videos')
     const slow = listed.items.find((item) => !beforeIds.includes(item.id))
-    const slowId = slow?.id ?? 0
+    slowId = slow?.id ?? 0
     expect(slowId).toBeGreaterThan(0)
     expect([slow?.title, slow?.duration]).toEqual(['e2e slow', 15])
 
@@ -418,7 +463,7 @@ test('转码取消：子进程真被杀掉、半截产物从磁盘上消失，�
       'webm',
     ])
     const partial = running.output_path ?? ''
-    expect(asUrlPath(partial)).toBe(`${asUrlPath(MEDIA_DIR)}/e2e_slow.webm`)
+    expect(asUrlPath(partial)).toBe(asUrlPath(productPath(slowId, 'e2e_slow', 'webm')))
 
     // 这一句是整条用例的前提：磁盘上得**先有那个输出文件**，第 4 步那句"它没了"才有内容。
     // 少了它，"取消把产物删掉了"在一个 ffmpeg 压根还没打开输出的错误世界里也能全绿。
@@ -457,6 +502,9 @@ test('转码取消：子进程真被杀掉、半截产物从磁盘上消失，�
 
     // ---- 4. 半截产物被删掉了：这就是 `utils/ffmpeg.py` 那三行 kill / wait / unlink 的签字
     expect(existsSync(partial), partial).toBe(false)
+    // 表里也没有这一行：`_record_output` 挂在成功那一路，取消那一路在 re-raise 之前什么都
+    // 没登记过。和上一条转码失败那句是一对——文件没了是一半，"从没说过它有"是另一半
+    expect(await readProducts(page, slowId)).toEqual([])
     // 杀的是输出那一侧，输入文件一个字都不该动
     expect(sha1(readFileSync(SLOW_FILE))).toBe(slowDigest)
 
@@ -484,8 +532,17 @@ test('转码取消：子进程真被杀掉、半截产物从磁盘上消失，�
       'mkv',
     ])
     const mkvPath = redo.output_path ?? ''
-    expectRealOutput(mkvPath, 'mkv', 'e2e_slow')
+    expectRealOutput(mkvPath, 'mkv', slowId, 'e2e_slow')
     produced.push(mkvPath)
+
+    // 重做的那一份登记进表，而且只有它那一行——被取消的 webm 那一趟没留下任何痕迹。
+    // 页面这一头不用刷新：轮询到「已完成」的那一刻顺带重读了产物表
+    await expect(page.locator('.products-section .el-table__body tr')).toHaveCount(1)
+    const products = await readProducts(page, slowId)
+    expect(products.map((row) => [row.target_format, asUrlPath(row.output_path)])).toEqual([
+      ['mkv', asUrlPath(mkvPath)],
+    ])
+    expect(products[0]?.deleted_at).toBeNull()
 
     // 末尾这一次重编码是真跑完的，所以它发了一条完成通知——和上面"取消不发"合起来才说明
     // 那一条安静是取消特有的，不是这一路压根不写通知表
@@ -502,9 +559,14 @@ test('转码取消：子进程真被杀掉、半截产物从磁盘上消失，�
     const afterDelete = await requestJson<{ items: VideoListItem[] }>(page, '/api/videos')
     expect(afterDelete.items.map((item) => item.id).sort((a, b) => a - b)).toEqual(beforeIds)
     expect(coverFingerprints()).toEqual(coversBefore)
+    // 刚登记的那一行产物跟着影片一起没：`transcode_outputs.video_id` 那条 FK 是
+    // ON DELETE CASCADE，而删影片那条路径本来就在清 `VIDEO_CHILD_TABLES` 那一串子表。
+    // 留一行指向已删影片的产物，下次 `/api/transcode/{id}/outputs` 就会报出一个没有归属的路径
+    expect(await readProducts(page, slowId)).toEqual([])
   } finally {
     // 排在本文件之后的用例（以及下一轮的扫描）都按「媒体目录里只有播种那一个文件」数数，
-    // 所以这部片子、被取消的半截产物、万一存在的重编码产物都得由这一条自己带走。
+    // 所以这部片子得由这一条自己带走；两份产物（被取消的半截 webm、重做跑完的 mkv）住在
+    // 输出目录里，扫描器够不着，但留着同样会让下一轮读到旧文件。
     // `maxRetries` 是量出来的：这一条里这部片子被服务端的真 ffmpeg 读过两次（一次被杀掉、
     // 一次跑完），Windows 上紧接着 unlink 输入文件会得到 EBUSY（实测，第一次跑就撞上了），
     // 句柄释放在进程退出之后的一小段里。留着也不会毒到下一轮——`e2e_seed.prepare_media()`
@@ -513,7 +575,11 @@ test('转码取消：子进程真被杀掉、半截产物从磁盘上消失，�
     // 那个真正的断言失败（实测：把取消那次 API 调用打桩掉之后，还在跑的 ffmpeg 攥着输入文件，
     // EBUSY 穿过 10 次重试抛出来，用例报的就是一句 unlink 错误而不是它究竟红在哪一步）。
     // 清理失败不值得替失败作证。
-    for (const path of [SLOW_FILE, join(MEDIA_DIR, 'e2e_slow.webm')]) {
+    for (const path of [
+      SLOW_FILE,
+      productPath(slowId, 'e2e_slow', 'webm'),
+      productPath(slowId, 'e2e_slow', 'mkv'),
+    ]) {
       try {
         rmSync(path, { force: true, maxRetries: 10, retryDelay: 500 })
       } catch {

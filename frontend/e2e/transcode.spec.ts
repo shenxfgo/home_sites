@@ -21,6 +21,8 @@ test('转码页展示视频信息与可选格式', async ({ page }) => {
   await expect(page.locator('.content-card')).toContainText('深夜测试')
   await expect(page.locator('.content-card')).toContainText('深夜测试.mp4')
   await expect(page.locator('.formats-section .el-table__body tr')).toHaveCount(2)
+  // 这部片子还没转码过：新地址真的被请求了，界面拿到的是一张空表而不是一片空白
+  await expect(page.locator('.products-section')).toContainText('还没有转码产物')
 })
 
 test('转码进行中有进度条，完成后提示并落位为已完成', async ({ page }) => {
@@ -36,6 +38,12 @@ test('转码进行中有进度条，完成后提示并落位为已完成', async
 
   await expect(page.locator('.status-section')).toContainText('已完成', { timeout: 20_000 })
   await expect(page.locator('.el-message--success').last()).toContainText('转码完成')
+
+  // 完成那一刻才写进产物表，页面不重读就得刷新才看得到（#154）
+  await expect(page.locator('.products-section .el-table__body tr')).toHaveCount(1)
+  await expect(page.locator('.products-section')).toContainText('WEBM')
+  await expect(page.locator('.products-section')).toContainText('/data/transcode/1/')
+  await expect(page.locator('.products-section')).toContainText('在磁盘上')
 })
 
 test('取消转码会停掉任务并结束轮询', async ({ page }) => {

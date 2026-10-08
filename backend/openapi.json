@@ -1439,6 +1439,61 @@
         "title": "TagUpdate",
         "type": "object"
       },
+      "TranscodeProductResponse": {
+        "description": "One product this video has already been transcoded into.\n\n`size_bytes` 是**这次请求当场 stat 出来的**，不是表里的抄本；文件没了就是 `None`。\n`deleted_at` 是\"哪一次核对发现它没了\"，所以它是历史，不是现状 —— 现状只看\n`size_bytes`。",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "output_path": {
+            "title": "Output Path",
+            "type": "string"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "target_format": {
+            "title": "Target Format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "target_format",
+          "output_path",
+          "size_bytes",
+          "created_at",
+          "deleted_at"
+        ],
+        "title": "TranscodeProductResponse",
+        "type": "object"
+      },
       "TranscodeRequest": {
         "description": "Request model for transcoding.",
         "properties": {
@@ -4057,6 +4112,53 @@
           }
         },
         "summary": "Cancel Transcode",
+        "tags": [
+          "transcode"
+        ]
+      }
+    },
+    "/api/transcode/{video_id}/outputs": {
+      "get": {
+        "description": "Products this video has already been transcoded into, newest first.\n\n服务重启之后 `_jobs` 那本账就空了，这一条是产物唯一还在的出处（#154）。",
+        "operationId": "list_transcode_products_api_transcode__video_id__outputs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "video_id",
+            "required": true,
+            "schema": {
+              "title": "Video Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TranscodeProductResponse"
+                  },
+                  "title": "Response List Transcode Products Api Transcode  Video Id  Outputs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Transcode Products",
         "tags": [
           "transcode"
         ]

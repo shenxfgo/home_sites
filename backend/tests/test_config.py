@@ -99,3 +99,21 @@ def test_thumbnail_path_left_alone_when_absolute_or_empty(tmp_path, monkeypatch)
         Settings(_env_file=None, thumbnail_path=absolute).thumbnail_path == absolute
     )
     assert Settings(_env_file=None, thumbnail_path="").thumbnail_path == ""
+
+
+def test_relative_transcode_output_dir_anchors_at_backend_not_cwd(tmp_path, monkeypatch):
+    """相对的 TRANSCODE_OUTPUT_DIR 同样按 `backend/` 展开（#154）。
+
+    这一条比封面更要命：那串路径会**写进库里**（`transcode_outputs.output_path`），
+    而 `list_outputs()` 每次读都拿它去 `stat` 一次。留着 cwd 相对的值，等于"从仓库
+    根目录启动服务"之后所有产物集体被标成已删除——库里那一行明明还在，界面上却说没了。
+    """
+    from src.config import BACKEND_ROOT, Settings
+
+    monkeypatch.chdir(tmp_path)
+    anchored = Settings(_env_file=None, transcode_output_dir="./data/transcode")
+
+    assert os.path.isabs(anchored.transcode_output_dir)
+    assert anchored.transcode_output_dir == os.path.normpath(
+        str(BACKEND_ROOT / "data" / "transcode")
+    )

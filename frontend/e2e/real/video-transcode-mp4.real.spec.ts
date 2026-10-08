@@ -2,8 +2,8 @@
  * 真后端 e2e 的第 25 条：转码表里 **mp4** 那一行，第一次有真产物。
  *
  * 前二十四条把 webm、avi、mkv 三行配方都查过了，唯独 mp4 那一行没查——不是漏了，是在播种那部
- * 片子上**测不出来**：`transcode_service.py:83` 的 `output_path` 是拿源文件 `with_suffix`
- * 拼的，源是 .mp4、目标也是 mp4 时拼出来就是同一个路径，`transcode()` 在闸门那里回
+ * 片子上**测不出来**：闸门比的是源文件的扩展名和目标格式（`transcode_service.py` 里那句
+ * `Path(input_path).suffix`），源是 .mp4、目标也是 mp4 时它回
  * `Target format matches the source format`（第 15 条第 3 步签的就是这一句），ffmpeg 因此
  * 从没为那一行启动过。`SUPPORTED_FORMATS['mp4']` 那两个编码器字面值——`-c:v libx264` 和
  * `-c:a aac`——不进任何 API 响应（`get_supported_formats` 只回 `codec` 和 `extension`，
@@ -11,11 +11,13 @@
  * 都不红。
  *
  * 办法是把源换掉而不是把目标换掉：现场 `-c copy` 出一个 .mkv，扫进来得到库里的第二行，
- * 从那一行转 mp4，闸门就放行（它比的是路径不是扩展名）。这一步顺带还补上了另一格——
- * mp4 这个选项在前二十四条里只以"被拒绝"的样子出现过，界面上从没真点成功过一次。
+ * 从那一行转 mp4，闸门就放行（它比的是源的扩展名，.mkv 对 mp4 不撞）。这一步顺带还补上了
+ * 另一格——mp4 这个选项在前二十四条里只以"被拒绝"的样子出现过，界面上从没真点成功过一次。
  *
  * 断言只收真进程给得出的东西：产物文件头自报 `ftyp`（不看文件名）、ffprobe 报出的两条流
- * 就是那一行写的编码器、通知里 `data.video_id` 认的是这一行的 id 而不是播种那部的 1。
+ * 就是那一行写的编码器、通知里 `data.video_id` 认的是这一行的 id 而不是播种那部的 1，
+ * 以及 #154 之后那张产物表里的这一行——`size_bytes` 得等于磁盘上那份文件的字节数，
+ * 因为它是这一次请求当场 stat 出来的，不是表里的抄本。
  * `progress` 钉 100 钉的是"跑完了服务端就写 100"（`_run` 成功那一句），不是编码器最后
  * 报到第几秒——avi 那一路已经量过那两者不是一回事（见第 15 条第 5 步的注释）。
  *
@@ -28,7 +30,7 @@
  * 共用：`STREAMS` 抄一份就变成两张表各自红，正是 #143 记下的那个病根。
  */
 import { expect, test } from '@playwright/test'
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 
@@ -37,10 +39,13 @@ import { coverFingerprints, fetchInPage, requestJson, scanSource, signIn } from 
 import {
   FIXTURE,
   STREAMS,
+  asUrlPath,
   chooseFormat,
   confirmMessageBox,
   expectRealOutput,
+  productPath,
   readNotifications,
+  readProducts,
   sha1,
   streamPairs,
   waitSettled,
@@ -50,9 +55,9 @@ import {
 /**
  * 这一条的源：播种那部按流复制出来的一个 .mkv。
  *
- * 存在的唯一理由是**后缀**——`output_path` 是拿源文件 `with_suffix` 拼的，而 mp4 当目标时
- * 拼出来的路径和源文件相同，闸门回 400，ffmpeg 从没为表里 mp4 那一行启动过。换个容器当源，
- * 那一行才第一次有点得动。
+ * 存在的唯一理由是**后缀**——闸门比的是源文件的扩展名和目标格式，源是 .mp4 时 mp4 当目标
+ * 会被当成"产物和源同名"拒掉，那一行配方因此从没有点成功过。换个容器当源，mp4 那一行
+ * 才第一次有点得动。
  */
 const MKV_SOURCE = join(MEDIA_DIR, 'e2e_mkvsrc.mkv')
 
@@ -87,6 +92,9 @@ test('转码表里 mp4 那一行：换一个不是 mp4 的源，那半张配方�
   const coversBefore = coverFingerprints()
   // 这一条只往旁边多放文件，播种那部的字节一个都不该动
   const fixtureDigest = sha1(readFileSync(FIXTURE))
+  // 产物的去处要写进 `finally`，所以这一行的 id 得在 try 外面就存在（0 时那个路径不在
+  // 磁盘上，`rmSync(force)` 于是在那里是个空操作）
+  let mkvId = 0
 
   try {
     // ---- 1. 磁盘上多出一个 .mkv，扫进来得到库里的第二行
@@ -98,7 +106,7 @@ test('转码表里 mp4 那一行：换一个不是 mp4 的源，那半张配方�
     })
     const listed = await requestJson<{ items: VideoListItem[] }>(page, '/api/videos')
     const added = listed.items.find((item) => !beforeIds.includes(item.id))
-    const mkvId = added?.id ?? 0
+    mkvId = added?.id ?? 0
     expect(mkvId).toBeGreaterThan(0)
     // 名字是从文件名推的，扩展名换成 .mkv 也一样——这一行是扫出来的，不是播种的
     expect(added?.title).toBe('e2e mkvsrc')
@@ -126,9 +134,18 @@ test('转码表里 mp4 那一行：换一个不是 mp4 的源，那半张配方�
 
     // ---- 3. 产物是磁盘上真存在的 mp4，里面那两条流就是表里那一行写的编码器
     const product = done.output_path ?? ''
-    expectRealOutput(product, 'mp4', 'e2e_mkvsrc')
-    // 闸门放行是因为源不是 mp4，不是因为拼出来的路径撞了别处
-    expect(product).not.toBe(MKV_SOURCE)
+    // 那个路径里的目录格用的是**这一行的 id**（第 2 行，不是播种那部的 1）：布局是按影片
+    // 分格的，两个源同名的片子因此不会互相覆盖，而这一句正是那句保证在真库上的样子
+    expectRealOutput(product, 'mp4', mkvId, 'e2e_mkvsrc')
+
+    // ---- 3b. 产物表里那一行的字节数是当场 stat 出来的，不是表里的抄本
+    const products = await readProducts(page, mkvId)
+    expect(products.map((row) => [row.target_format, asUrlPath(row.output_path)])).toEqual([
+      ['mp4', asUrlPath(product)],
+    ])
+    expect(products[0]?.size_bytes).toBe(statSync(product).size)
+    expect(products[0]?.deleted_at).toBeNull()
+    await expect(page.locator('.products-section .el-table__body tr')).toHaveCount(1)
 
     // ---- 4. 后台任务写进真库的那一条，认的是这一行
     const announced = await readNotifications(page)
@@ -148,13 +165,17 @@ test('转码表里 mp4 那一行：换一个不是 mp4 的源，那半张配方�
     const afterDelete = await requestJson<{ items: VideoListItem[] }>(page, '/api/videos')
     expect(afterDelete.items.map((item) => item.id).sort((a, b) => a - b)).toEqual(beforeIds)
     expect(coverFingerprints()).toEqual(coversBefore)
+    // 产物那一行跟着影片没了（那条 FK 是 ON DELETE CASCADE）——留一行指向已删影片的产物，
+    // 输出目录里就再没人说得出它是哪一部片子留下的
+    expect(await readProducts(page, mkvId)).toEqual([])
   } finally {
     // 排在后面的用例——这一条是最后一条，所以"后面"是**下一轮起跑**——都按「媒体目录里只有
     // 播种那一个文件」数数（同目录第二个源那条、删影片那条的 `files_found` 都是从这一个数出来的），
-    // 所以那个 .mkv 和它的 mp4 产物都得由这一条自己带走。
+    // 所以那个 .mkv 得由这一条自己带走；它的 mp4 产物住在输出目录里，扫描器够不着，但留着
+    // 同样会让下一轮读到一份旧文件。
     // 和 `writeSlowClip` 那一条同一句规矩：删除失败必须闭嘴——`finally` 里抛出的异常会顶掉
     // try 块里那个真正的断言失败，而下一轮起跑 `e2e_seed.prepare_media()` 会把整个目录 rmtree。
-    for (const path of [MKV_SOURCE, join(MEDIA_DIR, 'e2e_mkvsrc.mp4')]) {
+    for (const path of [MKV_SOURCE, productPath(mkvId, 'e2e_mkvsrc', 'mp4')]) {
       try {
         rmSync(path, { force: true, maxRetries: 10, retryDelay: 500 })
       } catch {
@@ -166,5 +187,5 @@ test('转码表里 mp4 那一行：换一个不是 mp4 的源，那半张配方�
   // 收尾之后才核对（#120 的规矩）：这两个文件真从磁盘上没了，用 `existsSync` 而不是字节数——
   // 产物刚被编码器写完，Windows 上半秒内可能还读不动。
   expect(existsSync(MKV_SOURCE), MKV_SOURCE).toBe(false)
-  expect(existsSync(join(MEDIA_DIR, 'e2e_mkvsrc.mp4')), 'e2e_mkvsrc.mp4').toBe(false)
+  expect(existsSync(productPath(mkvId, 'e2e_mkvsrc', 'mp4'))).toBe(false)
 })

@@ -15,10 +15,10 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { join, sep } from 'node:path'
 
-import { MEDIA_DIR } from './env'
+import { MEDIA_DIR, TRANSCODE_DIR } from './env'
 import { fetchInPage, requestJson } from './support'
 
-/** 播种那部片子的文件；转码产物按 `with_suffix` 就落在它旁边。 */
+/** 播种那部片子的文件；产物**不**落在它旁边（#154），这里只当源文件用。 */
 export const FIXTURE = join(MEDIA_DIR, 'e2e_sample.mp4')
 
 /**
@@ -43,10 +43,11 @@ export const CONTAINER: Record<string, string> = {
  *
  * 四行配方四行都有真产物了：webm、avi、mkv 那三行由 `transcode.real.spec.ts` 第 15 条从播种
  * 那部 .mp4 转出来，mp4 那一行由第 25 条（`video-transcode-mp4.real.spec.ts`）从一部**现场
- * remux 出来的 .mkv** 转出来。差别只在源：同格式那道闸门比的是拼出来的路径和源文件是不是
- * 同一个（`transcode_service.py:84`），源是 .mp4 时它刚好把唯一一种"目标是 mp4"的写法挡死，
- * 所以那一行从前改错也不会红。mkv 与 avi 那两行的编码器字面值是一样的，但查表按格式名各查
- * 各的：改错 mkv 那一行只红 mkv 那一步，实测 codec / acodec 两个变异都红在它的流清单上。
+ * remux 出来的 .mkv** 转出来。差别只在源：同格式那道闸门比的是源文件的扩展名和目标格式是不是
+ * 同一个（`transcode_service.py` 里那句 `Path(input_path).suffix`），源是 .mp4 时它刚好把唯一
+ * 一种"目标是 mp4"的写法挡死，所以那一行从前改错也不会红。mkv 与 avi 那两行的编码器字面值
+ * 是一样的，但查表按格式名各查各的：改错 mkv 那一行只红 mkv 那一步，实测 codec / acodec 两个
+ * 变异都红在它的流清单上。
  */
 export const STREAMS: Record<string, [string, string][]> = {
   webm: [
@@ -83,6 +84,17 @@ export interface TranscodeStatus {
   target_format: string | null
   output_path: string | null
   error: string | null
+}
+
+/** `/api/transcode/{id}/outputs` 的一行（#154 那张产物表从 HTTP 出来的形状）。 */
+export interface TranscodeProduct {
+  id: number
+  target_format: string
+  output_path: string
+  /** 这次请求当场 stat 出来的，不是表里的抄本；文件没了就是 null。 */
+  size_bytes: number | null
+  created_at: string
+  deleted_at: string | null
 }
 
 export interface NotificationList {
@@ -125,16 +137,33 @@ export function streamPairs(path: string): [string, string][] {
     .sort()
 }
 
-/** 服务器报回来的输出路径，必须是磁盘上真存在、且文件头自报家门的那个文件。 */
+/** 某一部片子那一格产物目录：`<输出目录>/<影片 id>`（#154 定下的布局）。 */
+export function productDir(videoId: number): string {
+  return join(TRANSCODE_DIR, String(videoId))
+}
+
+/** 那一格里应该躺着的文件名：`<源文件名去扩展>.<格式>`。 */
+export function productPath(videoId: number, stem: string, format: string): string {
+  return join(productDir(videoId), `${stem}.${format}`)
+}
+
+/**
+ * 服务器报回来的输出路径，必须是磁盘上真存在、且文件头自报家门的那个文件。
+ *
+ * 前两句是 #154 加的：产物从前就写在源文件旁边，而那个目录正是被扫的那一个——写在那里
+ * 的下一个任务不是"转码"而是"库里多出一行影片"。所以这里除了核对形状，还当场核对一次
+ * **它在产物目录里、且不在媒体目录里**：把 `product_path` 改回 `with_suffix` 的那一刻，
+ * 这个函数就会红，而不是等到哪天扫描把产物当成片子才看见。
+ */
 export function expectRealOutput(
   outputPath: string,
   format: string,
+  videoId = 1,
   stem = 'e2e_sample',
 ): void {
-  const mediaRoot = asUrlPath(MEDIA_DIR)
-  // 替身夹具给的是 `/tmp/out.<格式>`；这里要的是它落在媒体目录里、和源文件同级
-  expect(asUrlPath(outputPath).startsWith(`${mediaRoot}/`)).toBe(true)
-  expect(asUrlPath(outputPath)).toBe(`${mediaRoot}/${stem}.${format}`)
+  const expected = asUrlPath(productPath(videoId, stem, format))
+  expect(asUrlPath(outputPath), outputPath).toBe(expected)
+  expect(asUrlPath(outputPath).startsWith(`${asUrlPath(MEDIA_DIR)}/`)).toBe(false)
   expect(existsSync(outputPath), outputPath).toBe(true)
   const bytes = readFileSync(outputPath)
   expect(bytes.length, outputPath).toBeGreaterThan(0)
@@ -146,6 +175,16 @@ export function expectRealOutput(
 
 export async function readStatus(page: Page, videoId = 1): Promise<TranscodeStatus> {
   return requestJson<TranscodeStatus>(page, `/api/transcode/${videoId}/status`)
+}
+
+/**
+ * 读某一部片子的产物表。
+ *
+ * 这一次读**顺带把 `deleted_at` 写了**：`list_outputs()` 是那一列唯一的写的人（读时核对）。
+ * 所以调用它会改变服务端状态——不是纯 getter，用例里把它当成"核对一次并告诉我结果"来用。
+ */
+export async function readProducts(page: Page, videoId = 1): Promise<TranscodeProduct[]> {
+  return requestJson<TranscodeProduct[]>(page, `/api/transcode/${videoId}/outputs`)
 }
 
 export async function readNotifications(page: Page): Promise<NotificationList> {

@@ -8,6 +8,7 @@ from .setting import Setting
 from .source import VideoSource
 from .subtitle import Subtitle
 from .tag import Tag, video_tags
+from .transcode_output import TranscodeOutput
 from .user import User, UserSession
 from .video import Video
 from .watch_event import WatchEvent
@@ -26,6 +27,7 @@ __all__ = [
     "Watchlist",
     "WatchlistItem",
     "Subtitle",
+    "TranscodeOutput",
     "Setting",
     "User",
     "UserSession",

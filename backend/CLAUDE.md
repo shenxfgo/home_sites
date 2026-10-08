@@ -320,7 +320,7 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 归属分两种。**属于人**的表带外键列：`favorites`/`play_history`/`watch_events` 有 `user_id`，`watchlists` 有 `owner_id`，唯一约束都是 `(人, 影片)` 或 `(owner_id, name)` 这种成对形式；`watchlist_items` 不加列，归属随它所在的清单。**全库广播**的内容只有一份行——`new_videos`（扫描日志）与 `notifications`（系统通知）——"读过没"另记在 `new_video_reads`/`notification_reads`（复合主键天然去重），响应里的 `read`/`is_new` 是 service 现查现挂的临时属性，不在模型列里。因此标记已读是 INSERT 而不是 UPDATE，`unread_count` 走 `~EXISTS`；删掉一条通知则是全家一起少一条，它没有归属列，所以这两个删除口不在 `MEMBER_WRITE_PATHS` 里——语义仍是家庭级，只是动手的换成 owner。删影片（或整个视频源）时 `delete_videos_cascade` 要连 `new_video_reads` 一起清——它挂在 `new_videos` 上，是这条链最深的孩子。
 
-级联的孩子清单只有一处出处：`video_service.VIDEO_CHILD_TABLES`，外键指向 `videos.id` 的表一张不落（`play_history`/`favorites`/`new_videos`/`subtitles`/`watch_events`/`watchlist_items`/`video_tags`）。清单统一存 `Table` 而非 ORM 模型——关联表 `video_tags` 没有模型，列只能从 `.c` 上取，一份形状一个循环就能过完。`tests/test_services/test_video_service.py::test_the_explicit_cascade_list_is_every_child_of_videos` 拿 `Base.metadata` 现算出"所有引用 `videos.id` 的表"跟这张清单对账，新加一张却忘了登记时这条用例要红。
+级联的孩子清单只有一处出处：`video_service.VIDEO_CHILD_TABLES`，外键指向 `videos.id` 的表一张不落（`play_history`/`favorites`/`new_videos`/`subtitles`/`watch_events`/`watchlist_items`/`video_tags`/`transcode_outputs`）。清单统一存 `Table` 而非 ORM 模型——关联表 `video_tags` 没有模型，列只能从 `.c` 上取，一份形状一个循环就能过完。`tests/test_services/test_video_service.py::test_the_explicit_cascade_list_is_every_child_of_videos` 拿 `Base.metadata` 现算出"所有引用 `videos.id` 的表"跟这张清单对账，新加一张却忘了登记时这条用例要红。
 
 这条清单存在的理由原本有一半在方言上：PG 真的执行 `ON DELETE CASCADE`，而 SQLite 在 #161 之前连外键都不查、批量删父表就悄悄留下孤儿行——只信 schema 声明，SQLite 上的测试永远发现不了漏表。那一半现在被连接事件补平了（见上面「两种方言现在都真的执行外键」），**但显式删除仍然留着**，理由换成两条更结实的：一是"由这一处决定删除带走什么"，两边同一个答案，不用去查每种方言在什么开关下才会级联；二是删行之外还要带走封面文件，schema 永远不知道哪张表存着路径。代价没变：这张清单必须有人守，于是守卫做成用例，不靠记性。
 
@@ -428,14 +428,26 @@ class Video(Base):
 - **设置页的「缩略图宽度 / 高度」没有接**：`generate_thumbnail` 里的 `scale=320:-1` 和 `-ss 00:00:01` 是硬编码，那两个值只是存进 `settings` 表、无人读取。要真做成可配得改函数签名并把设置读进来，别以为改表单就行
 - **封面跟着记录走**：删影片或删整个视频源时，`delete_videos_cascade` 把被删行的 `thumbnail_path` 交给调用方，提交成功后由 `delete_cover_files` 从磁盘移除；漏了这一步就是永久孤儿文件（删行不碰磁盘，重扫又会按同一个派生名新建一张，盘上只会越攒越多）。视频本体**永远不删**——那是用户的片，不是应用生成的。细节见「数据模型」一节
 
+### 转码产物落盘（#154）
+
+- **产物不能落在任何片源目录里**：`product_path(input_path, target_format, video_id)` 是 `transcode_output_dir/<影片 id>/<源文件名去扩展>.<格式>`。从前它是 `Path(input_path).with_suffix(...)`，也就是**源的旁边**，而那一半正是扫描范围——`file_scanner.scan_directory` 的 `os.walk` 一路下潜、没有排除名单，于是下一轮扫描把产物登记成一部新片子，同一部片子还能再转一遍
+- **`TRANSCODE_OUTPUT_DIR` 的相对值和封面/备份目录一样，在配置层就按 `backend/` 展开成绝对路径**（`config.py` 的 `_anchor_under_backend`，三个 key 共用同一个 validator）。理由更硬：那串路径会**写进库里**（`transcode_outputs.output_path`），一个 cwd 相对的值意味着换启动位置就等于产物集体"消失"
+- **按影片 id 分子目录，不是为了整洁**：平铺布局下两个片源里的同名片子（`data/a/movie.mp4` 与 `backups/movie.mp4`）会指向同一个产物，而 ffmpeg 带 `-y`，覆盖是静默发生的
+- **同格式那道闸门留着，挡的理由换了**：产物不再落在源旁边，同格式不会**覆盖**源文件，但它仍然让产物和源**同名**——库里那行 `movie.mkv` 和产物表那行 `movie.mkv` 在人眼里是同一个东西，而这一单买的就是"产物看得见"。所以比的是源的扩展名而不是拼出来的路径
+- **`transcode_outputs` 只在成功那一路写**（`_record_output` 挂在 `_run` 的 success 分支、`_notify` 之前）：失败的任务压根没有文件，取消的那一路 ffmpeg 已经把半截文件 `unlink` 掉了。往表里写一条"存在过、其实没有"的行，正是这一单要修掉的那种谎
+- **`deleted_at` 唯一的写的人是读时核对**（`list_outputs()`）：产物目录在所有片源之外，扫描走不到它，除了这一次 `stat` 没人能说得出"那份文件没了"。反方向也一并翻回来（文件被放回去时标记清掉），否则这一列从漏报变成误报。`size_bytes` 是**这次请求当场 stat 的**，不是表里的抄本
+- **服务重启之后 `_jobs` 那本账是空的**：`GET /api/transcode/{video_id}/outputs` 是产物唯一的出处（进程内存里的任务表不是持久层，别拿它回答"这片子转过什么"）
+- **删影片会带走产物**行**，不会带走产物文件**：外键是 ON DELETE CASCADE，行跟着 `videos` 没了，盘上那份 `<输出目录>/<id>/` 里的文件留在原地，而那里没有任何东西会去扫它——这就是永久孤儿，和封面那一条是同一个形状。**这一处已知未修**（缺的是 `delete_video` 里对 `output_path` 的一次 unlink，删的是用户磁盘上的文件，要用户点头）
+
+
 `boto3` 是可选依赖（`.[s3]`），不装也能起服务，真去读对象存储时才提示「请安装 .[s3]」；`moto`（在 `.[dev]` 里）在内存中演一个桶来测 S3 实现，不碰网络——它证明的是客户端接线正确，不代表真服务器就这么答，端点行为仍要人肉验一次。两个包都没装时相关用例 `importorskip` 跳过而不是报错。
 
 ## OpenAPI 快照（`openapi.json`）
 
 前端有 14 份手写请求模块，形状规则（不带 `/api`、不以 `/` 结尾、没有 `//`）能挡住双前缀和拼接错位，但**挡不住段名写错**：`/videos/duplicates` 少写一个 `s` 在形状上完全合法，前端单测全绿，打到后端才发现是 404。所以路由表本身要有一份可核对的落盘产物。视图侧也不再就地拼 URL（`Sources.vue` / `Transcode.vue` 那 7 条在 #123 搬进了 `src/api/`），浏览器自己取的那四类地址（封面、播放流、两条字幕轨的 `src`）也在 #124 搬进去并按 GET 对同一张表核对，否则模块外的地址根本不进这份核对。
 
-- **`python -m src.export_openapi` 生成/更新根目录的 `openapi.json`**（`--out` 换目标路径，`--check` 只比较不写盘，不一致就退出码 1）。产物是 `json.dumps(..., indent=2, sort_keys=True)` + 尾换行：键排序、缩进固定，diff 里才会只出现接口本身的变化。当前 65 条路径 / 84 个操作、5575 行。
-- **导出不需要起服务**：`app.openapi()` 是离线构建的（实测把 `DATABASE_URL` 指到一个没人监听的端口照样出 65 条路径）。别顺手写"先启动 uvicorn 再抓 `/openapi.json`"的流程。
+- **`python -m src.export_openapi` 生成/更新根目录的 `openapi.json`**（`--out` 换目标路径，`--check` 只比较不写盘，不一致就退出码 1）。产物是 `json.dumps(..., indent=2, sort_keys=True)` + 尾换行：键排序、缩进固定，diff 里才会只出现接口本身的变化。当前 66 条路径 / 85 个操作、5677 行。
+- **导出不需要起服务**：`app.openapi()` 是离线构建的（实测把 `DATABASE_URL` 指到一个没人监听的端口照样出 66 条路径，且与提交的那份逐字节相同）。别顺手写"先启动 uvicorn 再抓 `/openapi.json`"的流程。
 - **改了接口就要重跑一次导出**，否则红的是快照而不是调用方。`tests/test_openapi_snapshot.py` 是防腐钉子（比 `--check` 更严：直接把提交的文件和 `app.openapi()` 逐键比对象，注释、格式差异不会造成假红），删掉提交文件里的任何一条路径都会让它红——实测删 `/api/auth/sessions` 时 3 条用例红 2 条。
 - **这份快照有个下游消费者**：`frontend/tests/api/openapi-contract.spec.ts` 拿它核对前端真正会请求的地址（路径 + 方法 + 路径参数类型 + query 键名）。它读的是磁盘上的 JSON，不 import 后端，所以跨语言、不需要后端进程；代价就是上面那条——快照滞后，那边红的是快照。**两节各红各的，实测（#148）**：把 `src/api/videos.py` 里路由声明的 `search` 改名，红的是 `test_openapi_snapshot.py`（钉的是代码↔文件），前端那层照绿——因为它读的文件还没变；只改提交文件里的声明名，红的是前端那层（钉的是文件↔接口）。两段接起来才钉住「路由代码 ↔ 前端接口」，别指望任何单独一层。
 - **没声明的查询参数会被静默忽略**（实测：`GET /api/videos?searsh=abc&page=1` 回 **200**，返回的是**没筛过**的第一页）。FastAPI 只把声明过的查询参数绑进函数签名，而 `backend/src` 无一处读 `request.query_params`（grep 零命中），所以前端拼错键名既不会 422 也不会 400，只会让筛选无声失效——这正是前端那层 query 钉子存在的理由（`frontend/CLAUDE.md` #148）。
@@ -582,7 +594,7 @@ SQLite 不存时区：写进去的是 UTC，裸 `DATETIME` 读回来的 `datetim
 
 下面那份薄位置清单是**修正后**重测的（SQLite 全量 717 passed + 1 skipped，TOTAL 92%，2026-10-05 复量；清单里个别条目另标了自己更晚的重量时间）：
 
-- `utils/ffmpeg.py` **23%**——转码要真 FFmpeg 和真片子才跑得动，桩不出真形状没有意义。真跑那一趟现在有了（`frontend/e2e/real/transcode.real.spec.ts` 那三条：第 15 条真 FFmpeg 写出真文件、真读文件头，也用 `ffprobe` 核对产物里那两条流正是配方里那一对编码器；第 16 条让 ffmpeg 真失败一次，签的是那句原因从子进程一路走到接口、页面和真库；第 17 条杀的是一个真子进程，半截产物跟着它一起从磁盘上消失），四行配方现在四行都有真产物签过字——mp4 那一行由第 25 条（另一支文件 `video-transcode-mp4.real.spec.ts`）从一部现场 `-c copy` remux 出来的 .mkv 转出来，此前它的 `-c:a aac` 被**源文件的后缀**挡着（同格式闸门比的是拼出来的路径，不比扩展名），ffmpeg 从没为那一行起过进程；但它活在另一个进程里、不进这份读数，和下面 `api/stream.py` 那条同理
+- `utils/ffmpeg.py` **23%**——转码要真 FFmpeg 和真片子才跑得动，桩不出真形状没有意义。真跑那一趟现在有了（`frontend/e2e/real/transcode.real.spec.ts` 那三条：第 15 条真 FFmpeg 写出真文件、真读文件头，也用 `ffprobe` 核对产物里那两条流正是配方里那一对编码器；第 16 条让 ffmpeg 真失败一次，签的是那句原因从子进程一路走到接口、页面和真库；第 17 条杀的是一个真子进程，半截产物跟着它一起从磁盘上消失），四行配方现在四行都有真产物签过字——mp4 那一行由第 25 条（另一支文件 `video-transcode-mp4.real.spec.ts`）从一部现场 `-c copy` remux 出来的 .mkv 转出来，此前它的 `-c:a aac` 被**源文件的后缀**挡着（当时同格式闸门比的是拼出来的路径，不比扩展名；#154 之后产物写在 `transcode_output_dir/<影片 id>/` 那一格，拼不出"和源同一个路径"，闸门改成比源的扩展名、理由换成"产物会和源同名"，换源这个办法因此照旧是唯一能让 mp4 那一行点起来的路），ffmpeg 从没为那一行起过进程；但它活在另一个进程里、不进这份读数，和下面 `api/stream.py` 那条同理
 - `scheduler/tasks.py` **93%**（2026-10-07 补上「自动扫描」那道闸门之后重量的，此前 62%）——两个扫描任务现在各有 5 条用例端到端走过（`tests/test_scheduler_auto_scan_switch.py`：闸门、空表默认、开关拨回、手工扫描不归它管、全量那一轮），剩下缺的 44-45 / 69-70 是"失败通知自己也写不进库"那两层兜底，要有真机上的第二次异常才红得起来；只有两条备份任务（每晚 + 启动补跑）另有 `test_scheduler_backup.py` 盖着。**另记一处已经补上的**：#150 那次量到 `api/scheduler.py` **75%**（那四个管理端点从来没被请求过）、`scan_scheduler.py` **81%**（`start()` / `stop()` / `get_jobs()` / `is_running` 四段没人走）、`source_service.py:87`（关启用时拆任务那一句）0 引用——这三处于 2026-10-07 由 `tests/test_scheduler_source_lifecycle.py` 一起清到 **100%**，钉的是片源 create / update / delete 与调度任务那三条同步边（少一行不会红任何一条库里的用例，代价是进程里留一个永远扫不到东西的任务，每轮换回一条失败通知）。
 - `src/e2e_seed.py` **55%**（2026-10-05 加第二个账号之后重量的，PostgreSQL 全量 718 passed，此前 58%）——一次性库的播种与重置，主要活在打真后端的 e2e 那个进程里，pytest 进程只 import 和调其中一部分（`seed()` 整段 177–280 行没人走，它要真 PG、真媒体目录和真 FFmpeg；`seed_user_stats` 从 2026-10-05 起有一条用例直接过它）
 - `api/settings.py` **100%**（2026-10-05 补齐系统配置那一面之后重量的，PostgreSQL 全量 725 passed，此前 71%）——先前缺的就是整份 `PUT` 和单键读写这几条端点：`test_preferences.py` 只测过白名单拒绝和一次单键写入，`GET /api/settings` 的默认值那一路反而没人走

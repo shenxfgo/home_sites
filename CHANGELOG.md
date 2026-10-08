@@ -1,6 +1,42 @@
 # 更新日志
 
 ## 2026-10-08
+### 产物从前只活在进程那本账上：转码落进独立目录，并第一次有了一张自己的表（#154）
+
+- **症状**：转码成功后，产物写的是 `Path(input_path).with_suffix(".mkv")`——也就是**源的旁边**。而那个目录正是扫描范围（`file_scanner.scan_directory` 只看 `VideoSource.path`，`os.walk` 一路下潜、**没有排除机制**）。于是下一轮定时扫描把 `movie.mkv` 当成一部新片子登记进库，界面上同一部片子的两份并排出现，产物那份还能再转一遍。这一路**测试里一次也没红过**：`_jobs` 是进程内的字典，用例的会话就是服务的会话，"重启后什么都没人记得"和"产物会变成一部新片子"都不在旧用例的射程内。
+- **修法（用户选的是甲 + 表里可逻辑删除）**：`TRANSCODE_OUTPUT_DIR`（默认 `./data/transcode`，和封面/备份一起进 `_anchor_under_backend` 那个名单——那串路径**会写进库**，换个工作目录启动就读不到自己昨天产的那一份了），新函数 `product_path()` 按 **`<输出目录>/<影片 id>/<源文件名去扩展>.<格式>`** 布局落盘，`output.parent.mkdir(parents=True, exist_ok=True)` 在 `transcode()` 里做而不是在 ffmpeg 里做（那一步失败会以"转码失败"的面目出现在界面上，而真实原因是没地方写）。按影片 id 分子目录挡的是平铺布局下两个片源的**同名片子互相覆盖**——ffmpeg 带 `-y`，覆盖是静默发生的。
+- **闸门留着，理由换了一个**：同格式目标从前被拒是因为"会覆盖原文件"，输出目录独立之后不会覆盖了，但它让**产物和源同名**：库里的 `movie.mkv` 和产物表里的 `movie.mkv` 在人眼里是同一行，而这一单买的就是"产物看得见"。所以判据从"比两个路径"改成"比源扩展名"（`Path(input_path).suffix.lower().lstrip(".") == target_format`），错误文案同步改写成 `the product would have the same filename as the original`。
+- **新表 `transcode_outputs`（迁移 `0002`）**：一行说的是"这一部的这一种容器产出过一份，文件在哪儿"。`UniqueConstraint(video_id, target_format)` + `(video_id, target_format)` 索引 + `ForeignKey(videos.id, ondelete="CASCADE")`；两张时间列用 `UTCDateTime`（#162 那个类型），迁移脚本写的是 `sa.DateTime(timezone=True)`——`impl` 就是它，两种方言 DDL 逐字节相同，形状由 `test_utc_datetime_columns.py` 的结构哨兵对着元数据核（**21 → 23 处声明**）。`_record_output()` **只在成功那一路调用**：失败的产物压根不存在，取消那一路 ffmpeg 已经把半截文件 unlink 掉了，写进表一条"存在过、其实没有"的行正是这一单要修掉的那种谎；重做同一种容器是这一行被更新，不是多出一行。
+- **`deleted_at` 由读时那一次 stat 写（用户选的乙′）**：`list_outputs()` 是这一列**唯一的写的人**，而且**两个方向都核对**——文件没了就盖上时刻，被放回去（误删后恢复、换盘）就清掉，否则这一列从漏报变成误报，一样是谎；`if changed: commit()` 把发现落库，下一次读不用重新发现。`size_bytes` 是**当场** `stat()` 出来的、不写进表，因为库里那份会说谎。为什么只有这一处能写：产物目录在任何片源之外，扫描永远走不到它。
+- **接口与前端**：新增 `GET /api/transcode/{video_id}/outputs` → `list[TranscodeProductResponse{id, target_format, output_path, size_bytes, created_at, deleted_at}]`；没转过的片子回 **200 + 空表**而不是 404（前端拿它渲染一行都没有的表格），片子被删了行也随级联走。`openapi.json` 重导：**66 条路径 / 85 个操作 / 5677 行**。`Transcode.vue` 多一张「转码产物」表（文件名、大小、去处、时间，`size_bytes === null` 显示 `—` 并标**已不在**、行不隐藏），轮询到 `completed` 那一刻**重读一次产物**（那一行是任务成功时才写进去的，不重读就得刷新页面才看得到），`fetchProducts` 失败要说清原因——"表里一行都不显示"和"这部片子没转过码"在界面上是同一个样子。
+- **真后端 e2e 的接线**：`real/env.ts` 把 `TRANSCODE_OUTPUT_DIR` 指到 `backend/data/e2e/transcode`，`e2e_seed.prepare_media()` 只 rmtree 媒体目录**不动产物目录**，所以规格自己收尾（`transcode_support.ts` 新增 `productDir/productPath/readProducts`，`expectRealOutput` 现在断的是**精确路径**而不是"在源旁边"）。
+- **回归用例**：后端 **+15** 条——新增 `tests/test_api/test_transcode_products.py` **7** 条（空表 200、字段集合逐字对、`size_bytes == 5` 是当场读的、只列这一部的、新做的在前、**盘上没了要报并且 `refresh` 证明那句写真的落库**、POST→后台任务→GET 全程走 HTTP 钉住"登记用模块级会话、读用请求会话，必须落在同一个库里"、未知影片 200 + 空表），`test_transcode_service.py` **+7** 条（产物不许变成库里的行、进程忘了之后产物仍已知、失败/取消都不登记、重做同容器只更新那一行、手工删掉要标回来且放回去要清掉），`test_config.py` **+1** 条（相对的 `TRANSCODE_OUTPUT_DIR` 按 `backend/` 展开——这一条是变异 M11 逼出来的：真改代码时只核了封面那条锚定用例，没核这一半）。前端 Vitest **+5** 条（345 → **350**）；替身 e2e 条数不变（100）但 `transcode.spec.ts` 加了 `.products-section` 那组断言，夹具补 `/transcode/{id}/outputs` 处理器；真后端 e2e 转码那一对 **4** 条改到新布局。
+- **红在先**：写实现之前先把三个行为侧文件按 `git show HEAD:` 复位（`services/transcode_service.py`、`api/transcode.py`、`config.py`），跑这两个测试文件 → **7 failed + 17 errors**：API 那 7 条红的是 `{'detail': 'Not Found'}`（`GET …/outputs` 这条地址还不存在），服务层那 17 条在夹具 setup 就红（`module 'src.services.transcode_service' has no attribute 'settings'`——独立输出目录这个键还没有）。跑完按字节复位并核 md5（`4bd397b8…` / `67227a9d…` / `476d9733…` 三个全与快照一致），复位后同一条命令 → **32 passed**。**#154 的症状本身（产物被扫成库里的第二行）在这份复位上看不见**——复位把"往哪儿写"也一起复掉了；那一句是变异 M1 单独摆出来的：只把 `product_path` 退回 `with_suffix`、其余实现留着，后端红 3 条、真后端 e2e 红 4 条。前端那三条静态守卫同样是先看它们红才补的夹具处理器（见 F1/F2）。
+- **变异**（一次一个变量；每轮从 `/tmp/mut154` 的快照**按字节**复位再改一处，跑完核 md5；六个被改文件复位后的 md5 全部与快照一致，`transcode_service.py 4bd397b8…`、`config.py 476d9733…`、`video_service.py a8bdf051…`、`models/transcode_output.py c67d2df2…`、`src/api/transcode.ts 98dfd55c…`、`e2e/fixtures.ts d875e17f…`）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | M1 `product_path` 退回 `with_suffix`（产物写回源旁边） | **红** 3 条；真后端 e2e **4 条全红**（一条红在产物路径那一句，三条红在扫描计数那一句） |
+  | M2 去掉 `output.parent.mkdir(...)` | **红** 5 条 |
+  | M3 成功分支不再 `_record_output` | **红** 4 条 |
+  | M4 读时核对整段删掉（`deleted_at` 从此没人写） | **红** 2 条 |
+  | M5 只标"没了"、不往回翻 | **红** 1 条 |
+  | M6 `size_bytes` 从表里的标记推出来，不当场 stat | **红** 5 条 |
+  | M7 闸门退回"比路径"而不是"比源扩展名" | **红** 1 条（同格式那条拒绝没了） |
+  | M8 布局平铺（去掉 `<video_id>/` 那一格） | **红** 2 条 |
+  | M9 登记改成总是 INSERT（不 upsert） | **红** 1 条，且撞的就是那个唯一约束 |
+  | M10 排序退成正序 | **红** 1 条 |
+  | M11 `transcode_output_dir` 从锚定 validator 名单里摘掉 | **红** 1 条（新加的那条配置用例） |
+  | M12 产物表没登记进 `VIDEO_CHILD_TABLES` | **红** 1 条（那条结构守卫） |
+  | M13 两张时间列退回裸 `DateTime(timezone=True)` | **红** 1 条（#162 的结构哨兵 23 处） |
+  | F1 前端地址段写错（`/outputs` → `/output`） | **红** 2 条：openapi 契约钉子 + 替身覆盖钉子 |
+  | F2 替身夹具里那条处理器摘掉 | **红** 1 条 Vitest 守卫 + 3 条替身 e2e 断言 |
+
+  **十五项全部能红，没有"拆不红"的格子。**M1 是唯一一条同时打到两层的：后端红 3 条，真后端 e2e 那 4 条全红——而且红的正是"#154 的签名"那两句（产物落在哪、扫描计数不许多出一行）。
+- **基线**：**844 passed**（真库 PG；#162 是 829，差额正好是新增的 15 条）／TOTAL **93.54%**（4613 句、缺 298）／`src/services/transcode_service.py` **89%**（缺的那 14 行是 `_notify` 那一段和异常路径——通知写失败不该让转码本身失败，这一向是刻意留白）／**SQLite 分支 843 passed, 1 skipped in 89.95s**（跳过的那条是 PG 专属）／ruff 干净、`mypy src` 仍是那 **34** 项基线（这一单动了 `src/` 五个文件，没新增一项）／前端 `typecheck:test` 干净、Vitest **350**、替身 e2e **100**、`npm run build` 通过、真后端 e2e 转码那一对 **4 passed**（36.7s，跑的时候没有并行的 pytest）。
+- **文档**：`backend/.env.example`、`README.md`、根 `CLAUDE.md`、`backend/CLAUDE.md`（新增「转码产物落盘（#154）」一节 8 条 + `VIDEO_CHILD_TABLES` 清单补上 `transcode_outputs`）、`frontend/CLAUDE.md`、`frontend/e2e/real/*`。
+- **已知未修（下一单，#168）**：**删影片会带走产物行，但带不走产物文件**。级联（`ondelete="CASCADE"`）删的是行，磁盘上那份 `<输出目录>/<video_id>/x.mkv` 留在原地，而扫描永远走不到那儿去——所以它既不报错也没有任何人会再提起，是纯粹的字节泄漏。这一处 `backend/CLAUDE.md` 里也明写了「已知未修」，处置方案（删行时按 `output_path` 逐个 unlink、失败只记日志，照 #75 封面那一路的形状）等用户定夺。
+
 ### 那 21 处时间列从此只有一种形状：SQLite 分支上 10 条「我的设备」红第一次有人接住（#162）
 
 - **症状**：只在测试分支上。`TEST_DATABASE_URL= pytest` 走的是内存 SQLite，本机自 10-04 起主线连的是 PG，这条路很久没人跑——#161 为了确认外键改动没弄坏什么跑了一趟，量到 `10 failed, 772 passed, 1 skipped`，全在「我的设备」和用户管理那一带，异常一律是 `TypeError: can't compare offset-naive and offset-aware datetimes`，回溯落在 `sqlalchemy/orm/evaluator.py:263`。**单独立刻能复现的最小一条**：`TEST_DATABASE_URL= .venv/Scripts/pytest.exe -q tests/test_api/test_auth.py` → **6 failed, 17 passed**。
