@@ -1,6 +1,24 @@
 # 更新日志
 
 ## 2026-10-08
+### 「密码过长（上限 72 字节）」这句从来没有说过（#163）：字节闸门和坏哈希那一路补上签字，顺带记下行覆盖率骗人的那个形状
+
+- **症状**：表面上没有，而且这一单连"薄位置"都是读数骗出来的。`utils/password.py` 报 **85%**、缺 21-22 两行——那是 `verify_password` 的 `except ValueError: return False`；同一份全量读数里 `src/services/auth_service.py:369`（`raise ValueError("密码过长（上限 72 字节）")`）也是缺的。**但 `password.py:27` 那句 `return len(plain.encode("utf-8")) > 72` 是"覆盖到"的**：每一次建号、每一次改口令都会执行它，只是 783 条用例里从来没有一次算出过 True。一个永远返回 False 的布尔判断，在行覆盖率里和永远正确长得一模一样——这是 §5 那份薄位置清单一直警告的"别拿单文件百分比当证据"的一个具体形状，值得记的是它这次**反方向**骗了一次。
+- **缺口是真的**：`grep -r -e 过长 tests/` 在写这一族用例之前是空的；没有任何用例喂过 `verify_password` 一个真坏掉的哈希。界面那一头也不是构造出来的：`frontend/src/views/Users.vue:231` 那个口令框**没有 `maxlength`**，25 个汉字的口令是真打得进来的字（同一份请求在 Pydantic 那一头只有 25 个字符，离 `max_length=200` 还远）。
+- **为什么要按字节而不是按字符**（这一格的存在理由）：上面一层 Pydantic 数**字符**，下面 bcrypt 的限制是 **72 字节**，而且它超了是 `raise ValueError` 不是返回 False。UTF-8 下一个汉字占 3 字节，所以 24/25 个汉字正好落在闸门两侧——只测 ASCII 的话这一族永远绿，因为字符数和字节数在那个字母表里从来不分家。
+- **回归用例**：新增 `tests/test_api/test_password_gates.py`，3 条。① API 那一路从建号口进来：18 与 24 个汉字（54 / 正好 72 字节）建成**并且真能登录**（光 201 不算，哈希是按那串字节算的才算），25 个（75 字节）回 400 且 detail **整句**等于那句中文，同时库里没有这个人；② 单元那一头钉边界本身：`password_too_long` 对 72 收、73 拒，ASCII 与汉字在字节上等价——`>` 写成 `>=` 只有这一条能红（第①条照样绿，因为 75 字节仍然越界）；③ 坏哈希：把 `users.password_hash` 写坏之后登录回 **401 + 那句"账号或密码错误"**而不是 500，两种坏法各走一遍（纯 ASCII 乱串撞到 bcrypt 的 `ValueError: Invalid salt`，带非 ASCII 的那一串在 `hashed.encode("ascii")` 处先抛 `UnicodeEncodeError`——它是 `ValueError` 的子类，所以那一句 `except` 恰好两种都接得住）。
+- **变异**（一次一个变量，跑完 `cp` 还原并 md5 与快照逐字节核对，`git diff --numstat -- src/` 为空）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | M1 拆掉 `validate_password_strength` 里那句字节闸门 | **红** 1 条：detail 变成 bcrypt 自己那句英文 `password cannot be longer than 72 bytes, truncate manually if necessary (e.g. my_password[:72])`（400 状态码不变——路由把所有 `ValueError` 都翻成 400，所以只断状态码的写法在这种变异下是绿的，这一条断的是整句文案） |
+  | M2 `password.py:27` 的 `>` 改成 `>=` | **红** 2 条：单元边界那条，加上 API 那条（24 个汉字=正好 72 字节被误判成过长，建号 400） |
+  | M3 `verify_password` 的 `except ValueError` 收窄成 `except TypeError` | **红** 1 条：`ValueError: Invalid salt` 一路穿出 ASGI，坏哈希那条拿到的是异常而不是 401 |
+  | M4 `hashed.encode("ascii")` 换成 `.encode("utf-8")` | **全绿**（实测，不是推理）：两种编法得到的字节 bcrypt 都不认识，最后都归成同一句 Invalid salt。所以这一族钉的是"任何坏哈希都只能是 401"，钉不到"哪个异常从哪一行出来"——这一句写进用例 docstring，不假装钉住了 |
+
+- **文档两处**：`backend/CLAUDE.md` §5 薄位置清单加一条（`utils/password.py` 85% → 100%，以及上面那个"永远返回 False 的判断在行覆盖率里看不出破绽"的形状 + M4 那条测不到的诚实记录）；新用例文件自己的模块 docstring 写清两格缺口的出处和为什么必须按字节。
+- **基线**：786 passed, 0 failed（上一单 783，差额正好是新增的 3 条）／TOTAL **92.61%**（#161 是 92.54%，334 miss vs 337）／`src/utils/password.py` **100%**（此前 85%）／`src/services/auth_service.py` 97%，缺的 6 行 `143, 234, 314, 409-410, 416` 里 **369 已经不在了**；ruff 干净，`mypy src` 仍是那 34 项基线（这一单没动 `src/`）；前端三种测试未涉及（只读了 `Users.vue` 一行确认没有 `maxlength`）。那 2 条 ResourceWarning 还是 `tests/test_db_transfer.py::test_every_row_lands_with_its_own_id` 的，和 #161 记的是同一对。
+
 ### 模型里那 21 处 `ondelete="CASCADE"`，SQLite 一条也没执行过（#161）：开关补在连接事件上，两种方言从此一套规则
 
 - **症状**：表面上没有。生产路径跑的是 PG，而 PG 一直在强制外键。量出来的是**同一棵树、同一份新用例，两种方言两个结论**：`TEST_DATABASE_URL=`（清空，走内存 SQLite）跑是 `2 failed, 4 passed`，裸跑（PG）是 `6 passed`。红的那两条，一条是「子行指向不存在的父行」——SQLite 照收，PG 当场 `IntegrityError`；另一条是 `delete(Watchlist)` 这种绕过 ORM 的批量删除——PG 顺着外键子句连带清掉 `watchlist_items`，SQLite 只删父表，`assert 2 == 0` 里那 2 就是留在库里的两条孤儿。
