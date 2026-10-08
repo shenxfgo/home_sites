@@ -345,7 +345,7 @@ pg_dump -Fc home_sites > backup-before-rollback.dump
 # 把 .env 里的 DATABASE_URL 换回 sqlite+aiosqlite:///./data/videos.db，重启后端
 ```
 
-恢复回去是 `pg_restore --no-owner -d home_sites <那份 .dump>`（库和角色用上面的模板重建，表结构在 dump 里）。这样回到的是**备份那一刻**的状态，之后新增的播放记录、收藏、账号都不在那份文件里。想把增量一起带回去，就反向再搬一次：先拿一个新文件名启动一次后端（空库会走基线把表建齐），再 `uv run python -m src.db_transfer --from <PG 连接串> --to sqlite+aiosqlite:///<新文件>`，核对摘要通过后把 `DATABASE_URL` 指过去。两个方向用的是同一套脚本，序列重置对两种方言都做了。
+恢复回去是 `pg_restore --no-owner -d home_sites <那份 .dump>`（库和角色用上面的模板重建，表结构在 dump 里）。这样回到的是**备份那一刻**的状态，之后新增的播放记录、收藏、账号都不在那份文件里。想把增量一起带回去，就反向再搬一次：先拿一个新文件名启动一次后端（空库会走基线把表建齐），再 `uv run python -m src.db_transfer --from <PG 连接串> --to sqlite+aiosqlite:///<新文件>`，核对摘要通过后把 `DATABASE_URL` 指过去。两个方向用的是同一套脚本，序列重置对两种方言都做了。回去之后有一处行为不一样了：应用现在会在每个 SQLite 连接上打开 `PRAGMA foreign_keys`（#161），模型里声明的级联从此真的执行——切换之前那个老文件里若留有孤儿行，回来之后那种子行是写不进去的。本机那五个老库（含这份回滚目标）`PRAGMA foreign_key_check` 实测零违规，所以这一步在这里不挡路。
 
 ## 🌐 公网部署注意事项
 

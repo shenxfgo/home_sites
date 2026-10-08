@@ -1,7 +1,29 @@
 # 更新日志
 
 ## 2026-10-08
+### 模型里那 21 处 `ondelete="CASCADE"`，SQLite 一条也没执行过（#161）：开关补在连接事件上，两种方言从此一套规则
+
+- **症状**：表面上没有。生产路径跑的是 PG，而 PG 一直在强制外键。量出来的是**同一棵树、同一份新用例，两种方言两个结论**：`TEST_DATABASE_URL=`（清空，走内存 SQLite）跑是 `2 failed, 4 passed`，裸跑（PG）是 `6 passed`。红的那两条，一条是「子行指向不存在的父行」——SQLite 照收，PG 当场 `IntegrityError`；另一条是 `delete(Watchlist)` 这种绕过 ORM 的批量删除——PG 顺着外键子句连带清掉 `watchlist_items`，SQLite 只删父表，`assert 2 == 0` 里那 2 就是留在库里的两条孤儿。
+- **根因不在 schema**：`create_all` 和 `0001` 基线写的 DDL 都带 `ON DELETE CASCADE`（`alembic/versions/0001_baseline.py` 里 21 条外键全带），缺的是 SQLite 那个**出厂关着的** `PRAGMA foreign_keys`——官网 foreign_keys.html 写明这是为老应用留的向后兼容，也就是说不显式打开，模型里那 21 处声明在 SQLite 上就只是注释。
+- **这一单原来不是这个方案**（记下来，因为它红过一次就变了）：原来那张票写的是「删单级联收成一条：`passive_deletes`」。量了一把才发现这个选项是空的——`passive_deletes=True` 只阻止 ORM **去加载**子行，而 `Watchlist.items` 挂着 `lazy="selectin"`、`get_watchlist()` 又 `selectinload` 了一遍，子行永远已经在内存里，ORM 照旧一条一条发 `DELETE FROM watchlist_items WHERE id = ?`；真能跳过删除的是 `passive_deletes="all"`，而它和 `cascade="all, delete-orphan"` 是互斥的，映射器配置阶段直接 `ArgumentError: can't set passive_deletes='all' in conjunction with 'delete' or 'delete-orphan' cascade`。也就是说选了它什么也不会发生。回到用户面前重给了选项，定的是「开 PRAGMA + 用例钉平两边」。
+- **修法**：`src/database/session.py` 加 `enforce_sqlite_foreign_keys(engine)`，一个 `connect` 事件补那一句 PRAGMA，DDL 一个字节不动；启动那个模块级引擎在建完之后立刻挂，PG 那边按方言早退（挂上去那句 PRAGMA 是 PG 的语法错误，会在每个连接上炸）。
+- **范围是两处，不是全仓**：挂了开关的只有启动那个 `engine` 和 `tests/conftest.py` 里用例那个。`db_audit` 只读、读的就是脏库；`db_transfer` 搬的老库里可能真有孤儿行，强制了搬迁会中止；`test_migrations.py` / `test_db_transfer.py` 那些自建引擎同理。这几处保持 SQLite 出厂默认是有意的，理由写在 `backend/CLAUDE.md` 那条方言规则末尾——不然下一个读代码的人会把"怎么没挂全"当成漏。
+- **挂载位置是个坑，而且是踩出来的**：`tests/conftest.py` 第一版把这个调用放在 `db_session` 里 `if/else` 之后——也就是建完表才挂。用例照旧红。原因是内存 SQLite 用 `StaticPool`，建表那条连接一路用到底，事件是**新连接**才发的，晚挂对它根本不生效。现在两个分支各挂一次，在第一次连接之前；这一条同时写进了函数 docstring，因为它下次还会绊人。
+- **开强制之前先跑只读孤儿审计**（`mode=ro`，不碰任何库）：`data/` 下那五个老文件——`videos.db`（回滚目标）、`videos.db.bak-2026-09-22`、三个 `walkthrough_m*.db`——`PRAGMA foreign_key_check` 全部**零违规**（声明外键的表 9~12 张）。所以打开开关不会让任何一个老库的现有行变成写入失败；`home_sites` 那个真 PG 库不需要查，它能被写进去就说明一直是在强制下写的。
+- **回归用例**：新增 `tests/test_sqlite_foreign_keys.py`，6 条。两条打 `db_session` 那条真连接（孤儿子行被拒、批量删父表两边子行都没了——顺带钉住「级联只管自己那一单，别人的队列一条不少」），跑在哪种方言上由 `TEST_DATABASE_URL` 决定，头部会打印，所以这两条两边各跑一次就是两份证据。另外四条打 `enforce_sqlite_foreign_keys` 本身：挂上的引擎 PRAGMA 真是 1 且孤儿插入被拒；**不挂的引擎同一个插入照旧成功**（这条把修前的行为永久写进用例，比一次红-绿更长寿）；非 SQLite 的引擎不挂事件（只建引擎不连库，地址是 `127.0.0.1:1` 那种不可能有服务的，也不带任何口令）；以及启动那个模块级引擎挂没挂——它按方言断言 `registered == is_sqlite`，所以本机（PG）上它只断"没挂错东西"，真的在钉事情要等 `DATABASE_URL` 指回 SQLite 那天，见下面 M1。**红在修前**：`2 failed, 4 passed`（SQLite）对 `6 passed`（PG）。
+- **两次变异**（一次一个变量，跑完还原并与 HEAD 逐行核对 diff）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | M1 删掉模块级那句 `enforce_sqlite_foreign_keys(engine)` | **红** 1 条：`the_engine_the_app_boots_on_is_armed`（`assert False == True`）——这条只在把 `DATABASE_URL` 指到一个临时 SQLite 文件时才红，所以那一次跑法是 `DATABASE_URL=sqlite+aiosqlite:///Temp/mut_engine.db TEST_DATABASE_URL= pytest tests/test_sqlite_foreign_keys.py`；PG 基线下它是绿的，这一点写进了用例 docstring，不假装它在本机能拦东西 |
+  | M2 事件不挂了（`event.listen` 那句换成 `pass`） | **红** 3 条：孤儿那两条 + 「挂上的引擎 PRAGMA 真是 1」那条（`assert 0 == 1`）；`without_the_switch…` 那条照绿——它断的就是不挂时的行为 |
+
+- **顺手量出来一个更大的洞（另开票 #162）**：为了确认这次改动没弄坏什么，把全套跑在内存 SQLite 上是头一回——`10 failed, 772 passed, 1 skipped`。那 10 条全在「我的设备」和用户管理那一带（`test_api/test_auth.py` 6 条、`test_api/test_users.py` 3 条、`test_middleware/test_roles.py[/api/users]` 1 条），异常一律是 `TypeError: can't compare offset-naive and offset-aware datetimes`（`sqlalchemy/orm/evaluator.py:263`），跟外键一个字的关系：把本次的 PRAGMA 挂载摘掉、同样三个文件重跑，还是 `10 failed, 78 passed`。SQLite 把 `DateTime(timezone=True)` 读回来永远是 naive 这件事 CLAUDE.md 记过，但只在写入侧防了。真正的事实是：**这条测试分支很久没人跑过**——本机自 10-04 起裸 `pytest` 连的就是 PG。
+- **文档四处**：`backend/CLAUDE.md` 的「PG 真的执行外键」那条改写成「两种方言现在都真的执行外键」（连挂载位置一起写进去）、`VIDEO_CHILD_TABLES` 那段"两个方言朝相反方向失效"改口——那个理由的一半被这次补平了，显式清单剩下的理由换成「由这一处决定删除带走什么」+「schema 不知道哪张表存着封面路径」；`db_audit` 那段里"SQLite 不执行外键"改成"新的孤儿进不去了，那一类查的是开关之前的历史遗留"；目录树里 `support.py` 那行注释；以及 `tests/support.py` 的模块 docstring——它原文教的正是这次要堵的那条宽松路（「可以直接写 `source_id=1` 而不建那条视频源」），留着它就是在教一件不再成立的事。顺带在 `backend/CLAUDE.md` 覆盖率那一节记了一条本机踩了两次的坑：`--cov` 后面写模块名（`--cov=src.database.session`）会让解释器在 `asyncpg` 建连接那一刻直接段错误（退出码 139，栈顶 `connect_utils._create_ssl_connection`），看着像用例把进程弄坏了；同一批文件写 `--cov=src` 立刻正常。
+- **基线**：783 passed, 0 failed（真库 PostgreSQL；上一单是 777，差额正好是这单新增的 6 条）／TOTAL 92.54%（#157 那一次 92.52%）／`src/database/session.py` 87.67%，缺的 9 行是 `init_db` 205-210 和 `get_session` 278-282，都由别的用例覆盖，本单新加的 147-184 那几行全被走到。ruff、mypy 干净。SQLite 分支那一趟是 `10 failed, 772 passed, 1 skipped`——那 10 条与外键无关，见上面 #162。这一趟还多出两条 `ResourceWarning: unclosed database in <sqlite3.Connection>`，都落在 `tests/test_db_transfer.py::test_every_row_lands_with_its_own_id`，是搬迁那套自己造的 SQLite 连接；本单在这条跑法上对它们是惰性的（PG 上 `enforce_sqlite_foreign_keys` 在 `event.listen` 之前就按方言早退，而那几台引擎本来就有意不挂），所以没跟着改。前端三种测试未涉及（这一单没动 `frontend/`）。
+
 ### 没有 `.env` 的检出会静默建出一个空库（#157）：默认连接串从 SQLite 换成 PostgreSQL，`asyncpg` 因此搬进核心依赖
+
 
 - **症状**：`src/config.py:26` 的默认值还是 `sqlite+aiosqlite:///./data/videos.db`，而真机从 10-04 起跑的是 PostgreSQL。任何一份没有 `backend/.env` 的检出（新机器、别人 clone、CI）都会安静地建出一个空 SQLite 文件、一个空库：服务起得来，首页是空的，看起来像"装好了"。配套的 README 装依赖段还写着「`uv sync` 只跑 SQLite 用这个（asyncpg 不在核心依赖里）」——默认方言和默认依赖是错开的两条。
 - **修法**：默认值换成 `postgresql+asyncpg://home_sites_app@127.0.0.1:5432/home_sites`，**故意不带口令**：口令只有一个去处，就是没进版本库的 `.env`（模板 `.env.example`，建库 `deploy/pg-provision.example.sql`）。于是没有 `.env` 的检出的第一次启动会报连不上库——这就是那条"闸门"想要的效果，只是不用新写启动检查代码：`lifespan` 的第一句就是 `init_db()`，里面是 `async with engine.begin()`，真连；而备份任务的挂载在 `main.py:34`、排在 `init_db` 之后，所以也不会对着一个连不上的库每晚发失败通知。SQLite 这条路没被删，只是从此必须显式指。

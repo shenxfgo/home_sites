@@ -119,7 +119,7 @@ backend/
 ├── openapi.json           # 提交在仓库里的路由表快照（由 src.export_openapi 生成，前端契约用例直接读这个文件）
 ├── tests/                 # 测试文件
 │   ├── conftest.py        # 共享 fixtures：db_session / anon_client / client（已登录）+ make_user / user_id / make_signed_in_client
-│   ├── support.py         # ensure_source / ensure_video：PG 真执行外键，子行必须先有父行
+│   ├── support.py         # ensure_source / ensure_video：两种方言都执行外键，子行必须先有父行
 │   ├── test_api/          # API 测试
 │   ├── test_backup.py     # 备份用例：假子进程演 pg_dump/pg_restore，断言真实 argv/env、读不回即删、轮转只认自己的文件名
 │   ├── test_scheduler_auto_scan_switch.py # 设置页那个总开关：关了整轮不扫 / 没写过算开 / 手工扫描不受它管
@@ -308,7 +308,7 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 - **为什么是 C**：C 的排序就是 UTF-8 字节序，正好等于 SQLite 一直在用的 `BINARY`。换成 `en_US.UTF-8` 之类的 ICU 规则，切换当天整个片库的 `ORDER BY title` 会静默重排一遍。
 - **测试库**：`settings.test_database_url`（写在 `backend/.env` 的 `TEST_DATABASE_URL`）指定；不设就回落到 SQLite 内存库（老路子）。`tests/conftest.py` 和搬家脚本的 PG 用例读的是同一个出处。PG 上每个用例靠 `TRUNCATE ... RESTART IDENTITY CASCADE` 隔离，`RESTART IDENTITY` 保证第一个自增 id 还是 1，用例里写死的 id 不用跟着改。schema 只在第一次用例前建一次，走的就是 `0001` 基线。也正因为那句 TRUNCATE，**同一时间只能有一套 pytest 打 `home_sites_test`**：两套并发会在 TRUNCATE 上互等，实测报出一大片 `DeadlockDetectedError`，看着像代码坏了。
 - **报数前先问"这套跑在哪种方言上"，判据是环境而不是命令长什么样**（2026-10-05 踩过）：`tests/conftest.py` 读的是 `settings.test_database_url`，而 pydantic 的 `Settings` 会加载 `backend/.env`——本机那份就带着 `TEST_DATABASE_URL`，所以**裸 `pytest` 跑的是 PostgreSQL**，不是 SQLite。环境变量优先级高于 `.env`，要真·SQLite 得显式清空：`TEST_DATABASE_URL= pytest ...`（Windows 下走 bash 才这么好使）。两条能证实方言的痕迹：SQLite 那套会打出 `SKIPPED [1] tests/test_db_transfer.py:335: 需要真 PostgreSQL：设 TEST_DATABASE_URL 才跑`，PG 那套 0 skip；两边的通过数本来就差这一条，别把 717 和 "716 + 1 skipped" 读成两次一样的回归。写文档/提交信息时报方言前先看一眼有没有这条 skip。这条现在有机器兜着：`tests/conftest.py::pytest_report_header` 会在头部印「测试库: 真库 postgresql …」或「测试库: 内存 SQLite …」，**但 `-q` 会把它一起吞掉**，所以要看见它得用不带 `-q` 的跑法。
-- **PG 真的执行外键**，SQLite 默认不执行（`PRAGMA foreign_keys` 是关的）。所以库里那些"没有父亲的子行"是历史遗留，PG 一律拒收；测试里也一样——用 `tests/support.py` 的 `ensure_source`/`ensure_video` 先造出真正的父行，别手工去凑 id。应用侧同样补了存在性校验（`FavoriteService.add_favorite` 对不存在的 `video_id` 抛 `ValueError` → 400，而不是 500）。
+- **两种方言现在都真的执行外键**：PG 出厂就强制；SQLite 每个连接的 `PRAGMA foreign_keys` 出厂是**关**的（官网写明这是为老应用留的向后兼容），所以 `session.py` 在引擎上挂了一个连接事件补那一句（`enforce_sqlite_foreign_keys`，用例 `tests/test_sqlite_foreign_keys.py`）。挂的位置有讲究：要在**第一次连接之前**挂，内存 SQLite 用 StaticPool、同一条连接一路用到底，晚挂的事件对它不生效——`tests/conftest.py` 因此在两个分支里各挂一次。库里那些"没有父亲的子行"是这段开关之前的历史遗留（`db_audit` 报 `orphan_row` 的那一类），新写的行两边都进不去了；测试里也一样——用 `tests/support.py` 的 `ensure_source`/`ensure_video` 先造出真正的父行，别手工去凑 id。应用侧同样补了存在性校验（`FavoriteService.add_favorite` 对不存在的 `video_id` 抛 `ValueError` → 400，而不是 500）。**挂了这个开关的只有两个引擎**：启动那个模块级 `engine`，和 `tests/conftest.py` 里用例用的那个。`db_audit`（只读，读的是脏库）、`db_transfer`（老库里可能真有孤儿行，强制了会把搬迁中止）和 `test_migrations.py` 那些自建的引擎都还是 SQLite 的出厂默认——不是漏了，是那几个地方的目的就是要碰不干净的数据。
 - **时间列一律写 `DateTime(timezone=True)`**：靠推断落下来的 naive `TIMESTAMP` 遇上 aware 的默认值，asyncpg 会直接 `DataError`（`settings.updated_at` 踩过）。读出来的时刻要做比较/减法的，先过 `as_utc()`。
 - **时区的坑在写入侧，不在读取侧**：asyncpg 读 `timestamptz` 还给的是 UTC-aware 值，但送一个**不带 tzinfo** 的 `datetime` 进去时，它是按**数据库会话时区**理解的（本机 `SHOW timezone` = `Asia/Shanghai`，于是整体偏 8 小时）。SQLite 读回来却永远是 naive。所以凡是跨库读写时间（`db_transfer` 从老库捞行就是这里翻过车），先 `as_utc()` 补上时区再交给对面，别指望两边自己凑得齐。
 
@@ -320,7 +320,7 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 级联的孩子清单只有一处出处：`video_service.VIDEO_CHILD_TABLES`，外键指向 `videos.id` 的表一张不落（`play_history`/`favorites`/`new_videos`/`subtitles`/`watch_events`/`watchlist_items`/`video_tags`）。清单统一存 `Table` 而非 ORM 模型——关联表 `video_tags` 没有模型，列只能从 `.c` 上取，一份形状一个循环就能过完。`tests/test_services/test_video_service.py::test_the_explicit_cascade_list_is_every_child_of_videos` 拿 `Base.metadata` 现算出"所有引用 `videos.id` 的表"跟这张清单对账，新加一张却忘了登记时这条用例要红。
 
-两个方言朝**相反方向**失效：PG 真的执行 `ON DELETE CASCADE`，SQLite 默认连外键都不查、于是悄悄留下孤儿行。只信 schema 声明，SQLite 上的测试永远发现不了漏表；只信手写清单，加了表却不登记，PG 那边当场 500。所以显式删除留着——为的是"由这一处决定删除带走什么"，两边同一个答案。代价是这张清单必须有人守，于是守卫做成用例，不靠记性。
+这条清单存在的理由原本有一半在方言上：PG 真的执行 `ON DELETE CASCADE`，而 SQLite 在 #161 之前连外键都不查、批量删父表就悄悄留下孤儿行——只信 schema 声明，SQLite 上的测试永远发现不了漏表。那一半现在被连接事件补平了（见上面「两种方言现在都真的执行外键」），**但显式删除仍然留着**，理由换成两条更结实的：一是"由这一处决定删除带走什么"，两边同一个答案，不用去查每种方言在什么开关下才会级联；二是删行之外还要带走封面文件，schema 永远不知道哪张表存着路径。代价没变：这张清单必须有人守，于是守卫做成用例，不靠记性。
 
 删行之外还带走封面：`delete_videos_cascade` 把这些行的 `thumbnail_path` 返回给调用方，调用方**提交之后**再调 `delete_cover_files` 落盘删除（顺序反了的话，回滚的删除会留下"行还在、图没了"的影片）。封面只由 `scan_service` 生成在本地磁盘，S3 源在 `scan_service.py:281` 的 `local_path` 闸门上根本不会生成，所以清理走服务层的 `os.remove` 就够了，**没有**给 `MediaStorage` 加 `delete()`——那个 seam 是只读的，而且 UI 明说删记录不动磁盘上的视频，一个能删对象的口子比它要修的孤儿文件更危险。这一步现在有两层签字：服务层那两条把封面路径喂成临时目录里的字符串，验的是「调用到了」；`frontend/e2e/real/video-delete.real.spec.ts` 那一条从界面上点「删除」，核对真 `thumbnails/` 目录里少掉的正是这一张、别人的那几张一个字节没动（#118）。
 
@@ -351,7 +351,7 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 `ilike(..., escape="\\")` 不用动：SQLAlchemy 2.0 在 SQLite 上编译成 `lower(x) LIKE lower(?) ESCAPE '\'`，在 PG 上编译成 `x ILIKE %(p)s ESCAPE '\'`，转义语义一致（实测两家各编译一遍，不是靠印象）。
 
-换数据库之前先跑 `uv run python -m src.db_audit`（`src/db_audit.py`）。它只以 `mode=ro` 打开库文件，拿模型的 `Base.metadata` 和库里的实际 schema 对账，报九类问题：schema 漂移、库里没落实的外键约束、孤儿行、值类型不对、VARCHAR 超长、整数超出 PG 的 32 位 `integer`、NOT NULL 列里的 NULL、解析不了的日期与 JSON，并给每张表算一个方言无关的内容摘要（布尔→true/false、时间→UTC ISO、JSON→键排序，整表排序后哈希），搬完在目标库上再算一遍对得上才算搬全。之所以要有这么个脚本而不是"迁过去看报不报错"：SQLite 的类型亲和、不检查长度、不执行外键这三件事会让一批数据在 SQLite 里存得很好，到 PG 那边要么被拒要么被静改写；而只存在于库里的列（如认领后剩下的 `viewed`/`read`）会不会丢数据，只有数一遍非空值才知道。报告写到 `data/migration-audit-<日期>.md`（`data/` 不进版本库），stdout 只打 ASCII——控制台是 cp936。用例在 `tests/test_db_audit.py`，那里造了一个每类问题都有一条的脏库；真库跑出来的"一切正常"证明不了检查还活着。
+换数据库之前先跑 `uv run python -m src.db_audit`（`src/db_audit.py`）。它只以 `mode=ro` 打开库文件，拿模型的 `Base.metadata` 和库里的实际 schema 对账，报九类问题：schema 漂移、库里没落实的外键约束、孤儿行、值类型不对、VARCHAR 超长、整数超出 PG 的 32 位 `integer`、NOT NULL 列里的 NULL、解析不了的日期与 JSON，并给每张表算一个方言无关的内容摘要（布尔→true/false、时间→UTC ISO、JSON→键排序，整表排序后哈希），搬完在目标库上再算一遍对得上才算搬全。之所以要有这么个脚本而不是"迁过去看报不报错"：SQLite 的类型亲和、不检查长度这两件事会让一批数据在 SQLite 里存得很好，到 PG 那边要么被拒要么被静改写；外键那一条 #161 起在应用连接上已经真强制，新的孤儿子行进不去了，`orphan_row` 那一类查的从此是开关之前那段历史留下的行（本机那五个老库 `PRAGMA foreign_key_check` 实测零违规，别的检出未必）。而只存在于库里的列（如认领后剩下的 `viewed`/`read`）会不会丢数据，只有数一遍非空值才知道。报告写到 `data/migration-audit-<日期>.md`（`data/` 不进版本库），stdout 只打 ASCII——控制台是 cp936。用例在 `tests/test_db_audit.py`，那里造了一个每类问题都有一条的脏库；真库跑出来的"一切正常"证明不了检查还活着。
 
 搬家的顺序：审计（`db_audit`）→ 目标库建空（`deploy/pg-provision.example.sql`，schema 由 `0001` 基线建，别手工建表）→ `db_transfer --from <老库> --to <新库> --dry-run` 预演 → 去掉 `--dry-run` 正式搬。`--dry-run` 会一路跑到对账通过再整体回滚，新库不留一行，所以它和正式搬用的是同一条代码路，预演过了才算过。目标库必须已建表且为空，否则直接中止。搬的时候 `sessions` 整表跳过（旧 token 到了新库也不该还能用），`alembic_version` 也不搬；自增序列会推到当前最大值。方向是双向的：回滚到 SQLite 就把它当目标库再搬一次，`_reset_sequences` 两种方言都实现了。
 
@@ -562,6 +562,8 @@ SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzi
 ### 5. 覆盖率：闸门是 80，但只在带 `--cov` 的全量跑上生效
 
 `[tool.coverage.report] fail_under = 80`（2026-10-04 挂上，当时实测 86%——那是下面那条未修正的读数）。没写成 pytest 的 `addopts`，是因为那样"只跑一个文件"也会去比总量——一个文件的覆盖率天然不到 80，报回来的红和"测试坏了"长得一模一样，纯属误导。要量就明说：`pytest -q --cov=src`。
+
+`--cov` 后面**只写目录，不写模块名**。`--cov=src.database.session` 这种写法本机连踩两次：解释器在 `asyncpg` 建连接的那一刻 `Windows fatal exception: access violation` 直接段错误，退出码 139，栈顶是 `connect_utils._create_ssl_connection`——测试本身一条没跑完，看起来却像"这套用例把进程弄坏了"。同一批文件换成 `--cov=src` 立刻正常（14 passed，`session.py` 那一行照读）。原因没有查实，先按"这条路上有个坑"记下来。
 
 **读报告前先知道这一条：coverage 默认会把异步代码少算。**SQLAlchemy 的 async 引擎每个 `await` 都要过一次 greenlet 切换，而 coverage 不认 greenlet 时行追踪器在切换后丢失——于是**函数体里那些落在 `await` 之后的行会被报成"没执行"**，哪怕用例就是从那几行走出来的。`pyproject.toml` 里的 `[tool.coverage.run] concurrency = ["greenlet", "thread"]`（2026-10-05 挂上）就是为这一条；两边实测同一套全量：未配置 TOTAL **86%**（589 miss），配上 **91.49%**（364 miss），两次都是 698 passed + 1 skipped，所以少算的确实是执行过的行。同一套标签用例在两种配置下分别报 `api/tags.py` 76% / **100%**、`tag_service.py` 37% / **97%**。
 

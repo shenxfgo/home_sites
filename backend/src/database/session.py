@@ -1,8 +1,10 @@
 from collections.abc import AsyncIterator
+from typing import Any
 
-from sqlalchemy import Connection, inspect, text
+from sqlalchemy import Connection, event, inspect, text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -142,12 +144,44 @@ OWNERSHIP_INDEXES: tuple[str, ...] = (
 )
 
 
+def sqlite_foreign_keys_on_connect(
+    dbapi_connection: Any, connection_record: Any  # noqa: ARG001
+) -> None:
+    """每个新建的 SQLite 连接上都打开外键强制。"""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
+
+
+def enforce_sqlite_foreign_keys(target_engine: AsyncEngine) -> None:
+    """让模型里那 21 处 ``ondelete="CASCADE"`` 在 SQLite 上真的执行。
+
+    SQLite 出于向后兼容，每个连接的 ``PRAGMA foreign_keys`` 出厂就是关的（官网
+    foreign_keys.html 明说这是为了老应用的行为），而 PostgreSQL 一直在强制。同一个
+    工程、两种方言，规则不一样：``delete(Watchlist)`` 这种绕过 ORM 的批量删除，PG
+    顺着外键子句连带清掉 ``watchlist_items``，SQLite 只删父表，子行留在库里变成孤儿。
+    表结构本身没问题——``create_all`` 和迁移基线都写了外键子句——缺的就是这个开关，
+    所以它只在连接事件上补一句 PRAGMA，不碰 DDL。
+
+    开关是连接级的，池里复用的连接不需要重复设置；非 SQLite 的引擎直接不挂事件，
+    免得在 PG 上跑一句它不认的语句。调用得在**第一次连接之前**：内存 SQLite 用
+    StaticPool，同一条连接一路用到底，晚挂的事件对它根本不生效。
+    """
+    sync_engine = target_engine.sync_engine
+    if sync_engine.dialect.name != "sqlite":
+        return
+    event.listen(sync_engine, "connect", sqlite_foreign_keys_on_connect)
+
+
 # Create async engine
 engine = create_async_engine(
     settings.database_url,
     echo=False,
     future=True,
 )
+enforce_sqlite_foreign_keys(engine)
 
 # Create async session maker
 async_session_maker = async_sessionmaker(

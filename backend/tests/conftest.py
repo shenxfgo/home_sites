@@ -27,7 +27,7 @@ sys.path.insert(0, str(backend_dir))
 # Import all models so they register with Base.metadata before the schema is built
 import src.models  # noqa: F401, E402
 from src.config import settings  # noqa: E402
-from src.database import get_session  # noqa: E402
+from src.database import enforce_sqlite_foreign_keys, get_session  # noqa: E402
 from src.database.base import Base  # noqa: E402
 from src.database.migrations import business_tables, upgrade_head  # noqa: E402
 from src.main import app  # noqa: E402
@@ -81,6 +81,7 @@ async def db_session():
     """
     if TEST_DATABASE_URL:
         engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+        enforce_sqlite_foreign_keys(engine)
         await _prepare_schema(engine)
         async with engine.begin() as conn:
             tables = sorted(await conn.run_sync(business_tables))
@@ -91,8 +92,13 @@ async def db_session():
             "sqlite+aiosqlite:///:memory:",
             echo=False,
         )
+        enforce_sqlite_foreign_keys(engine)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+
+    # 开关必须挂在第一次连接之前，所以上面两个分支各挂一次：内存 SQLite 用的是
+    # StaticPool，建表那条连接一路用到底，后挂的事件对它根本不生效（挂晚了这里实测照旧
+    # 收下孤儿子行）。见 src/database/session.py 的 enforce_sqlite_foreign_keys。
 
     session_factory = async_sessionmaker(
         engine,
