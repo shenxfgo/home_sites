@@ -1,6 +1,27 @@
 # 更新日志
 
 ## 2026-10-08
+### 播放页放的到底是哪一路：`api/stream.py` 那十七条没人走过的行补上签字（#164）
+
+- **症状**：表面上完全没有——浏览器里片子能放、能拖进度条、封面也出图。量出来的是 `api/stream.py` **72%**，缺的十七行是 `37, 44-59, 90-100, 105-116`：也就是**整条路由从接口进来一次也没被执行过**。`tests/test_api/test_stream.py` 直接调 `_handle_range_request`，八条 RFC 边界语义都有真文件签字，那个函数看着很健康；而它上面的路由、`_get_content_type` 那张八行的表、封面的两条分支，pytest 这一套里一份证据都没有。判断"这不是 e2e 已经盖住了"的依据是同十七行**在只跑 16 条用例的子集和跑满 786 条的套件里读数一模一样**——真后端 e2e 里浏览器确实放片子，但那是另一个进程，不进这份读数。
+- **回归用例**：新增 `tests/test_api/test_stream_endpoint.py`，**19 条**。本地整文件（交给 `FileResponse`，长度来自文件本身——用例特意把 `file_size` 那一格写成 1，钉的就是"表里的陈旧值不参与播放"）、本地 Range、content-type 那张表按**九行 + 兜底**逐格参数化（含大写 `.MKV` 那格，钉的是 `ext.lower()`）、不存在的影片 404、对象存储整文件（moto 真桶：正文、`Content-Length`、`Accept-Ranges`）、对象存储 Range、**桶答了但那把键没了**（和"没配凭证"走同一个占位；`test_storage_gates.py` 那条测的是够不着桶，这一条是另一半）、封面在盘上 / 封面被移走 / 封面那条的 404。对象那几条用 moto 在进程内接住 botocore：它证明**接线正确**（地址决定读法、区间原样交给存储层、读不到不等于空库），不证明真 MinIO 回一模一样的头——那一层仍是手工核对，同 `tests/test_storage/test_s3_storage.py` 的说明。
+- **变异**（一次一个变量，每个跑完立刻还原并 md5 与快照逐字节核对，最后 `git diff --exit-code HEAD -- src/` 为空；**这一单没改过 `src/` 的任何一行**）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | M1 整文件那一路的结束字节 `max(0, file_size - 1)` 写成 `file_size` | **全绿**（实测）：超出文件末尾的 end 被服务端收敛，正文一字节不差，而 `Content-Length` 来自 `str(file_size)` 不是那个参数。记这一条是因为它**钉不住**，见下面那条 0 字节的洞 |
+  | M2 对象整文件的响应头里去掉 `Accept-Ranges` | **红** 1 条（对象整文件）；本地那条照绿——`FileResponse` 自己就带这个头 |
+  | M3 把 `if storage.capabilities.local_path:` 写死成 `True` | **红** 1 条：`OSError: [WinError 123] 文件名、目录名或卷标语法不正确。: 's3://media/shows/01.mkv'`。能力闸门是播放路径上唯一挡住 `s3://` 的东西，真机上这就是一个 500 |
+  | M4 `_get_content_type` 的兜底换成 `application/octet-stream` | **红** 1 条（`.mpeg` 那格） |
+  | M5 封面那行去掉 `os.path.isfile` | **红** 1 条：`starlette` 的 `RuntimeError`，不是 404——行还在、文件不在，这一格只能回"没有封面" |
+  | M6 路由里的 `if range_header:` 改成 `if False:` | **红 1 条，且只有对象那条红**：本地 Range 那两条照绿，因为 `FileResponse` 自己就懂 `Range`，206 的状态码、`Content-Range` 和正文一模一样。所以那条分支真正在服务的只有对象存储那一路 |
+  | M7 表里 `.webm` 那一行改成 `video/mp4` | **红** 1 条：正是那格的参数化用例（逐行钉的效果） |
+  | M8 `storage_for_locator` 的地址判断改成 `if False:` | **红** 2 条：对象整文件 + 对象 Range。这一条同时说明"Range 那一路的取字节是在响应里现挑存储的"确实有人在看 |
+
+- **量出来一条洞，不改、等定夺**：一个 **0 字节的对象**从接口进来会坏。`size()` 回 `0`（不是 `None`），于是整文件那一路被走到，`max(0, file_size - 1)` 算出 `bytes=0-0`，moto 抛 `InvalidRange: The requested range is not satisfiable`；临时探针（跑完即删）打接口实测到的是这个 `ClientError` 直接抛出 ASGI 应用，而 `StreamingResponse` 的状态行和响应头在这之前已经发出——真机形状是"播放器拿到一个断流的 200 + 服务端一条异常"。同一份探针里 `iter_range(0, -1)`（也就是不加 `max` 的写法）在 moto 上安静回空，真机上不可信，所以**去掉 `max` 不是修法**。要改的是行为（0 字节该回空正文、还是该按"读不到"回占位），这是产品口径，留给用户定夺，也解释了 M1 为什么全绿。
+- **文档**：`backend/CLAUDE.md` §5 薄位置清单里 `api/stream.py` 那条从"72%"改写成"72% → 100%"，并把上面三条能量住的方向写进去（本地那一路的 Range 分支是冗余的、能力闸门是唯一的 `s3://` 防线、0 字节那一格今天拆不红）；新用例文件的模块 docstring 写清十七行的出处和 moto 只证明接线不证明服务端行为这条边界。
+- **基线**：**805 passed, 0 failed, 2 warnings**（4:46；上一单 786，差额正好是新增的 19 条）／TOTAL **92.98%**（#163 是 92.61%，miss 334 → **317**，减掉的 17 行正是 `stream.py` 那十七条）／`src/api/stream.py` **60 行 0 缺 → 100%**；ruff 干净，`mypy src` 仍是那 **34** 项基线（这一单没动 `src/`）；前端三种测试未涉及。那 2 条 `ResourceWarning: unclosed database` 还是 `test_db_audit` / `test_db_transfer` 那一双，和 #163 记的是同一对。
+
 ### 「密码过长（上限 72 字节）」这句从来没有说过（#163）：字节闸门和坏哈希那一路补上签字，顺带记下行覆盖率骗人的那个形状
 
 - **症状**：表面上没有，而且这一单连"薄位置"都是读数骗出来的。`utils/password.py` 报 **85%**、缺 21-22 两行——那是 `verify_password` 的 `except ValueError: return False`；同一份全量读数里 `src/services/auth_service.py:369`（`raise ValueError("密码过长（上限 72 字节）")`）也是缺的。**但 `password.py:27` 那句 `return len(plain.encode("utf-8")) > 72` 是"覆盖到"的**：每一次建号、每一次改口令都会执行它，只是 783 条用例里从来没有一次算出过 True。一个永远返回 False 的布尔判断，在行覆盖率里和永远正确长得一模一样——这是 §5 那份薄位置清单一直警告的"别拿单文件百分比当证据"的一个具体形状，值得记的是它这次**反方向**骗了一次。
