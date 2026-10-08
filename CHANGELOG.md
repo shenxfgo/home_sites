@@ -1,5 +1,17 @@
 # 更新日志
 
+## 2026-10-08
+### 没有 `.env` 的检出会静默建出一个空库（#157）：默认连接串从 SQLite 换成 PostgreSQL，`asyncpg` 因此搬进核心依赖
+
+- **症状**：`src/config.py:26` 的默认值还是 `sqlite+aiosqlite:///./data/videos.db`，而真机从 10-04 起跑的是 PostgreSQL。任何一份没有 `backend/.env` 的检出（新机器、别人 clone、CI）都会安静地建出一个空 SQLite 文件、一个空库：服务起得来，首页是空的，看起来像"装好了"。配套的 README 装依赖段还写着「`uv sync` 只跑 SQLite 用这个（asyncpg 不在核心依赖里）」——默认方言和默认依赖是错开的两条。
+- **修法**：默认值换成 `postgresql+asyncpg://home_sites_app@127.0.0.1:5432/home_sites`，**故意不带口令**：口令只有一个去处，就是没进版本库的 `.env`（模板 `.env.example`，建库 `deploy/pg-provision.example.sql`）。于是没有 `.env` 的检出的第一次启动会报连不上库——这就是那条"闸门"想要的效果，只是不用新写启动检查代码：`lifespan` 的第一句就是 `init_db()`，里面是 `async with engine.begin()`，真连；而备份任务的挂载在 `main.py:34`、排在 `init_db` 之后，所以也不会对着一个连不上的库每晚发失败通知。SQLite 这条路没被删，只是从此必须显式指。
+- **依赖跟着方言走**（用户定的是"默认值改成 PG"，这条是它的推论）：`asyncpg>=0.29` 从 `[project.optional-dependencies] postgres` 搬进 `dependencies`，`postgres` 这个 extra 删掉（否则同一件事两处声明）。`uv lock` 的 diff 是 3 增 5 删，全在 `provides-extras` 和 `requires-dist` 那两处，**没有任何版本漂移**——这一点值得专门看一眼，重跑 lock 顺手升别的包是最容易混进提交里的东西。
+- **四条文档**：`backend/.env.example`（DB 段：PG 那行带 `<口令>` 占位，SQLite 改成注释掉的回滚备选）、README 装依赖三条、README「🗄️ 数据库」首句、`backend/CLAUDE.md` 的 PostgreSQL 小节。根 `CLAUDE.md` 的环境变量段本来就写的是 PG，没改。
+- **谁真的在读这个默认值**（改之前全仓扫过一遍，`grep -n database_url`）：`database/session.py:147` 建引擎（lazy，import 时不连，所以 `python -m src.export_openapi` 离线导出照样出得来）、`main.py:34` 的备份挂载条件、`db_transfer.py:324` 的 `--to` 默认值、`e2e_seed.py:181` 的可弃库闸门。**真后端 e2e 不受影响**——它自己把 `DATABASE_URL` 显式设成 `_test` 库（`frontend/e2e/real/env.ts:90`），那份 `assert_disposable` 要的正是库名后缀。
+- **回归用例**：`tests/test_config.py::test_load_default_settings` 里那句 `assert "sqlite" in settings.database_url` 换成两条——`urlsplit(...).scheme == "postgresql+asyncpg"`，和 `urlsplit(...).password is None`。第二条是这一单里我更想留下的那句：**有人为了让默认值"能连上"把真口令填进来并提交**，是这个位置唯一的凭据泄漏形状，而它不会让任何现有用例变红。**红在修前**：`1 failed, 6 passed`，红的正是 scheme 那条（`assert 'sqlite+aiosqlite' == 'postgresql+asyncpg'`）。
+- **这一单里我自己的操作失误（记在这里，因为判据是可复用的）**：为了确认后台那套全量跑的是哪种方言，我执行了一句 `python -c "print(settings.database_url)"`——读的是**生效值**，也就是 `.env` 里那条带着真 PG 口令的串，于是口令进了控制台输出、进了会话日志。仓库从头到尾没有它，但这个动作的错处在于"看方言"这件事本来只需要 `urlsplit(...).scheme`，或者 `Settings(_env_file=None)`。已向用户报告并建议轮换口令；这条与上面那条 `password is None` 是同一件事的两面：**默认值不许带口令，生效值不许被打印**。
+- **基线**：777 passed, 0 skipped（真库 PostgreSQL）／TOTAL 92.52%／`src/config.py` 100%；ruff、mypy 干净；前端三种测试未涉及（这一单没动 `frontend/`）。
+
 ## 2026-10-07
 ### 片源删掉之后调度器不知道（#152）：三条同步边第一次有人读，代价是这一族从此红得起来
 

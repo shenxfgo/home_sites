@@ -303,7 +303,7 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 ### PostgreSQL
 
-`DATABASE_URL` 指哪就连哪，SQLite 与 PostgreSQL 两种方言都支持（PG 用 `postgresql+asyncpg://`）。建库模板 `backend/deploy/pg-provision.example.sql`（进版本库，口令位置是 `__REPLACE_ME__`，用的人自己换成真口令；换好之后的那份另存到 `data/` 里，别提交）：角色 `home_sites_app` 只有 LOGIN，两个库 `home_sites`（真库）与 `home_sites_test`（测试专用），`ENCODING=UTF8`、`LC_COLLATE`/`LC_CTYPE` 钉死 `C`。表结构不在模板里建，由 `0001` 基线在首次启动时建。
+`DATABASE_URL` 指哪就连哪，SQLite 与 PostgreSQL 两种方言都支持（PG 用 `postgresql+asyncpg://`），但**代码里声明的默认值是 PostgreSQL**（`Settings.database_url`，用例：`tests/test_config.py::test_load_default_settings`）。默认值不带口令，所以一份没有 `.env` 的检出会在第一次启动就连不上——这是要的：旧的 SQLite 默认值会安静地建出一个空文件、空库，看起来像装好了。SQLite 这条路还在，只是必须显式指。驱动 `asyncpg` 因此在核心依赖里，`--extra postgres` 这个 extra 已经删掉了。建库模板 `backend/deploy/pg-provision.example.sql`（进版本库，口令位置是 `__REPLACE_ME__`，用的人自己换成真口令；换好之后的那份另存到 `data/` 里，别提交）：角色 `home_sites_app` 只有 LOGIN，两个库 `home_sites`（真库）与 `home_sites_test`（测试专用），`ENCODING=UTF8`、`LC_COLLATE`/`LC_CTYPE` 钉死 `C`。表结构不在模板里建，由 `0001` 基线在首次启动时建。
 
 - **为什么是 C**：C 的排序就是 UTF-8 字节序，正好等于 SQLite 一直在用的 `BINARY`。换成 `en_US.UTF-8` 之类的 ICU 规则，切换当天整个片库的 `ORDER BY title` 会静默重排一遍。
 - **测试库**：`settings.test_database_url`（写在 `backend/.env` 的 `TEST_DATABASE_URL`）指定；不设就回落到 SQLite 内存库（老路子）。`tests/conftest.py` 和搬家脚本的 PG 用例读的是同一个出处。PG 上每个用例靠 `TRUNCATE ... RESTART IDENTITY CASCADE` 隔离，`RESTART IDENTITY` 保证第一个自增 id 还是 1，用例里写死的 id 不用跟着改。schema 只在第一次用例前建一次，走的就是 `0001` 基线。也正因为那句 TRUNCATE，**同一时间只能有一套 pytest 打 `home_sites_test`**：两套并发会在 TRUNCATE 上互等，实测报出一大片 `DeadlockDetectedError`，看着像代码坏了。

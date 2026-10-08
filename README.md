@@ -46,7 +46,7 @@
 - Node.js 18+
 - FFmpeg（用于视频转码）
 - uv（Python 包管理器）
-- PostgreSQL 16+（真库用；只想跑 SQLite 就不装）
+- PostgreSQL 16+（默认方言就是它，见「数据库」一节；`backend/.env` 里把 `DATABASE_URL` 指回 SQLite 才不需要）
 
 ### 安装步骤
 
@@ -57,9 +57,9 @@ cd home_sites
 
 # 后端 setup
 cd backend
-uv sync                                      # 只跑 SQLite 用这个（asyncpg 不在核心依赖里）
-uv sync --extra postgres                     # 连 PostgreSQL 真库要加这个 extra
-uv sync --extra dev --extra postgres --extra s3   # 测试 + 对象存储视频源，一次装齐
+uv sync                                      # 运行依赖（asyncpg 在里面：默认方言就是 PostgreSQL）
+uv sync --extra dev                          # 要跑 pytest 就带上 dev
+uv sync --extra dev --extra s3               # 还要读对象存储视频源的话，另加 boto3
 
 # 前端 setup
 cd ../frontend
@@ -297,7 +297,7 @@ S3_ADDRESSING_STYLE=auto     # 自建 MinIO 用域名寻址失败时改 path
 
 ## 🗄️ 数据库
 
-真库跑在 **PostgreSQL** 上（`postgresql+asyncpg://`），SQLite 作为另一种方言仍然可用。表结构的唯一出处是 Alembic（`backend/alembic/`，基线修订 `0001`）：启动流程只负责选路线——空库建基线、有表没版本号的老库补齐后认领基线、已版本化的库只补挂着的修订——不再往启动里加建表 SQL。
+真库跑在 **PostgreSQL** 上（`postgresql+asyncpg://`），代码里声明的默认连接串也是它（`backend/src/config.py`，故意不带口令，所以没配 `.env` 时启动就连不上而不是悄悄建个空库）；SQLite 作为另一种方言仍然可用，要在 `.env` 里显式指回去。表结构的唯一出处是 Alembic（`backend/alembic/`，基线修订 `0001`）：启动流程只负责选路线——空库建基线、有表没版本号的老库补齐后认领基线、已版本化的库只补挂着的修订——不再往启动里加建表 SQL。
 
 建库要超级用户执行 `backend/deploy/pg-provision.example.sql`（模板进版本库，里面**没有口令**）：把两处 `__REPLACE_ME__` 换成一个真口令后再跑，换好的那份留在 `backend/data/` 里（整目录 gitignore），别提交。角色 `home_sites_app` 只有 LOGIN，两个库 `home_sites`（真库）和 `home_sites_test`（测试专用），排序规则钉死 `LC_COLLATE=C`——C 就是 UTF-8 字节序，和 SQLite 一直在用的 `BINARY` 一致，换成 ICU 规则的话切换当天整个片库的 `ORDER BY title` 会静默重排一遍。表结构不在这里建，由 Alembic 基线在首次启动时建。
 

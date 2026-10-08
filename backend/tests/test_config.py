@@ -1,5 +1,6 @@
 # tests/test_config.py
 import os
+from urllib.parse import urlsplit
 
 import pytest
 from pydantic import ValidationError
@@ -16,7 +17,10 @@ def test_load_default_settings():
 
     assert settings.api_port == 8000
     assert settings.api_host == "0.0.0.0"
-    assert "sqlite" in settings.database_url
+    assert urlsplit(settings.database_url).scheme == "postgresql+asyncpg"
+    # 默认值里不许带口令：这一行提交进仓库，而真口令只有一个去处——没进版本库的
+    # backend/.env。有人为了"让默认值能连上"把它填进来，就是凭据泄漏的形状。
+    assert urlsplit(settings.database_url).password is None
 
 
 def test_backup_defaults():

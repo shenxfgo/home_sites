@@ -1820,6 +1820,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
     { name = "apscheduler" },
+    { name = "asyncpg" },
     { name = "bcrypt" },
     { name = "fastapi" },
     { name = "ffmpeg-python" },
@@ -1842,9 +1843,6 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
-postgres = [
-    { name = "asyncpg" },
-]
 s3 = [
     { name = "boto3" },
 ]
@@ -1854,7 +1852,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19.0" },
     { name = "alembic", specifier = ">=1.13" },
     { name = "apscheduler", specifier = ">=3.10.4" },
-    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29" },
+    { name = "asyncpg", specifier = ">=0.29" },
     { name = "bcrypt", specifier = ">=4.1.0" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=24.1.0" },
     { name = "boto3", marker = "extra == 's3'", specifier = ">=1.34" },
@@ -1874,7 +1872,7 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0.25" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0" },
 ]
-provides-extras = ["dev", "s3", "postgres"]
+provides-extras = ["dev", "s3"]
 
 [[package]]
 name = "watchfiles"

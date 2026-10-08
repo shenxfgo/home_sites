@@ -23,7 +23,13 @@ class Settings(BaseSettings):
     )
 
     # Database
-    database_url: str = "sqlite+aiosqlite:///./data/videos.db"
+    # 默认连 PostgreSQL —— 真机跑的就是它。这里**故意不带口令**：口令只有一个去处，
+    # 就是没进版本库的 `backend/.env`（模板见 `.env.example`，建库见
+    # `deploy/pg-provision.example.sql`）。所以一份没有 `.env` 的检出会在第一次
+    # 启动就报连不上库，这是想要的结果；旧的 SQLite 默认值会静默建出一个空文件、
+    # 空库，看起来像"装好了"。要真用 SQLite（回滚、临时试跑）就把 `DATABASE_URL`
+    # 指回 `sqlite+aiosqlite:///...`，见 README 的"回滚"。
+    database_url: str = "postgresql+asyncpg://home_sites_app@127.0.0.1:5432/home_sites"
     # 用例跑在哪个库上。留空就是原来的内存 SQLite；填了就是拿真库跑测试，
     # conftest 与搬家脚本都读这一个出处，换库之后不用再另设环境变量。
     test_database_url: str = ""
