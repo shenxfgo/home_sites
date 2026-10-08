@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.database.base import Base
+from src.database.types import UTCDateTime
 
 if TYPE_CHECKING:
     from src.models.video import Video
@@ -26,7 +27,7 @@ class Favorite(Base):
         ForeignKey("videos.id", ondelete="CASCADE")
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        UTCDateTime(), default=lambda: datetime.now(timezone.utc)
     )
 
     # Relationships

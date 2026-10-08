@@ -1,10 +1,11 @@
 """Setting model."""
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.database.base import Base
+from src.database.types import UTCDateTime
 
 
 class Setting(Base):
@@ -19,7 +20,7 @@ class Setting(Base):
     # PostgreSQL 的裸 TIMESTAMP 拒绝带偏移的值，写这条设置就成了 500。全项目的
     # 时间列都统一成带时区，这一列不能再是例外。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )

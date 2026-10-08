@@ -143,10 +143,11 @@ backend/
 
 ```python
 # src/models/example.py
-from sqlalchemy import String, Integer, DateTime
+from sqlalchemy import String, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime, timezone
 from src.database.base import Base
+from src.database.types import UTCDateTime
 
 
 class Example(Base):
@@ -157,7 +158,7 @@ class Example(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        UTCDateTime(), default=lambda: datetime.now(timezone.utc)
     )
 
     def __repr__(self) -> str:
@@ -309,7 +310,8 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 - **测试库**：`settings.test_database_url`（写在 `backend/.env` 的 `TEST_DATABASE_URL`）指定；不设就回落到 SQLite 内存库（老路子）。`tests/conftest.py` 和搬家脚本的 PG 用例读的是同一个出处。PG 上每个用例靠 `TRUNCATE ... RESTART IDENTITY CASCADE` 隔离，`RESTART IDENTITY` 保证第一个自增 id 还是 1，用例里写死的 id 不用跟着改。schema 只在第一次用例前建一次，走的就是 `0001` 基线。也正因为那句 TRUNCATE，**同一时间只能有一套 pytest 打 `home_sites_test`**：两套并发会在 TRUNCATE 上互等，实测报出一大片 `DeadlockDetectedError`，看着像代码坏了。
 - **报数前先问"这套跑在哪种方言上"，判据是环境而不是命令长什么样**（2026-10-05 踩过）：`tests/conftest.py` 读的是 `settings.test_database_url`，而 pydantic 的 `Settings` 会加载 `backend/.env`——本机那份就带着 `TEST_DATABASE_URL`，所以**裸 `pytest` 跑的是 PostgreSQL**，不是 SQLite。环境变量优先级高于 `.env`，要真·SQLite 得显式清空：`TEST_DATABASE_URL= pytest ...`（Windows 下走 bash 才这么好使）。两条能证实方言的痕迹：SQLite 那套会打出 `SKIPPED [1] tests/test_db_transfer.py:335: 需要真 PostgreSQL：设 TEST_DATABASE_URL 才跑`，PG 那套 0 skip；两边的通过数本来就差这一条，别把 717 和 "716 + 1 skipped" 读成两次一样的回归。写文档/提交信息时报方言前先看一眼有没有这条 skip。这条现在有机器兜着：`tests/conftest.py::pytest_report_header` 会在头部印「测试库: 真库 postgresql …」或「测试库: 内存 SQLite …」，**但 `-q` 会把它一起吞掉**，所以要看见它得用不带 `-q` 的跑法。
 - **两种方言现在都真的执行外键**：PG 出厂就强制；SQLite 每个连接的 `PRAGMA foreign_keys` 出厂是**关**的（官网写明这是为老应用留的向后兼容），所以 `session.py` 在引擎上挂了一个连接事件补那一句（`enforce_sqlite_foreign_keys`，用例 `tests/test_sqlite_foreign_keys.py`）。挂的位置有讲究：要在**第一次连接之前**挂，内存 SQLite 用 StaticPool、同一条连接一路用到底，晚挂的事件对它不生效——`tests/conftest.py` 因此在两个分支里各挂一次。库里那些"没有父亲的子行"是这段开关之前的历史遗留（`db_audit` 报 `orphan_row` 的那一类），新写的行两边都进不去了；测试里也一样——用 `tests/support.py` 的 `ensure_source`/`ensure_video` 先造出真正的父行，别手工去凑 id。应用侧同样补了存在性校验（`FavoriteService.add_favorite` 对不存在的 `video_id` 抛 `ValueError` → 400，而不是 500）。**挂了这个开关的只有两个引擎**：启动那个模块级 `engine`，和 `tests/conftest.py` 里用例用的那个。`db_audit`（只读，读的是脏库）、`db_transfer`（老库里可能真有孤儿行，强制了会把搬迁中止）和 `test_migrations.py` 那些自建的引擎都还是 SQLite 的出厂默认——不是漏了，是那几个地方的目的就是要碰不干净的数据。
-- **时间列一律写 `DateTime(timezone=True)`**：靠推断落下来的 naive `TIMESTAMP` 遇上 aware 的默认值，asyncpg 会直接 `DataError`（`settings.updated_at` 踩过）。读出来的时刻要做比较/减法的，先过 `as_utc()`。
+- **时间列一律写 `UTCDateTime()`（`src/database/types.py`），不要写裸的 `DateTime(timezone=True)`**：它的 `impl` 就是那句 `DateTime(timezone=True)`，所以两种方言编译出来的建表语句逐字节不变、不需要迁移（`tests/test_utc_datetime_columns.py` 第三条钉的正是这一点，全仓 21 个时间列一条也不能落在外面）。靠推断落下来的 naive `TIMESTAMP` 遇上 aware 的默认值，asyncpg 会直接 `DataError`（`settings.updated_at` 踩过）。它另外补的那半件事是**读回来带 `tzinfo=UTC`**，见下面「时区处理」。
+- **凡是拿 `col.type` 分流的代码，判时间列必须走 `is_datetime_column()`**：`TypeDecorator` 的实例**不是** `DateTime` 的实例（实测），所以 `isinstance(col.type, DateTime)` 在换成 `UTCDateTime` 之后会静默地永远为假。`src/db_audit.py` 有三处这样的分流（`:98` 的类型违例、`canonical_value` 的时间归一、`bad_datetime`），改这三处是这一单真正的连带代价——不跟着改的话审计脚本对时间列那一类检查一声不响地全过。
 - **时区的坑在写入侧，不在读取侧**：asyncpg 读 `timestamptz` 还给的是 UTC-aware 值，但送一个**不带 tzinfo** 的 `datetime` 进去时，它是按**数据库会话时区**理解的（本机 `SHOW timezone` = `Asia/Shanghai`，于是整体偏 8 小时）。SQLite 读回来却永远是 naive。所以凡是跨库读写时间（`db_transfer` 从老库捞行就是这里翻过车），先 `as_utc()` 补上时区再交给对面，别指望两边自己凑得齐。
 
 账号相关的两张表：`users`（`username` 唯一、`password_hash`、`role` 带 `CheckConstraint`、`is_active` 用停用代替删除）与 `sessions`（主键是 `token_hash`，即 Cookie 里那枚 token 的 SHA-256）。存摘要而不是 token 本身，是为了让"库被读走"不等于"人人可冒用"；删行即失效，因此退出登录和踢下线不需要等 Cookie 自然过期。会话寿命不存字段，滑动续期时按 `expires_at - created_at` 反推，"记住我"就不必单独记一档。
@@ -377,7 +379,7 @@ class MyModel(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), 
+        UTCDateTime(), 
         default=lambda: datetime.now(timezone.utc)  # 使用 timezone.utc
     )
 ```
@@ -537,14 +539,20 @@ tags: Mapped[list["Tag"]] = relationship(
 from datetime import datetime, timezone
 
 created_at: Mapped[datetime] = mapped_column(
-    DateTime(timezone=True),
+    UTCDateTime(),
     default=lambda: datetime.now(timezone.utc)
 )
 ```
 
-SQLite 不存时区：写进去的是 UTC，读回来的 `datetime` **不带 tzinfo**，和 `datetime.now(timezone.utc)` 直接比大小会抛 `can't compare offset-naive and offset-aware datetimes`。凡要拿库里读出的时间做比较或运算，先过一道 `as_utc()`（`src/utils/time.py`：没带 tz 就当作 UTC，带了就换算到 UTC），`auth_service` 与 `history_service` 用的都是这一份。
+SQLite 不存时区：写进去的是 UTC，裸 `DATETIME` 读回来的 `datetime` **不带 tzinfo**，和 `datetime.now(timezone.utc)` 直接比大小会抛 `can't compare offset-naive and offset-aware datetimes`。#162 把这件事收在列类型上：`UTCDateTime.process_result_value` 走的就是 `as_utc()` 那套语义（没带 tz 当作 UTC，带了就换算到 UTC），所以**经映射列读出来的时刻永远带 `tzinfo=UTC`**，两种方言还给的同一种形状。
 
-换成 PG 后这条规则不能丢：`TIMESTAMP WITH TIME ZONE` 还回来的是**带偏移**的值，而且偏移按数据库会话时区给，不一定正好是 UTC。所以 naive/aware 的分岔要一直留着，别改成"直接信任库里给的 tzinfo"。
+为什么修在类型这一层、不是在调用点：病灶不是应用自己的比较，而是 SQLAlchemy 的 ORM 批量删除——`delete(UserSession).where(..., expires_at <= _utc_now())` 执行完，框架要在 **Python 里**按同一条 WHERE 把 identity map 里的对象重跑一遍（`orm/evaluator.py`）好把它们摘掉；identity map 里躺着的正是那批 naive 值，于是 `naive <= aware` 当场炸。应用代码怎么写都绕不开框架自己那次评估（`auth_service.purge_expired_sessions` 是唯一一处带时间比较的批量 DML，但这颗雷不该只由它躲）。
+
+`as_utc()`（`src/utils/time.py`）还在，走的路也还在用：`db_transfer` 从老库里捞的是 **Core 行**、没经过映射列的类型，`auth_service`/`history_service` 里那几处比较也照旧先过一道——它对 aware 值是幂等的，留着不亏。
+
+要在测试里重造这个现场（不管是验红还是以后查同类问题），得**换一个会话把行读回来并且取完**：同一会话里刚 `add` 完的对象带的是 Python 侧那个 aware 值，评估器比得出结果、红不了；只 `await session.scalars(...)` 不 `.all()`，identity map 里根本没有对象，也红不了；用 `expire_all()` 摆出"读回来"的形状，红点会跑到 `MissingGreenlet`（那是本机的同步惰性加载），钉不到病灶。三种摆法都实测过，能红的那一种是 `tests/test_utc_datetime_columns.py` 里写的那一种。
+
+换成 PG 后上面这些一条都不能丢：`TIMESTAMP WITH TIME ZONE` 还回来的是**带偏移**的值，而且偏移按数据库会话时区给，不一定正好是 UTC——`UTCDateTime` 现在负责把它换算成 UTC，`as_utc()` 负责所有没经过映射列的来路。别改成"直接信任库里给的 tzinfo"。
 
 同理，测试里改过某行的时间后要看真实结果，用 `await db_session.refresh(row)` 重新读；`expire_all()` 之后靠关系属性懒加载会抛 `MissingGreenlet`。
 

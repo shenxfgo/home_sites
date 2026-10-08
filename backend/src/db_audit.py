@@ -24,21 +24,12 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from sqlalchemy import Column, Table
-from sqlalchemy.types import (
-    JSON,
-    BigInteger,
-    Boolean,
-    DateTime,
-    Float,
-    Integer,
-    Numeric,
-    String,
-    Text,
-)
+from sqlalchemy.types import JSON, BigInteger, Boolean, Float, Integer, Numeric, String, Text
 
 import src.models  # noqa: F401  # 只为把全部模型注册进 Base.metadata，包本身是空的导出面
 from src.config import BACKEND_ROOT
 from src.database.base import Base
+from src.database.types import is_datetime_column
 
 DEFAULT_DB = BACKEND_ROOT / "data" / "videos.db"
 
@@ -95,7 +86,7 @@ def _is_type_violation(col: Column, value: Any) -> str | None:
     if value is None:
         return None
     coltype = col.type
-    if isinstance(coltype, (String, Text, DateTime, JSON)):
+    if isinstance(coltype, (String, Text, JSON)) or is_datetime_column(coltype):
         # SQLite 的类型亲和只是"倾向"，整数/浮点/BLOB 都能塞进 VARCHAR 列里存着
         if isinstance(value, (bytes, bytearray)):
             return "存的是 BLOB"
@@ -138,7 +129,7 @@ def canonical_value(col: Column, value: Any) -> str:
     coltype = col.type
     if isinstance(coltype, Boolean):
         return "true" if int(value) == 1 else "false"
-    if isinstance(coltype, DateTime):
+    if is_datetime_column(coltype):
         parsed = _parse_datetime(value)
         if parsed is None:
             return f"<坏时间:{value!r}>"
@@ -306,7 +297,7 @@ def _audit_table(
                         True,
                     )
 
-            if isinstance(col.type, DateTime) and _parse_datetime(value) is None:
+            if is_datetime_column(col.type) and _parse_datetime(value) is None:
                 report(
                     "bad_datetime",
                     f"{name}.{col.name} 的时间解析不了：{value!r}",

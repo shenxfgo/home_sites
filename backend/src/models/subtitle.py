@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.database.base import Base
+from src.database.types import UTCDateTime
 
 
 class Subtitle(Base):
@@ -19,7 +20,7 @@ class Subtitle(Base):
     filepath: Mapped[str] = mapped_column(String(1024), nullable=False)
     label: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        UTCDateTime(), default=lambda: datetime.now(timezone.utc)
     )
 
     def __repr__(self) -> str:

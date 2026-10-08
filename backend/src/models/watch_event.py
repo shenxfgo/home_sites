@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer
+from sqlalchemy import ForeignKey, Index, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.database.base import Base
+from src.database.types import UTCDateTime
 
 
 class WatchEvent(Base):
@@ -28,7 +29,7 @@ class WatchEvent(Base):
     #: Seconds advanced by this report, never negative.
     seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )

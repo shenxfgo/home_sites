@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Integer, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.database.base import Base
+from src.database.types import UTCDateTime
 
 if TYPE_CHECKING:
     from src.models.video import Video
@@ -32,7 +33,7 @@ class PlayHistory(Base):
         ForeignKey("videos.id", ondelete="CASCADE")
     )
     played_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        UTCDateTime(), default=lambda: datetime.now(timezone.utc)
     )
     progress: Mapped[int] = mapped_column(Integer, default=0)  # seconds
     completed: Mapped[bool] = mapped_column(Boolean, default=False)

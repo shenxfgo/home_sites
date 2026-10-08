@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.database.base import Base
+from src.database.types import UTCDateTime
 
 
 class VideoSource(Base):
@@ -22,10 +23,10 @@ class VideoSource(Base):
     path: Mapped[str] = mapped_column(String(1024), nullable=False)
     type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'local' | 'nas' | 'minio'
     scan_interval: Mapped[int] = mapped_column(Integer, default=3600)
-    last_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_scan_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        UTCDateTime(), default=lambda: datetime.now(timezone.utc)
     )
 
     def __repr__(self) -> str:

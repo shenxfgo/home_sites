@@ -1,6 +1,28 @@
 # 更新日志
 
 ## 2026-10-08
+### 那 21 处时间列从此只有一种形状：SQLite 分支上 10 条「我的设备」红第一次有人接住（#162）
+
+- **症状**：只在测试分支上。`TEST_DATABASE_URL= pytest` 走的是内存 SQLite，本机自 10-04 起主线连的是 PG，这条路很久没人跑——#161 为了确认外键改动没弄坏什么跑了一趟，量到 `10 failed, 772 passed, 1 skipped`，全在「我的设备」和用户管理那一带，异常一律是 `TypeError: can't compare offset-naive and offset-aware datetimes`，回溯落在 `sqlalchemy/orm/evaluator.py:263`。**单独立刻能复现的最小一条**：`TEST_DATABASE_URL= .venv/Scripts/pytest.exe -q tests/test_api/test_auth.py` → **6 failed, 17 passed**。
+- **病灶**：`auth_service.py:179-183` 那句 `delete(UserSession).where(..., UserSession.expires_at <= _utc_now())` 是 **ORM 启用的批量删除**——SQLAlchemy 执行完 SQL 还要**在 Python 里**按同一条 WHERE 重新评估 `identity_map` 里已加载的对象，好把被删的行从内存里摘掉。SQLite 的 `DATETIME` 不存偏移，读回来的 `expires_at` 是 naive，`naive <= aware` 当场抛；PG 的 `TIMESTAMP WITH TIME ZONE` 永远带偏移，所以主线一次也没红过。而 `list_sessions` 第一件事就是这句清理，于是**整页 500**，不是"结果差一点"。CLAUDE.md 从前只在**写入侧**防这件事（一律 `datetime.now(timezone.utc)`），读回侧没有闸门。
+- **修法（用户选的是乙）**：新增 `src/database/types.py` 里的 `UTCDateTime`——一个 `TypeDecorator`，`impl = DateTime(timezone=True)`，`process_result_value` 就是现成的 `src/utils/time.as_utc()`；全部 **21 处**声明（13 个模型文件）换成它。选它而不是选"在调用点包一层"的两个理由：① 以后新建的列**默认就是对的形状**，不需要作者记得再包一次；② 调用点补丁只能钉住现在这一处病灶，下一句比较时间的批量 DML 照样炸。`impl` 保住 DDL，**两种方言编译出来逐字节不变**（第三条用例逐列对 PG 和 SQLite 各核一遍），所以**不需要 Alembic 迁移**，真库上的行一个也没动。
+- **连带必须改的一处（差点变成静默失效）**：`TypeDecorator` 的实例**不是** `DateTime` 的实例（实测），所以 `isinstance(col.type, DateTime)` 从此一律为假。`db_audit.py` 有三处这样的判断（违规类型闸门、`canonical_value`、孤儿/范围扫描），不改的话审计会**悄悄地不再报时间列和字符串列的问题**——不红，只是什么都不说。三处统一走新的 `is_datetime_column()`（它剥 `.impl`）。这一条是 M4 钉住的。
+- **回归用例**：新增 `tests/test_utc_datetime_columns.py`，**3 条**，自建内存 SQLite 引擎（不吃 `db_session`，本机主线是 PG，跟着方言走会绿得什么都没钉住）。① 存进去的时刻读回来必须带 `tzinfo`、且与写入同一时刻，NULL 仍是 `None`（不许变成零点）；② **真调用点**：两个会话摆出"从库里读回来"的形状后走 `AuthService.list_sessions`，过期那一行必须真的从库里没了；③ 结构钉子——`Base.metadata` 里每一列时间戳都必须是 `UTCDateTime`，且两种方言的 DDL 与 `DateTime(timezone=True)` 逐字相等，`len(columns) == 21` 是防"遍历本身是空的"那个哨兵。
+- **三条测量出来的踩坑路（都记进了 CLAUDE.md §3，因为前两条是假绿）**：同一会话里 `add` 完就删 → **绿**（新对象带的是 Python 侧那个 aware 值）；只 `await s.scalars(...)` 不 `.all()` → **绿**（identity map 是空的，评估器没有对象可跑）；`expire_all()` 再读 → 红在 `MissingGreenlet`（本机的同步惰性加载，不是这一单的病灶）。只有**第二个会话 + `.all()` 把行消费掉**这一条会真的咬人。
+- **变异**（一次一个变量；每轮跑 `TEST_DATABASE_URL= pytest -q` 于三个文件（新文件 + `test_api/test_auth.py` + `test_db_audit.py`），跑完按字节复位并核 md5，再对 `git diff HEAD --stat` 的 md5；绿基线 **43 passed**）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | M1 删掉 `process_result_value`（`UTCDateTime` 退化成一个空标记） | **红** 7 条 |
+  | M2 只把 `UserSession.expires_at` 一列摘回裸 `DateTime` | **红** 8 条（结构钉子也抓到） |
+  | M3 去掉 `process_result_value` 里的 NULL 分支 | **红** 19 条（NULL 当场 `AttributeError`） |
+  | M4 `is_datetime_column` 不剥 `.impl` | **红** 3 条：`test_detects_bad_datetime`、`test_bool_and_text_timestamps_canonicalise_alike`、结构钉子 |
+  | M5 读侧原样返回方言给的值（不 `as_utc`） | **红** 7 条 |
+
+  五项**全部能红**，没有"拆不红"的格子。M5 我原本预计会绿（SQLite 本来就给 naive，似乎无从分辨），实际红在①那条形状断言上——`assert tzinfo is not None` 钉的正是"方言给什么不重要"。
+- **文档**：`backend/CLAUDE.md` 四处——§1 的建模型模板、PostgreSQL 那条要点（换成"用 `UTCDateTime()`，`impl` 保住 DDL 所以无需迁移"+"任何检查 `col.type` 的地方必须走 `is_datetime_column()`，因为 `TypeDecorator` 不是 `DateTime`"）、模型定义片段、§3 时区处理整段重写（含上面那三条踩坑路）。
+- **基线**：**829 passed, 0 failed, 2 warnings**（真库 PG；上一单 826，差额正好是新增的 3 条）／TOTAL **93.49%**（#167 是 93.45%，miss 仍是 296，涨的一点来自 `src/database/types.py` 那 13 行**全覆盖**）／ruff 干净，`mypy src` 仍是那 **34** 项基线（这一单确实改了 `src/`：14 个文件，但没有新增一项，`types.py` 单独跑是 `Success: no issues found`）。**这一单真正的奖品在另一条跑法上**：`TEST_DATABASE_URL= pytest -q tests/` → **828 passed, 1 skipped in 90.22s**，也就是 #161 量到的那 10 条红全部消失——文档里写的回滚方言（SQLite）从此整套跑得通，不再是"名义上支持"。前端三种测试未涉及（这一单没动 `frontend/`）。
+
 ### 服务重启之后到底武装了什么：启动那 23 行第一次真的被执行过一次（#167）
 
 - **症状**：表面上没有，而且这一格的"装错了"恰好是唯一一种**界面上看不出来**的错——少一行 `scheduler.start()`，网站照常能开、能登录、能手动扫描，只是从此再没有一次定时扫描，也没有每晚那份 `pg_dump`。量出来的是 `src/main.py` **81%**，缺的整段是 `22-44` 那个 `lifespan`：建库、按表里**现存的**片源挂扫描任务、备份只在 PostgreSQL 上挂载、真的 `start()`、退出时真的 `stop()`。相邻的两份用例都不从这一个入口进来（`test_scheduler_source_lifecycle.py` 走 Service 那三条同步边，`test_scheduler_backup.py` 钉的是任务函数本身），所以"启动"这一步全量跑里一次也没被执行过——全量 819 条里 `22-44` 十二行全是缺的，这就是这一单成立的全部依据。

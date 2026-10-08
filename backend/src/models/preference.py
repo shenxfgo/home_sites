@@ -9,10 +9,11 @@ owner 写得动；这一张表存每个人自己的界面选择，登录即生�
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey
+from sqlalchemy import JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.database.base import Base
+from src.database.types import UTCDateTime
 
 
 class UserPreference(Base):
@@ -25,7 +26,7 @@ class UserPreference(Base):
     )
     prefs: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
