@@ -1,5 +1,7 @@
 """Tests for VideoService operations."""
 
+import logging
+
 import pytest
 from sqlalchemy import func, select
 
@@ -716,3 +718,198 @@ def test_the_explicit_cascade_list_is_every_child_of_videos():
     listed = {table.name for table in VIDEO_CHILD_TABLES}
 
     assert declared == listed
+
+
+# --- 读取预算、攥在手里删不掉的封面、报给一条已经不存在的影片 ---
+
+
+def _counted_fingerprints(monkeypatch) -> list[str]:
+    """把指纹口子换成一个记账的包装：照样真算，只是顺便记下读了哪些文件。
+
+    预算这件事在返回值里看不出来——读满和读不完都回一样的形状，所以只能量"到底读了几趟"。
+    """
+    from src.services import video_service as video_service_module
+
+    seen: list[str] = []
+    real = video_service_module.fingerprint
+
+    def counting(locator: str) -> str | None:
+        seen.append(locator)
+        return real(locator)
+
+    monkeypatch.setattr(video_service_module, "fingerprint", counting)
+    return seen
+
+
+async def _seed_copies(
+    db_session, directory, *, prefix: str, count: int, size: int, duration: int
+) -> list[Video]:
+    """一次建出 ``count`` 行同尺寸同时长的影片，每行对应磁盘上一个字节相同的小文件。"""
+    await ensure_source(db_session, 1)
+    payload = b"duplicate probe payload, the same bytes every time" * 4
+    rows: list[Video] = []
+    for index in range(count):
+        path = directory / f"{prefix}-{index}.mkv"
+        path.write_bytes(payload)
+        rows.append(
+            Video(
+                source_id=1,
+                filepath=str(path),
+                title=f"{prefix}{index}",
+                duration=duration,
+                file_size=size,
+                format="mkv",
+            )
+        )
+    db_session.add_all(rows)
+    await db_session.commit()
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_the_read_budget_is_spent_on_the_group_worth_the_most_first(
+    db_session, user_id, tmp_path, monkeypatch
+):
+    """一轮只读得起 300 趟：先给最能腾出空间的那一组，第二组装不下就一个字节都不碰。"""
+    from src.services.video_service import _DUPLICATE_PROBE_MAX
+
+    seen = _counted_fingerprints(monkeypatch)
+    big = await _seed_copies(
+        db_session, tmp_path, prefix="大组", count=200, size=1_000_000, duration=10
+    )
+    # 预算被大组花掉之后只剩 100 趟，第二组比它多一行，就装不下了。
+    await _seed_copies(
+        db_session,
+        tmp_path,
+        prefix="小组",
+        count=_DUPLICATE_PROBE_MAX - 200 + 50,
+        size=900_000,
+        duration=10,
+    )
+
+    groups = await VideoService(db_session).get_duplicates(user_id)
+
+    assert [group["count"] for group in groups] == [200]
+    assert {video.id for video in groups[0]["items"]} == {video.id for video in big}
+    assert len(seen) == 200
+    assert all("小组" not in path for path in seen)
+
+
+@pytest.mark.asyncio
+async def test_a_group_one_row_over_the_budget_is_left_wholly_unread(
+    db_session, user_id, tmp_path, monkeypatch
+):
+    """装不下一整组就不读半组：宁可这一轮什么都不报，也不给只读了一半的判断。"""
+    from src.services.video_service import _DUPLICATE_PROBE_MAX
+
+    seen = _counted_fingerprints(monkeypatch)
+    await _seed_copies(
+        db_session,
+        tmp_path,
+        prefix="超预算",
+        count=_DUPLICATE_PROBE_MAX + 1,
+        size=1_000_000,
+        duration=10,
+    )
+
+    assert await VideoService(db_session).get_duplicates(user_id) == []
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_a_group_exactly_at_the_budget_is_still_read(
+    db_session, user_id, tmp_path, monkeypatch
+):
+    """边界是"超过"不是"达到"：正好把预算花光的那一组要读完，也要报出来。"""
+    from src.services.video_service import _DUPLICATE_PROBE_MAX
+
+    seen = _counted_fingerprints(monkeypatch)
+    await _seed_copies(
+        db_session,
+        tmp_path,
+        prefix="刚好",
+        count=_DUPLICATE_PROBE_MAX,
+        size=1_000_000,
+        duration=10,
+    )
+
+    groups = await VideoService(db_session).get_duplicates(user_id)
+
+    assert [group["count"] for group in groups] == [_DUPLICATE_PROBE_MAX]
+    assert groups[0]["wasted_bytes"] == 1_000_000 * (_DUPLICATE_PROBE_MAX - 1)
+    assert len(seen) == _DUPLICATE_PROBE_MAX
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_is_alone_at_its_size_is_never_hashed(
+    db_session, user_id, tmp_path, monkeypatch
+):
+    """同尺寸同时长才值得再读一趟磁盘：形单影只的那一行连指纹都不配算。"""
+    seen = _counted_fingerprints(monkeypatch)
+    pair = await _seed_copies(
+        db_session, tmp_path, prefix="成对", count=2, size=1_000_000, duration=10
+    )
+    lone = await _seed_copies(
+        db_session, tmp_path, prefix="独苗", count=1, size=1_000_000, duration=999
+    )
+
+    groups = await VideoService(db_session).get_duplicates(user_id)
+
+    assert [group["count"] for group in groups] == [2]
+    assert {video.id for video in groups[0]["items"]} == {video.id for video in pair}
+    assert len(seen) == 2
+    assert lone[0].filepath not in seen
+
+
+@pytest.mark.asyncio
+async def test_a_cover_the_disk_will_not_release_is_logged_and_kept(db_session, tmp_path, caplog):
+    """封面被别的句柄攥着时（浏览器还在读它），删影片不该替磁盘兜下这个错。"""
+    cover = tmp_path / "攥着的.jpg"
+    cover.write_bytes(b"\xff\xd8locked")
+    media = tmp_path / "片子.mp4"
+    media.write_bytes(b"not really a video")
+
+    video = await _create_video(db_session, title="封面删不掉", filepath=str(media))
+    video.thumbnail_path = str(cover)
+    await db_session.commit()
+
+    handle = open(cover, "rb")
+    try:
+        with caplog.at_level(logging.WARNING, logger="src.services.video_service"):
+            await VideoService(db_session).delete_video(video.id)
+    finally:
+        handle.close()
+
+    assert await db_session.get(Video, video.id) is None
+    assert cover.exists()
+    assert media.exists()
+    ours = [r for r in caplog.records if r.name == "src.services.video_service"]
+    assert len(ours) == 1
+    assert str(cover) in ours[0].getMessage()
+    assert ours[0].exc_info is not None
+
+
+@pytest.mark.asyncio
+async def test_a_cover_that_was_never_written_leaves_no_word(db_session, tmp_path, caplog):
+    """从来没有过的路径不是一次失败：老行还写着 ./data/... 那种前缀，一句都不该抱怨。"""
+    video = await _create_video(db_session, title="没写过封面", filepath="/v.mp4")
+    video.thumbnail_path = str(tmp_path / "从来没有过.jpg")
+    await db_session.commit()
+
+    with caplog.at_level(logging.WARNING, logger="src.services.video_service"):
+        await VideoService(db_session).delete_video(video.id)
+
+    assert [r for r in caplog.records if r.name == "src.services.video_service"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_progress_report_for_a_video_that_is_gone_writes_nothing(db_session, user_id):
+    """片子在播放途中被人删了：这趟上报既不该建历史行，也不该记一条观看事件。"""
+    from src.models.watch_event import WatchEvent
+
+    await VideoService(db_session).update_progress(user_id, 999_999, 60)
+
+    history_rows = await db_session.execute(select(func.count()).select_from(PlayHistory))
+    event_rows = await db_session.execute(select(func.count()).select_from(WatchEvent))
+    assert history_rows.scalar_one() == 0
+    assert event_rows.scalar_one() == 0
