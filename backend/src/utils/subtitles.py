@@ -175,6 +175,33 @@ def _identity_of_suffix(suffix: str, fallback_label: str) -> tuple[str | None, s
     return language, language_display_name(language)
 
 
+# A mark-less UTF-16 file has no marker to look for, but it leaves a trace: the ASCII half of
+# every character -- the digits, colons and newlines that make up a cue's timestamps -- is a
+# 0x00 byte, and no 8-bit subtitle encoding produces those. Measured on files shaped like
+# this project's own fixtures: real UTF-16 subtitles sit at 0.35-0.50 NUL per byte, while
+# GBK, UTF-8 and plain ASCII are all 0.000, and one stray 0x00 spread over a 52-byte file is
+# 0.019 -- the line is drawn under the real files and well above that. A miss costs no more
+# than today costs (the track reads as empty); a false hit rewrites the text of a good file,
+# so the gate errs towards not guessing. The parity holding the NULs says which byte of each
+# pair came first, and an odd byte count simply fails to decode -- a guess that can abstain
+# needs no length gate for it. The empty file is gated only because the rate is a division.
+_UTF16_NUL_RATE = 0.1
+
+
+def _bomless_utf16(raw: bytes) -> str | None:
+    """Decode a UTF-16 subtitle file written without a byte-order mark, or give up."""
+    if not raw or raw.count(0) / len(raw) < _UTF16_NUL_RATE:
+        return None
+    codec = "utf-16-be" if raw[0::2].count(0) > raw[1::2].count(0) else "utf-16-le"
+    try:
+        return raw.decode(codec)
+    except UnicodeDecodeError:
+        # 这一支是猜出来的，没有 BOM 那句"我就是 UTF-16"的保证，所以猜中的字节序列照样
+        # 可能读到一半断在一个孤立的高位代理上。这里宁可弃权退回原来的阶梯：这条调用挂在
+        # 一条 HTTP 请求上，把异常递出去就是 500，而"读错"顶多是那条轨又是空的。
+        return None
+
+
 def read_subtitle_text(filepath: str) -> str:
     """Read a subtitle file, falling back to the encodings it was likely saved in."""
     with open(filepath, "rb") as handle:
@@ -184,6 +211,9 @@ def read_subtitle_text(filepath: str) -> str:
         return raw.decode("utf-16")
     if raw.startswith(b"\xef\xbb\xbf"):
         return raw.decode("utf-8-sig")
+    bomless = _bomless_utf16(raw)
+    if bomless is not None:
+        return bomless
 
     try:
         return raw.decode("utf-8")

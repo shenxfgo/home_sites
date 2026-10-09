@@ -561,14 +561,16 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
  * 发生在使用 GBK 字节的文件上，才说明"先认编码、再按 SRT 规则转换"这个顺序是真的；最后签**浏览器
  * 自己解析出的 cue**——三方（真文件、真服务器、真浏览器）都在场，任一边走错都不会是那三句中文。
  *
- * 第四条钉的是现状，不是愿望：**没有 BOM 的 UTF-16 认不出来，而且它"成功"了**。UTF-16LE 的字节
- * 序列 `decode('utf-8')` 不会抛（每个字符的低字节都是合法 ASCII，中间夹一个 0x00），所以 gb18030
- * 那道兜底压根不会触发；带 NUL 的时间戳行匹配不上 `_TIMESTAMP_RANGE`、序号行也过不了
- * `isdigit()`，两个过滤器白跑，最后交出去的仍是一份合法 VTT 头加一串垃圾，**状态码 200**。同一
- * 句话在磁盘上真的存在（那两个文件按 UTF-16 读回来是同一份文本），而界面上那条轨和另外三条长得
- * 一模一样——列着、能点、点下去一个字都没有。
+ * 第四条签的是 #186 那条嗅探：**没有 BOM 的 UTF-16 也认得出来了**。这一路的难处在于它坏的时候
+ * 不报错——UTF-16LE 的字节序列 `decode('utf-8')` 压根不会抛（每个字符的低字节都是合法 ASCII，
+ * 中间夹一个 0x00），所以 gb18030 那道兜底永远不会被触发；带 NUL 的时间戳行匹配不上
+ * `_TIMESTAMP_RANGE`、序号行也过不了 `isdigit()`，两个过滤器白跑，修好之前交出去的是一份合法
+ * VTT 头加一串垃圾、**状态码 200**，界面上那条轨和另外三条长得一模一样——列着、能点、点下去一个
+ * 字都没有。所以现在核对的是"认出来了"最硬的那个形状：**这两个只差一个 BOM 的文件，交出去的
+ * 响应必须一个字都不差**。整段相等比"里面有那句话"强——它同时挡住了读反字节序（那会把每句话
+ * 换成另一种乱码而那句话照样在磁盘上）和整份按 UTF-8 读（旧行为，垃圾里什么也没有）。
  */
-test('外挂字幕的四种编码：GBK 与 UTF-16 真文件走到浏览器变成真 cue，少了 BOM 那一份安静地什么都没有', async ({
+test('外挂字幕的四种编码：GBK、UTF-16 带 BOM 与不带 BOM 的真文件走到浏览器都变成真 cue', async ({
   page,
 }) => {
   expect(existsSync(SEEDED_FILE), '播种那部不在，复制不出第二部').toBe(true)
@@ -642,16 +644,19 @@ test('外挂字幕的四种编码：GBK 与 UTF-16 真文件走到浏览器变�
       Buffer.byteLength(ENC_VTT_BODY, 'utf8'),
     )
 
-    // ---- 4. 现状：没有 BOM 的 UTF-16 认不出来，而且它"成功"了
+    // ---- 4. #186：没有 BOM 的那一份也认出来了——和带 BOM 的那一份交出去的字一个都不差
     const nobom = await fetchInPage(page, idOf(ENC_NOBOM_FILE))
     expect(nobom.status, nobom.text).toBe(200)
-    expect(nobom.text.startsWith('WEBVTT\n\n')).toBe(true)
-    expect(nobom.text).toContain(String.fromCharCode(0))
-    expect(nobom.text).not.toContain(ENC_CUE_UTF16)
-    // 同一句话在磁盘上真的存在：这两个文件只差一个 BOM，按 UTF-16 读回来是同一份文本。
-    expect(readFileSync(ENC_NOBOM_FILE).toString('utf16le')).toContain(ENC_CUE_UTF16)
+    // 前提是夹具在落盘时就签过的：这两个文件只差开头那两个字节的 BOM（见 `writeEncodingFixtures`
+    // 那句「两条 UTF-16 不只差一个 BOM」）。所以读对编码之后两份响应必须完全相等——一个字符、
+    // 一个字节都不许差。这一格比"里面有那句话"硬：读反字节序同样能交出一份 200、里面却全是别的字。
+    expect(nobom.text).toBe(utf16.text)
+    expect(nobom.bytes).toBe(utf16.bytes)
+    expect(nobom.text).toBe('WEBVTT\n\n00:00:03.000 --> 00:00:04.000\n' + ENC_CUE_UTF16 + '\n')
+    // 响应里再没有一个 0x00：旧行为下整份文件被当成 UTF-8 读，那些高位字节会原样走到浏览器。
+    expect(nobom.text).not.toContain(String.fromCharCode(0))
 
-    // ---- 5. 界面上：四条轨都列着，三条有词，第四条什么都没有
+    // ---- 5. 界面上：四条轨都列着，四条都有词
     // 播放器挂在 `VideoDetail.vue` 的 `v-if="isPlaying"` 下面，先点海报（第 22 条那次的超时）。
     await page.goto(`/videos/${videoId}`)
     await page.locator('.preview-area').click()
@@ -664,25 +669,26 @@ test('外挂字幕的四种编码：GBK 与 UTF-16 真文件走到浏览器变�
 
     await page.locator('.subtitle-menu-item', { hasText: '中文' }).click()
     // cue 是浏览器自己解析出来的 UTF-8 文本：服务器嗅错编码的话这里不会是那三句中文。
-    // 第四条的加载状态是 2（=已加载）而不是 3：那份响应合法、只是没有一条 cue，浏览器完全不
-    // 觉得有事——和第 22 条第 5 步那个"200 而零条 cue"同一个形状。
+    // 第四条的加载状态是 2（=已加载）、而且带着 cue：修好之前它也是 2，只不过 `cues: []`——
+    // 一份合法的空 VTT 浏览器完全不觉得有事，和第 22 条第 5 步那个"200 而零条 cue"同一个形状。
+    // 所以这一路的钉子只能钉在 cue 上，钉在状态码或加载状态上都签不住。
     await expect
       .poll(() => trackStates(page), { message: '四种编码的字幕没有都变成浏览器里的 cue' })
       .toEqual([
         { src: idOf(ENC_GBK_FILE), mode: 'showing', elementState: 2, cues: [ENC_CUE_GBK_ONE, ENC_CUE_GBK_TWO] },
         { src: idOf(ENC_UTF16_FILE), mode: 'hidden', elementState: 2, cues: [ENC_CUE_UTF16] },
         { src: idOf(ENC_BOMVTT_FILE), mode: 'hidden', elementState: 2, cues: [ENC_CUE_BOMVTT] },
-        { src: idOf(ENC_NOBOM_FILE), mode: 'hidden', elementState: 2, cues: [] },
+        { src: idOf(ENC_NOBOM_FILE), mode: 'hidden', elementState: 2, cues: [ENC_CUE_UTF16] },
       ])
 
-    // 现状的后半句：那条读错了编码的轨，界面上和一个正常字幕**完全一样**——菜单里要点开才看得见
-    // （`selectTrack` 收尾会把菜单关掉，第 22 条那次的挂起），点下去切得动、字一个没有。
+    // 最后把那条没 BOM 的轨切到 showing：菜单里它和另外三条长得一模一样，点得动、也真的有了字
+    // （`selectTrack` 收尾会把菜单关掉，第 22 条那次的挂起）。
     await page.locator('.subtitle-btn').click()
     await expect(page.locator('.subtitle-menu')).toBeVisible()
     await page.locator('.subtitle-menu-item', { hasText: '韩文' }).click()
     await expect
-      .poll(() => trackStates(page), { message: '那条没 BOM 的轨切不上 showing，或者它其实有 cue' })
-      .toContainEqual({ src: idOf(ENC_NOBOM_FILE), mode: 'showing', elementState: 2, cues: [] })
+      .poll(() => trackStates(page), { message: '那条没 BOM 的轨切不上 showing，或者它其实没有 cue' })
+      .toContainEqual({ src: idOf(ENC_NOBOM_FILE), mode: 'showing', elementState: 2, cues: [ENC_CUE_UTF16] })
     await expect(page.locator('.subtitle-menu-note')).toHaveCount(0)
   } finally {
     // `finally` 里只收场、不抛（#136 的规矩）。

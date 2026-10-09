@@ -348,3 +348,104 @@ def test_convert_vtt_stays_byte_faithful_even_with_the_same_shape(tmp_path):
         handle.write(body)
 
     assert convert_to_webvtt(path) == body
+
+
+# --- 没有 BOM 的 UTF-16（#186，第二块选项板⑧子问二乙）---
+
+_UTF16_SRT = (
+    "1\r\n00:00:01,000 --> 00:00:03,000\r\n第一句字幕 ONE\r\n\r\n"
+    "2\r\n00:00:04,000 --> 00:00:06,000\r\n第二句字幕 TWO\r\n\r\n"
+)
+
+
+def test_a_bomless_utf16le_sidecar_keeps_its_cues(tmp_path):
+    """⑧c：这一份里真的写着两句话——认不出编码却"成功"，比报错糟糕得多。
+
+    UTF-16LE 的字节两两一组，ASCII 那半个全是 0x00，而 0x00 是**合法**的 UTF-8，所以
+    `decode("utf-8")` 从不抛、gb18030 那道兜底压根不会触发。带 NUL 的时间戳行匹配不上
+    `_TIMESTAMP_RANGE`、序号行也过不了 `isdigit()`，两个过滤器白跑一遍，交出去的是一份合法
+    VTT 头加一串谁都不认得的东西，状态码仍然是 200。
+    """
+    path = tmp_path / "movie.chi.srt"
+    path.write_bytes(_UTF16_SRT.encode("utf-16-le"))
+    assert not path.read_bytes().startswith(b"\xff\xfe"), "这一条要的就是没有 BOM"
+
+    text = convert_to_webvtt(str(path))
+
+    assert "00:00:01.000 --> 00:00:03.000\n第一句字幕 ONE" in text
+    assert "00:00:04.000 --> 00:00:06.000\n第二句字幕 TWO" in text
+    assert "\x00" not in text
+
+
+def test_a_bomless_utf16be_sidecar_keeps_its_cues(tmp_path):
+    """大尾那一头：0x00 落在偶数下标上，同一份文本、另一个方向。"""
+    path = tmp_path / "movie.chi.srt"
+    path.write_bytes(_UTF16_SRT.encode("utf-16-be"))
+
+    text = convert_to_webvtt(str(path))
+
+    assert "00:00:01.000 --> 00:00:03.000\n第一句字幕 ONE" in text
+    assert "\x00" not in text
+
+
+def test_a_utf8_file_with_a_stray_nul_is_not_promoted_to_utf16(tmp_path):
+    """NUL 率那道闸门挡的是"一个漏进去的 0x00 就换掉一整份编码"。
+
+    这一格不是洁癖：真按"哪个下标有 NUL"判，一个混进单个 NUL 的 UTF-8 文件会被整份拆成
+    UTF-16，中文全变成生僻字——比原来那句错更难看得多。补的那一个 NUL 把长度凑成偶数，于是
+    这一格只剩 NUL 率这一道闸门在挡。实测分界很宽：真 UTF-16 的字幕在 0.35~0.50，
+    GBK / UTF-8 / 纯 ASCII 一律 0.000，单个漏进的 NUL 摊到 52 字节上是 0.019。
+    """
+    raw = "00:00:01,000 --> 00:00:02,000\r\n正常的一句话\r\n".encode("utf-8")
+    assert len(raw) % 2 == 1, "这一格要的是补上 NUL 之后正好凑成偶数"
+    path = tmp_path / "movie.chi.srt"
+    path.write_bytes(raw + b"\x00")
+
+    text = read_subtitle_text(str(path))
+
+    assert "正常的一句话" in text, "按 UTF-16 读这份文件会把它整句拆成别的字"
+    assert text.count("\x00") == 1
+
+
+def test_an_empty_sidecar_still_reads_as_nothing(tmp_path):
+    """0 字节的那一份是这条阶梯上最短的输入：猜测那一支唯一的长度闸门是它的除法保护。
+
+    猜编码要先算 NUL 率，而 NUL 率是一次除法——空文件摊到这里分母是 0，`ZeroDivisionError`
+    从一条 HTTP 请求上出去就是 500。一个 0 字节的 `.srt` 不是假设：下载断在半路、编辑器建了
+    个空文件都会留下它，而扫描只看文件名，会照样把它登记成一条轨道。
+    """
+    path = tmp_path / "movie.chi.srt"
+    path.write_bytes(b"")
+
+    assert read_subtitle_text(str(path)) == ""
+    assert isinstance(convert_to_webvtt(str(path)), str)
+
+
+def test_a_truncated_utf16_file_raises_nothing(tmp_path):
+    """奇数字节（写到一半断的）不是 UTF-16 的合法长度：可以读错，不许抛。
+
+    `convert_to_webvtt` 挂在一条 HTTP 请求上，`UnicodeDecodeError` 从这儿出去就是 500。
+    """
+    path = tmp_path / "movie.chi.srt"
+    path.write_bytes(_UTF16_SRT.encode("utf-16-le") + b"\x00")
+
+    assert isinstance(convert_to_webvtt(str(path)), str)
+
+
+def test_a_bomless_utf16_guess_with_a_broken_tail_raises_nothing(tmp_path):
+    """猜进来之后读到一半断了：偶数、NUL 率也够，尾部那半个代理码位把 `decode` 打断。
+
+    尾部那 `\\x00\\xd8` 是一个只有一半的高位代理（U+D800 后面没有配对的低位），`decode`
+    在这儿直接抛 `UnicodeDecodeError: unexpected end of data`。唯一那道判据——NUL 率过阈值
+    ——它**过了**，所以这一格钉的是猜测那一支自己的弃权：猜出来的编码没有 BOM 那句"我就是
+    UTF-16"的保证，猜错就必须退回原来的阶梯，而不是把异常递出去变成 500。上一条奇数字节的
+    测试走的是同一道弃权，只是断在另一个地方——长度对不上，编到最后一组少一个字节。
+    """
+    raw = _UTF16_SRT.encode("utf-16-le") + b"\x00\xd8"
+    assert len(raw) % 2 == 0, "这一格要的就是长度闸门拦不住"
+    assert raw.count(0) / len(raw) > 0.1, "这一格要的就是 NUL 率闸门也拦不住"
+
+    path = tmp_path / "movie.chi.srt"
+    path.write_bytes(raw)
+
+    assert isinstance(convert_to_webvtt(str(path)), str)
