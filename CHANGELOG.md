@@ -1,6 +1,41 @@
 # 更新日志
 
 ## 2026-10-09
+### 转码那三条端点没人请求过，那条完成通知一直被替身演着：13 处 noop 之外第一次真写了一行（#172）
+
+- **症状**：两份读数是同一件事的两头。`src/api/transcode.py` 在 PG 全量里 **89%**，缺 `87`（`GET /{video_id}/status` 的函数体）、`108-111`（`POST /{video_id}/cancel` 的 try 和它那两句 `except ValueError → 404`）、`119`（`GET /formats`）；`src/services/transcode_service.py` **89%**，缺 `155-158`（编码器抛异常时那句兜底）、`168-183`（`_notify` 整个本体）、`209-210`（`_record_output` 那个 `except`）、`286`（`cancel()` 末尾那句 `job.status = "cancelled"` 兜底）、`290`（`get_supported_formats()` 直通）。
+- **为什么是盲区**：pytest 里对 `/api/transcode/*` 只发过两种请求——`POST /{video_id}`（成功那一路）和 `GET /{video_id}/outputs`（#154 那一单加的）。状态、取消、格式表三条地址一次也没被敲过，而前端进转码页就并发读状态与格式表（`Transcode.vue:217` 的 `loadAll`），之后每 1.5 秒轮一次状态。另一头是**替身把要测的东西演掉了**：`test_transcode_service.py` 里 **12** 条 + `test_transcode_products.py` 里 **1** 条，一共 13 处用例先把 `_notify` 换成 noop，注释给的理由是"别让后台任务写应用库"——那条顾虑从 #154 起就有了别的解法（同一个文件的 autouse fixture 把模块级 `async_session_maker` 指回测试库），于是那句理由今天站不住，而 `_notify` 的 16 行从此没有一次真跑过。它写的正是人能看见的那句话：`NotificationCenter.vue` 的 `isErrorType` 用 `type.endsWith('_error')` 认失败，真后端 e2e 第 15 条对着 `type` / `title` / `data` 三个键断言——这是一条跨语言的契约，中间那一层却是空的。
+- **回归用例**：新增 `tests/test_api/test_transcode_read_endpoints.py` **8** 条 + `tests/test_services/test_transcode_notification.py` **7** 条。接口那一份钉的是形状：idle 那一路七个字段逐字相等（少一个字段在接口上不报错，只在页面上变成 `undefined`）、跑着时 `progress` 只留一位小数、状态那一条**不查库**（影片行已删掉也回 200 + idle，轮询代码只准备了这一个分支）、启动被拒时 400 带着原因、取消不存在的路时 404 且原因里点名是哪一部、活任务取消回 204 空体、一条手工摆出来的 `task=None` 记录（见下），格式表就是 `SUPPORTED_FORMATS` 的投影。通知那一份钉的是文案与两处吞异常的分界：成功只写一行且 `data` 带得到 `video_id`、ffmpeg 那句原话必须出现在失败通知末尾（#142 的症状在同一层的另一个现场）、没给原因时只能说"未知原因"而不是 Python 的 `None`、编码器整个抛异常时状态写 failed 而人那边照例有一行、通知写不进去时吞掉但不牵连任务状态与产物登记、产物登记写不进去时吞掉而通知照写、**取消那一路什么都不发**。`data` 里那个 `video_id` 今天没有前端读它（`grep` 全仓只有一处在写），用例钉它是因为 e2e 第 15 条钉了它——别把它读成"通知能点回那部片子"。
+- **两处吞异常必须分开坏**：`_notify` 和 `_record_output` 用的是同一个模块级 maker，把整个 maker 换成一炸到底，两处 `except Exception` 会一起吞——两行都算"覆盖到了"，谁也没被钉住。所以用例给了一个**只坏 `session.scalar`** 的包装会话（`_record_output` 开头那次查重走它，`_notify` 的 add/commit/refresh 照常），另有一条把 `NotificationService.create` 换成抛异常，两个方向各钉一处。
+- **红在先（这一单没改 `src/` 一行行为，说清楚）**：新用例在旧代码上直接是绿的，能红的是变异电池——**19 格里 18 红 1 绿**，那 1 绿是实测出来的等价变异，不是漏钉。
+- **变异**（一次一个变量；每轮**先断言锚点在文件里恰好命中一次、替换后字节确实变了**才允许把那一格算数；跑完按字节复位并核 md5：`src/api/transcode.py` = `67227a9dd26d54ca39da44e356e8d0e6`、`src/services/transcode_service.py` = `4bd397b85cda7dbeeb4ebf268704272f`，两份都与快照一致）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | X1 状态响应里摘掉 `error` 那个键 | **绿**——等价变异，见下 |
+  | X1b 摘掉 `video_id`（模型里没默认值） | **红** 5 条（`ResponseValidationError`） |
+  | X1c 把 `is_transcoding` 改成 `isTranscoding` | **红** 5 条（同上，字段名从 snake 漂成 camel） |
+  | X1d 把 `status` 翻转（idle ↔ running） | **红** 5 条 |
+  | X2 取消不再捕获 `ValueError` | **红** 1 条（500 而不是 404 + 原因） |
+  | X3 取消的 204 改成 200 | **红** 2 条 |
+  | X4 `/formats` 回空表 | **红** 1 条 |
+  | X5 启动那句 400 换成不含原因的固定英文 | **红** 1 条（`assert 'exe' in 'start failed'`） |
+  | Y1 编码器抛异常时不写状态 | **红** 1 条（永远 running，通知还说完成） |
+  | Y2 失败文案去掉 `or '未知原因'` | **红** 1 条（末尾出现字面量 `None`） |
+  | Y3 失败文案不带 ffmpeg 那句 | **红** 3 条 |
+  | Y4 `completed` 写死成 `True` | **红** 3 条 |
+  | Y5 通知不带 `data` | **红** 2 条 |
+  | Y6 `_notify` 的 `except` 改成往外抛 | **红** 1 条 |
+  | Y7 `_record_output` 的 `except` 改成往外抛 | **红** 1 条 |
+  | Y8 `cancel()` 末尾那句兜底改成永不成立 | **红** 1 条（手摆的那条防御用例） |
+  | Y9 `CancelledError` 那一路不再 `raise` | **红** 1 条（每次取消多发一条失败通知） |
+  | Y10 `progress` 不再四舍五入 | **红** 1 条 |
+
+- **X1 那一格绿的是模型不是用例**：`TranscodeStatusResponse.error: str | None = None` 有默认值，FastAPI 用 `response_model` 构造时把缺掉的那个键补成 `None`，所以"服务层少给一个有默认值的字段"在 HTTP 这一层根本看不出来。形状是**声明**钉住的，不是这一条用例钉住的；红的是没默认值的那两格（X1b / X1c 直接 `ResponseValidationError`）。这一句写下来是因为它**钉不住**，不是记它已经钉住了。
+- **`cancel()` 末尾那两行是构造性不可达**（与 #165 那两处同一处理）：`transcode()` 是先 `asyncio.create_task` 再登记进 `_jobs`，而 `_run` 成功/失败/取消每一路都写状态，所以"账上挂着 running 却已经没有任务对象"这一状态今天走不到。用例手工摆一条 `task=None` 的记录钉住它确实收敛成 `cancelled`，并在 docstring 里声明这是防御分支——别把它读成实测到的路径，也别"顺手加个 finally 补状态"。
+- **基线**：PG 全量 **887 passed, 2 warnings**，TOTAL **95.36%**；SQLite 分支同轮 **886 passed + 1 skipped**。`src/api/transcode.py` 89% → **100%**，`src/services/transcode_service.py` 89% → **100%**。ruff `tests src` 干净，`mypy src` 仍是 34 项基线（`src/` 一行未改）。
+- **文档**：`backend/CLAUDE.md` 的薄位置清单补了这两格，以及上面量出来的那五处性质（X1 那个等价变异、两处吞异常要分开坏、`cancel()` 末尾那两行为何不可达、状态那一路不查库、取消不许发通知）。
+
 ### 启动选路与会话收尾那十一行一次也没被执行过：`init_db()` 第一次真跑，连接还不还得问连接池（#171）
 
 - **症状**：`src/database/session.py` 在 PG 全量读数里是 **88%**，缺 `205-210` 和 `278-282` 两段。前者是 `init_db()` 的选路本体（认库 → 老库补齐 + `stamp_head` / 否则 `upgrade_head`），后者是 `get_session()` 的 `yield` 加 `finally: await session.close()`。两段的共同点是**只有生产在用、测试从不进来**：启动那一份用例（`test_app_boot_lifespan.py:82-88`）和 `test_cli.py:318-321` 都把 `init_db` 换成只登记名字的替身，而所有走 HTTP 的用例经 `app.dependency_overrides[get_session]`（`conftest.py:190-193`）借的是测试自己的会话。于是"库来了到底走哪条路"和"一个请求的会话还不还回去"这两格零钉子——后者恰好是少一行 `close()` 也不报错、只在连接池被抽干的那天炸的那类东西。
