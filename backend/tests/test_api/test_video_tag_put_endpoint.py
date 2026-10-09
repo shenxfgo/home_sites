@@ -9,9 +9,9 @@
 键，`frontend/src/types/video.ts:96` 里那个 `tag_ids?` 是一个从来没被发出去的字段
 （和 #151 那四个装饰配置项同一族）。所以这一路今天唯一的调用方是"任何别的客户端"
 ——而它能把一个人挂好的标签整串清空。
-下面几条钉的都是**实测出来的现有行为**，其中第 3 条（不存在的标签 id 会把整串带走）是
-本单发现的问题，
-要不要改属于产品决定，已经记在待用户定夺里，用例只负责让今天的形状别悄悄变掉。
+下面几条钉的都是**实测出来的现有行为**，除了标签 id 不存在那一路：它原本是"未知 id 把整串带走、
+接口还回 200"的洞（本单发现、记在待用户定夺），2026-10-09 第二块选项板⑥甲定成**拒绝 404**，
+现在由 `test_an_unknown_tag_id_is_refused_and_leaves_the_existing_set_alone` 那三条钉新形状。
 """
 
 import pytest
@@ -89,15 +89,14 @@ async def test_an_empty_tag_list_clears_the_links_and_leaves_the_tag_rows_alone(
 
 
 @pytest.mark.asyncio
-async def test_a_tag_id_that_is_not_in_the_table_takes_the_whole_set_with_it(
+async def test_an_unknown_tag_id_is_refused_and_leaves_the_existing_set_alone(
     client, db_session
 ):
-    """请求里只要有一个不存在的标签 id，这一路就当作"这次只要挂那些"——于是全空。
+    """请求里有一个不存在的标签 id：整串请求被拒（404），原有的标签一根汗毛不动。
 
-    `select(Tag).where(Tag.id.in_(tag_ids))` 只回查得到的那些，回不到的**不当成错误**；而后面那句
-    是整串替换。两者叠起来：拿一个已经被人删掉的标签 id 发一次 PUT，这部片子原有的标签会一起没了，
-    接口照样回 200。这是实测出来的现状，也是本单发现的洞（append 那一头同样忽略不存在的 id，但它
-    不动已有的关系），**改不改是产品决定，待用户定夺**；这条用例现在只负责让形状别悄悄变。
+    2026-10-09 第二块选项板⑥甲。从前这一路是 `select(Tag).where(Tag.id.in_(tag_ids))` 只回查得到的、
+    回不到的不当错，而后面的赋值是**整串替换**——一个已被删掉的 id 就能把这部片子原有的标签一起带走，
+    接口照样回 200，也没有一句说得出哪个 id 不存在。现在它既不动已有的关系，也说得出是哪一号。
     """
     video = await ensure_video(db_session)
     existing = await _tag(client, "冷门")
@@ -105,11 +104,53 @@ async def test_a_tag_id_that_is_not_in_the_table_takes_the_whole_set_with_it(
 
     response = await client.put(f"/api/videos/{video.id}", json={"tag_ids": [999999]})
 
-    assert response.status_code == 200, response.text
-    assert response.json()["tags"] == []
-    assert await _link_ids(db_session, video.id) == []
-    # 一个 id 都不认识时，回 200 而不是 404——今天没有任何一句说得出"哪个 id 不存在"。
-    assert (await db_session.execute(select(Tag.id).where(Tag.id == existing["id"]))).scalar_one()
+    assert response.status_code == 404, response.text
+    assert "999999" in response.json()["detail"], response.json()
+    assert await _link_ids(db_session, video.id) == [existing["id"]]
+    assert [t["id"] for t in (await _get(client, video.id))["tags"]] == [existing["id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_partly_known_tag_list_is_refused_before_anything_is_written(
+    client, db_session
+):
+    """一半认识一半不认识也不行：不能先把认识的那半挂上去再说这次失败。
+
+    这一条钉的是"拒绝"的两半——状态码是 404，而且库里既不是原来的样子被换成了 [认识的那个]，
+    也不是被清空。`[]` 仍然是一次真写（上面第二条用例钉着），别把这两种混成一种。
+    """
+    video = await ensure_video(db_session)
+    before = await _tag(client, "先挂着")
+    known = await _tag(client, "认得")
+    await client.put(f"/api/videos/{video.id}", json={"tag_ids": [before["id"]]})
+
+    response = await client.put(
+        f"/api/videos/{video.id}", json={"tag_ids": [known["id"], 999999]}
+    )
+
+    assert response.status_code == 404, response.text
+    assert await _link_ids(db_session, video.id) == [before["id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_bad_tag_id_refuses_the_whole_request_including_the_field_half(
+    client, db_session
+):
+    """`{title, tag_ids}` 一起发、而 tag_ids 里有坏号：标题也不许写进去。
+
+    标签的核对被搬到了字段更新**之前**，为的就是别留下"接口回 404、库里标题已经改了"这种两边各自
+    自洽的形状（#176 那半截行、#177 那条假进度同一族）。两个半都合法时照旧都写，由
+    `test_a_request_that_carries_both_halves_writes_both` 钉着。
+    """
+    video = await ensure_video(db_session)
+    original_title = (await _get(client, video.id))["title"]
+
+    response = await client.put(
+        f"/api/videos/{video.id}", json={"title": "不该留下", "tag_ids": [999999]}
+    )
+
+    assert response.status_code == 404, response.text
+    assert (await _get(client, video.id))["title"] == original_title
 
 
 @pytest.mark.asyncio

@@ -226,6 +226,21 @@ async def update_video(
     if not update_data and tag_ids is None:
         raise HTTPException(status_code=400, detail="No fields to update")
 
+    # Resolve the tag list first: a request that names a tag which no longer exists is
+    # refused as a whole, before any half of it has been written. The assignment below
+    # replaces the entire set, so an unknown id left unchecked would quietly wipe the
+    # tags this video already had.
+    new_tags: list[Tag] | None = None
+    if tag_ids is not None:
+        result = await session.execute(select(Tag).where(Tag.id.in_(tag_ids)))
+        new_tags = list(result.scalars().all())
+        missing = sorted(set(tag_ids) - {tag.id for tag in new_tags})
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tag not found: {', '.join(str(tag_id) for tag_id in missing)}",
+            )
+
     # Update basic fields
     if update_data:
         try:
@@ -238,12 +253,8 @@ async def update_video(
             raise HTTPException(status_code=404, detail="Video not found")
 
     # Handle tag assignment
-    if tag_ids is not None:
-        result = await session.execute(
-            select(Tag).where(Tag.id.in_(tag_ids))
-        )
-        tags = list(result.scalars().all())
-        video.tags = tags
+    if new_tags is not None:
+        video.tags = new_tags
         await session.commit()
         await session.refresh(video)
 
