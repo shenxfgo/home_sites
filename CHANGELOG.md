@@ -1,6 +1,33 @@
 # 更新日志
 
 ## 2026-10-09
+### 影片↔标签有两条写路径，语义相反，而其中一条从 pytest 进来一次也没被走过（#173）
+
+- **症状**：`src/api/videos.py` 在修正后的读数里是 **94%**，缺的八行是 `236-238` 和 `242-248` ——合起来不是边角，是 **`PUT /api/videos/{id}` 上 `tag_ids` 那一路的整个函数体**。接口层此前只被 `POST /api/tags/video/{id}` 那一头敲过（append 语义），而 PUT 这一头拿到 `tag_ids` 走的是 `video.tags = tags`——**整串换掉**。同一张 `video_tags`，两条路径语义相反，中间那条零钉子。
+- **为什么界面上看不见它**：`VideoDetail.vue:234` 组装的 `VideoUpdate` 只有 `title` / `description` / `rating` 三个键，`frontend/src/types/video.ts:96` 里那个 `tag_ids?` 是**从来没被发出去的字段**（和 #151 那四个装饰配置项同一族）。所以这一路今天唯一的调用方是"任何别的客户端"，而它能把一个人挂好的标签整串清空。库是共享的（`update_video` 的 docstring 写明"anyone signed in edits the same row"，`user_id` 只用来带播放进度），所以这不是越权面，是语义面。
+- **回归用例**：新增 `tests/test_api/test_video_tag_put_endpoint.py` **9** 条。钉的是：append 挂上 A 之后 PUT 只交 B → 只剩 B、链接表里 A 那行随之消失（那条分界线本身）；`tag_ids: []` 是一次真写而标签行还在；**请求里有一个不存在的 id 就把整串带走**（下面单列）；片子不存在时两半都 404 但**措辞不同**——`236-238` 那句不带 id、服务层那句带，用例钉"两句不一样 + 都 404"而不钉措辞（#153 正等着翻译这一族英文）；提交先于响应（`expunge_all` 之后重读还在，少了那句 commit 响应照样好看）；`{title, tag_ids}` 同请求两半都写进去；只改标签**不动 `videos.updated_at`** 而改标题动（详情页 `VideoDetail.vue:454` 显示的"更新于"因此认不出刚贴过标签）；`{"tag_ids": null}` 是 400 而不是"什么也不改"（`model_dump(exclude_unset=True)` 让"没带这个键"和"带了 null"落到同一个 `tag_ids is None`）；重复 id 只留一条链接且不回 500。
+- **本单发现的那个洞（改不改属于产品决定，待用户定夺）**：`select(Tag).where(Tag.id.in_(tag_ids))` 只回查得到的那些，查不到的**不当成错误**，而后面那句是整串替换——两者叠起来，拿一个已经被人删掉的标签 id 发一次 PUT，这部片子原有的标签会一起没了，接口照样回 200，也没有任何一句说得出"哪个 id 不存在"。对照：append 那一头同样忽略未知 id，但它不动已有的关系（`tag_service.py:147` 的 `if tag and tag not in video.tags`）。用例今天钉的是**现状**，不是认可。
+- **红在先（这一单没改 `src/` 一行行为，说清楚）**：新用例在旧代码上直接是绿的，能红的是变异电池——**10 格里 9 红 1 绿**，那 1 绿是实测出来的等价变异，不是漏钉。
+- **变异**（一次一个变量；每轮**先断言锚点在文件里恰好命中一次、替换后字节确实变了**才允许把那一格算数；跑完按字节复位并核 md5 `d95de0ddf5ff8e0453ca227f8fd6b9be`，与快照一致。这一族还多一道前置：**`src/api/videos.py` 在工作树里是 CRLF**，而 `src/` 其余文件是 LF，所以锚点必须先按目标文件的换行归一，否则 `anchor_count` 恒为 0、每一格都会被"锚点没命中"挡下——第一轮就是这么拦住的）：
+
+  | 变异 | 结果 |
+  | --- | --- |
+  | M1 `video.tags = tags` 改成"原有不动、往上追加" | **红** 3 条（两条写路径从此变成同一件事） |
+  | M2 换完标签不 `commit` | **红** 5 条（响应照样好看，库里没动） |
+  | M3 提交后不再 `refresh(video)` | **绿**——等价变异，见下 |
+  | M4 `if tag_ids is not None` 写成 `if tag_ids` | **红** 1 条（`[]` 和 `null` 从此不分） |
+  | M5 去掉 `236-238` 那句 404 | **红** 1 条（`video` 是 `None`，撞上 500） |
+  | M6 查标签时不带 `Tag.id.in_(tag_ids)` | **红** 3 条（库里的每个标签都挂上去） |
+  | M7 `pop("tag_ids")` 换成 `get("tag_ids")` | **红** 2 条（键留在 `update_data` 里，于是走的不是同一句 404） |
+  | M8 拆掉"什么都没带"那道闸门 | **红** 2 条（`{"tag_ids": null}` 从 400 变成静默 200） |
+  | M9 未知 id 不再静默丢弃、改成 404 | **红** 1 条（今天这个"丢弃"是被选中的行为，不是巧合） |
+  | M10 `if not update_data and tag_ids is None` 少掉半边 | **红** 7 条（只带标签的请求被整体拒掉，这一路今天就是这样被用的） |
+
+- **M3 那一格绿的是会话不是用例**：`await session.refresh(video)` 摘掉之后 71 条照旧全绿——关系刚刚在同一个会话里被赋值过，对象就在 identity map 里，序列化读的是内存那份，不是数据库。所以这一句今天是**不承重**的，`test_the_replacement_is_committed_before_the_response_finishes` 钉住的是那句 `commit`，不是这句 `refresh`（别把它读成"重读过的值已经签了"）。
+- **电池的读数这一版带两列 md5**：`mutated_md5=False` 是那轮磁盘上确实是**变异态**（与快照不同）的证据，`restored_md5=True` 才是复位成功的证据——十行全是 False/True，最后一行 `FINAL md5=… match=True` 再独立核一次，并用 `git diff --ignore-cr-at-eol` 确认这个文件对 HEAD 零差异。上一版只有一列 `restored_md5`，而它在 `finally` 复位**之前**就读文件，十行全报 False；那种列会被后人当成证据读，所以测量挪到了复位之后，整块电池也**对着最终字节重跑了一遍**（上一遍之后又改了 6 处 E501 换行，和一处写死的 `/api/videos/1` → 同一个 id 的 f-string），十格判定一字未变——上面这张表是第二遍的。
+- **基线**：PG 全量 **896 passed（2 warnings，189.06s）**，TOTAL **95.53%**（4613 stmts / 206 miss，上一单是 214 miss）；SQLite 分支同轮 **895 passed + 1 skipped**。`src/api/videos.py` 94% → **100%**（142 stmts / 0 miss）。ruff `tests src` 干净，`mypy src` 仍是 34 项基线（`src/` 一行未改）。
+- **文档**：`backend/CLAUDE.md` 的薄位置清单补了这一格与上面量出的性质。
+
 ### 转码那三条端点没人请求过，那条完成通知一直被替身演着：13 处 noop 之外第一次真写了一行（#172）
 
 - **症状**：两份读数是同一件事的两头。`src/api/transcode.py` 在 PG 全量里 **89%**，缺 `87`（`GET /{video_id}/status` 的函数体）、`108-111`（`POST /{video_id}/cancel` 的 try 和它那两句 `except ValueError → 404`）、`119`（`GET /formats`）；`src/services/transcode_service.py` **89%**，缺 `155-158`（编码器抛异常时那句兜底）、`168-183`（`_notify` 整个本体）、`209-210`（`_record_output` 那个 `except`）、`286`（`cancel()` 末尾那句 `job.status = "cancelled"` 兜底）、`290`（`get_supported_formats()` 直通）。
