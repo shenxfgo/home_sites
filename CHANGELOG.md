@@ -1,6 +1,31 @@
 # 更新日志
 
 ## 2026-10-09
+### 备份那台子进程第一次真的起了进程，三道兜底分支第一次被走到（#174）
+
+- **症状**：`src/backup.py` 停在 **95%**，缺的六行是四类各一，而且**没有一类是"某条分支忘了测"**：`124` 是 `_run` 里那句真的 `subprocess.run`——整个备份套把 `_run` 换成替身，这台子进程从 pytest 进来一次也没起过；`152` 是 `BACKUP_DIR` 为空那道闸门（今天没有调用方给过空串）；`217-218` 是轮转碰到 stat 不出的条目就跳过；`266-267` 是陈旧判断碰到 stat 不出的文件算陈旧。后两格要有"目录里列得出、`getmtime` 抛一次"的条目才走得到。
+- **替身是对的，盲区还是留下来了**：换掉 `_run` 有理由——"口令有没有进 argv"只有在那一头才钉得住，真跑一次 pg_dump 反而看不出来，`tests/test_backup.py` 那 18 条断言的是真实 argv / env，这一层一律不动。代价是**发出去的 argv、环境变量、超时、还有那套解码参数本身一格签字都没有**。这一层落的是另一头，而且**不打库**（只用 `tmp_path` 摆文件），所以它能和任何事并行、也不需要测试库。
+- **回归用例**：新增 `tests/test_backup_child_process.py` **9** 条。起真子进程用的是 `sys.executable`，不依赖机器上有没有 pg_dump；那三道兜底用**最小假体**走到真代码：只换 `os.listdir`（`getmtime` 保持是真的——它对不在盘上的名字真抛一次），以及只换 `latest_backup` 让它指回一个不存在的路径（`265` 那句 stat 真坏）。九条钉的是：子进程自己那两条流被当**文本**收回来、退出码忠实（3）；`encoding="utf-8"` 是实参不是装饰——子进程把中文按 UTF-8 字节写进 stderr，而这台机器的控制台代码页是 **cp936**，父进程按本地代码页解就会把 pg_dump 的中文诊断变成一串谁也读不懂的字节，那句正是失败通知里唯一的原因；`errors="replace"` 承的是另一个重——一个坏字节要是变成 `UnicodeDecodeError`，备份任务连原因都发不出去（实测两字节 → 两个 U+FFFD，不抛）；`timeout` 是真转发（1 秒就回 `TimeoutExpired`，`.timeout == 1`）；`_run` 用的是**交给它的那一份**环境而不是父进程那一份——这条比"值进得去"值钱得多，因为 `run_backup` 是 `env = {**os.environ}` 现抄一份再往上加 `PGPASSWORD`，一旦回落成父进程环境，**传一份"没有它"的环境也没用**，口令再也清不掉（子进程对两种偏差各回一个不同退出码 5 / 6 / 0，坏了能指出坏在哪半）；空目录在**建任何目录之前**就被拒（`calls == []` 且 `tmp_path` 空）；轮转碰到一个列得出、stat 不出的名字，旁边那份真过期的照清；"挑完最新那一份之后才消失"的文件算陈旧而不抛。
+- **本单量出的那个洞（新的待用户定夺）**：`is_stale` 的 docstring 明写"stat 不出的条目按陈旧处理而不是抛异常，因为它跑在启动那一段，一个悬空条目不该把应用带下去"，而实测**只有晚一步消失的文件才走得到那句 `return True`**——如果它在 `latest_backup` 挑最新那一份**之前**就 stat 不出，`FileNotFoundError: [WinError 2]` 是从 `261` 那行外抛的（`max(key=os.path.getmtime)` 自己就 stat），`264-267` 那个 `try` 包不住。调用方 `scheduler/tasks.py:93` 那句 `if not backup.is_stale(...)` **没有任何 `try` 包着**（那句 `try` 在 `_dump_and_notify` 里面，要过了这一行才进得去），于是启动补跑在还没开始备份之前就死掉：库从此没有保险检查，也没有一条通知说得清为什么——和 #100 是同一个族。三个选项：**甲**把那两行一起纳入 `try`（两行，docstring 从此为真，推荐）／**乙**只改 docstring，承认它会把异常送上去／**丙**在 `tasks.py` 那一侧包一层。用例钉的是**现状**（`test_an_entry_that_was_already_gone_before_the_listing_gets_out_as_an_error` 断言 `FileNotFoundError`），不是认可；电池里的 **Z10 就是那句预备 fix**——它现在红的那一条正是这一条，选定甲之后翻绿的路径已经量过。
+- **红在先（本单 `src/` 一行未改，红由电池给）**：Z1–Z10 十格 → **8 红 + 1 实测等价 + 1 预备翻转**。范围是 `test_backup_child_process.py` + `test_backup.py` 共 **27** 条；`src/backup.py` 在工作树里是 **CRLF**（273 CRLF / 0 lone LF），锚点按它自己的换行归一，每格改完即按字节还原并 md5 复核（`7451c02d4b8b092ccf62c7ddbdadf997`，十行 `restored_md5` 全 True，收尾 `git diff --ignore-cr-at-eol -- src/backup.py` 为空）。
+
+| 格 | 改的那一处 | 结果 | 红几条 | 坏掉的话 |
+|---|---|---|---|---|
+| Z1 | 去掉 `encoding="utf-8"` | 红 | 1 | 子进程来的那句中文诊断按本地代码页解，变成乱码 |
+| Z2 | 去掉 `errors="replace"` | 红 | 1 | 一个坏字节把失败通知本身炸成 `UnicodeDecodeError` |
+| Z3 | 去掉 `capture_output=True` | 红 | 3 | `result.stdout` 是 None，什么都读不回来 |
+| Z4 | 去掉 `text=True`（`encoding` 留着） | **绿** | 0 | 实测等价：`subprocess` 见 `encoding`/`errors` 本身就进文本模式 |
+| Z5 | 去掉 `timeout=timeout` | 红 | 1 | pg_dump 挂住时任务永远挂着（这一格真的让子进程挂了 30 秒） |
+| Z6 | `env=env` → `env=None` | 红 | 1 | 你没有传进去的 `PGPASSWORD` 照样到得了子进程 |
+| Z7 | `if not backup_dir:` → `if False:` | 红 | 1 | 空目录不再是拒绝，而是更深一处的崩 |
+| Z8 | 轮转 `except OSError` → `except ZeroDivisionError` | 红 | 1 | 一个悬空条目把整轮轮转带停，真过期的那份留在那儿 |
+| Z9 | 陈旧判断 `except OSError: return True` → `return False` | 红 | 1 | 消失的 dump 被当成"还新鲜"，补跑任务从此不跑 |
+| Z10 | 预备 fix：`try` 把 `latest_backup` 那一行也包进去 | 红 | 1 | 正是钉洞那一条——行为变更，等用户定夺 |
+
+- **一格读错就危险的东西**：Z4 那条 `text=True` 和 #172 那两组**有默认值的 `response_model` 字段**是同一族——结构上就红不了（`encoding` 一个参数已经把文本模式定了）。别把这一格读成"`text=True` 有用例签着"；真要签它得换一条不带 `encoding` 的调用，而这一层今天没有那种调用。
+- **基线**：PG 全量 **905 passed（2 warnings，135.04s）**，TOTAL **95.66%**（4613 stmts / 200 miss，上一单是 206 miss——正好是这一文件那六行）；SQLite 分支同轮 **904 passed + 1 skipped**（56.02s），两边退出码都是 0。`src/backup.py` 95% → **100%**（119 stmts / 0 miss）。`ruff check tests src` 干净，`mypy src` 仍是那 **34** 条基线（这一单复量过，不是新增）。前端一层没动：这一单只加后端用例，`openapi.json`、路由表和前端谁也没碰。
+- **文档**：`backend/CLAUDE.md` 薄位置清单加一条 `src/backup.py`（含 Z4 那条等价、`_run` 那套参数的签名位置、以及上面那个洞）；讲备份机制那一节不动口径——它说"起 `pg_dump`、再用 `pg_restore -l` 读回来"，这一单补的正是那一句**真起进程**的签字，不是新行为。
+
 ### 影片↔标签有两条写路径，语义相反，而其中一条从 pytest 进来一次也没被走过（#173）
 
 - **症状**：`src/api/videos.py` 在修正后的读数里是 **94%**，缺的八行是 `236-238` 和 `242-248` ——合起来不是边角，是 **`PUT /api/videos/{id}` 上 `tag_ids` 那一路的整个函数体**。接口层此前只被 `POST /api/tags/video/{id}` 那一头敲过（append 语义），而 PUT 这一头拿到 `tag_ids` 走的是 `video.tags = tags`——**整串换掉**。同一张 `video_tags`，两条路径语义相反，中间那条零钉子。
