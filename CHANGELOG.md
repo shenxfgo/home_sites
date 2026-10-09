@@ -1,6 +1,13 @@
 # 更新日志
 
 ## 2026-10-09
+### 一部老片的字幕注册失败，从此只是跳过它——不再把整轮扫描带走（#183）
+
+- **这一单修的是 #176 量出来那个洞二**：`scan_source` 里「单个文件失败只跳过，不中断整个视频源的扫描」这道闸门从前**只护着新片那半圈**。老片走的是 `known is not None` 那一条，它调的是同一个 `_register_subtitles`，但那一句在 `try` 外面。于是同一份清单里一部新片出同样的毛病只是跳过，一部老片出毛病却把整轮带走：`last_scan_at` 不写、通知不发、清单里剩下的文件一个也没扫，而**手动按钮那一路是一个 500**（`api/scan.py` 只把 `ValueError` 映射成 404），定时那一路只剩 `scheduler/tasks.py` 的 `scan_error` 通知兜着。用户在第二块选项板上选**甲：把那半圈并进同一个 try**，否掉的是"保留这个不对称并在文档里承认"和"只说清是哪半圈坏了"。
+- **闸门是成对的，别拆开读**：`except Exception` 只是接住，真正不留脏写的是它里面那层 `begin_nested()`。量过的形状是——只加前半句时那条坏字幕行跟着这一轮最后的 `commit` 进了库，再被同一轮的 `prune_missing` 当场判成「字幕文件已不存在」，通知因此多出这一段（这条断言就是那一步的红）。
+- **红是先看过的**：先把那条钉现状的用例（`test_a_known_videos_subtitle_failure_still_takes_the_round_down`，断言 `pytest.raises(RuntimeError)`）改名并翻成 `..._skips_only_that_one_row`，在未改的 `src/` 上是 **1 failed**（异常照旧穿出 `scan_source`，正是电池 V13 量的那一格）；加完闸门这一文件连同扫描那两组共 **83 passed**。
+- **没动的**：新片那半圈的 `try`/SAVEPOINT、`holder` 那句跨源查重（它仍在闸门外面，这一单没扩权限）、丢失核对与通知的措辞。真字幕注册今天只做 add/flush、炸不出来，所以坏输入仍然是假体喂进去的——这一点写进了用例 docstring。
+- **基线**：后端 PG 全量 **933 passed**（这一条是改写不是新增），SQLite 分支被改动的两个文件 **47 passed**，`ruff check src tests` 干净，`mypy src` 仍是 **34** 条基线错误。`src/services/scan_service.py` 现在 **454 CRLF / 0 lone LF**，md5 `215077e4847669361979a2f3324ec7f5`；`tests/test_services/test_scan_service.py` **1286 CRLF / 0 lone LF**，md5 `efa7d738fc81637bd690b71d05b6b42e`。
 ### 扫描中途按了停止的那一轮，不再在源上留下"刚刚扫过"（#182）
 
 - **这一单修的是 #176 量出来那个洞一**：`scan_source` 文件那一圈的 `break` 之后，`source.last_scan_at` 照写、通知照发「扫描完成，发现 N 个新视频」，而清单里剩下的文件一个都没打开过。这一列是自动扫描排下一轮的依据（#150 那条链路），记了时间就等于宣布这一轮把清单扫完了。用户在第二块选项板上选**甲：停掉的那一轮不写时间戳**，否掉的是"照写但通知改口说还剩多少没扫"和"只在 docstring 承认这句完成是近似"。

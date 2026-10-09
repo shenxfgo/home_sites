@@ -241,16 +241,26 @@ class ScanService:
                 filepath = vf.locator
                 known = existing.get(filepath)
                 if known is not None:
-                    await _backfill_coordinates(
-                        self.session, known, tags_by_name, vf.filename
-                    )
-                    subtitles_found += _register_subtitles(
-                        subtitle_service,
-                        known.id,
-                        filepath,
-                        known_subtitles,
-                        storage,
-                    )
+                    # 老片这一圈和新片调的是同一个字幕注册，从前它在这道闸门外面：
+                    # 同样的坏输入下新片只是跳过、老片把整轮带走（手动按钮那一路是 500）。
+                    # SAVEPOINT 也是配套的——光接住异常不rollback，事务已经废了，
+                    # 这一轮会在最后那句 commit 上死得更难看懂。
+                    try:
+                        async with self.session.begin_nested():
+                            await _backfill_coordinates(
+                                self.session, known, tags_by_name, vf.filename
+                            )
+                            subtitles_found += _register_subtitles(
+                                subtitle_service,
+                                known.id,
+                                filepath,
+                                known_subtitles,
+                                storage,
+                            )
+                    except Exception:
+                        logger.warning(
+                            "跳过无法处理的视频文件: %s", filepath, exc_info=True
+                        )
                     continue
 
                 # `videos.filepath` 是全库唯一的，而上面的 `existing` 只装了本源的行：

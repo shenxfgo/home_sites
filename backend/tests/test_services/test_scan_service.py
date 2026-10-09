@@ -1227,17 +1227,19 @@ async def test_a_file_skipped_by_one_failure_is_indexed_the_next_round(
 
 
 @pytest.mark.asyncio
-async def test_a_known_videos_subtitle_failure_still_takes_the_round_down(
-    db_session, monkeypatch, idle_scan_state
+async def test_a_known_videos_subtitle_failure_skips_only_that_one_row(
+    db_session, monkeypatch, caplog, idle_scan_state
 ):
-    """「单个文件失败只跳过」今天只护着新片那半圈 —— 本单量出，钉的是现状。
+    """「单个文件失败只跳过」现在两半圈都护着（第二块选项板③甲，#183 落地）。
 
-    老片走的是 `known is not None` 那一条 continue，它同样调 `_register_subtitles`，但那
-    一句在 `try` 外面（`try` 从新片那一段才开始）。所以库里已有一部片子的字幕写不进
-    去时，异常穿出 `scan_source`：这一轮的 `last_scan_at` 不写、通知不发，清单里剩下的
-    文件一个也没扫 —— 而同一份清单里一部新片出同样的毛病却只是跳过。真字幕注册今天只
-    做 add/flush、炸不出来，所以这一条没有现成的坏输入；把它钉住是为了让"两半圈对称"
-    这个改法一定要有用例跟着翻，不是认可现状。
+    从前老片走的是 `known is not None` 那一条 continue，它同样调 `_register_subtitles`，但那
+    一句在 `try` 外面（`try` 从新片那一段才开始）。所以同一份清单里一部新片出同样的毛病只是
+    跳过，老片却把整轮带走：`last_scan_at` 不写、通知不发、剩下的文件一个也没扫，而手动按钮
+    那一路是一个 500（`api/scan.py` 只把 `ValueError` 映射成 404）。这一条从前钉的是那个
+    不对称的现状（断言它抛），电池 **V13** 就是这个改法的最小版、红恰好一条。
+
+    闸门是成对的：`except Exception` 接住、`begin_nested` 回滚。只加前半句的话，老片那半圈
+    写坏的字幕行会跟着这一轮最后的 commit 进库（下面那两条断言各红一次，量的就是这个）。
     """
     first = _found("/lib/老片一.mp4")
     second = _found("/lib/老片二.mp4")
@@ -1249,16 +1251,36 @@ async def test_a_known_videos_subtitle_failure_still_takes_the_round_down(
 
     def register(service, video_id, video_filepath, known, storage):
         if "老片二" in video_filepath:
+            # 先真写一条字幕行再炸：SAVEPOINT 承的就是这一半——光接住异常，这条半截行
+            # 会跟着这一轮最后的 commit 一起进库。
+            service.register(
+                video_id, {"filepath": "/lib/老片二.zh.srt", "language": "zh"}, known
+            )
             raise RuntimeError("这条老片的字幕写不进库")
-        return 0
+        return 1
 
     monkeypatch.setattr(scan_module, "_register_subtitles", register)
 
-    with _no_media_probe():
-        with pytest.raises(RuntimeError, match="这条老片的字幕写不进库"):
-            await ScanService(db_session).scan_source(source.id)
+    with caplog.at_level(logging.WARNING, logger="src.services.scan_service"):
+        with _no_media_probe():
+            result = await ScanService(db_session).scan_source(source.id)
 
-    # 整轮死在半路：这一轮的写入没提交，界面从此读不到"扫过"，进度也不再转圈。
-    assert source.last_scan_at is None
-    assert await _notifications(db_session) == []
-    assert ScanService(db_session).is_scanning is False
+    # 先问那条半截行：没有 SAVEPOINT 时它跟着这一轮最后的 commit 进了库，随后被同一轮的
+    # prune 判成「字幕文件已不存在」——所以这里和下面那条通知是同一件事的两个面。
+    rows = (await db_session.execute(select(Subtitle.filepath))).scalars().all()
+    assert rows == [], rows
+    # 坏的那一行有自己的日志（带回溯），其余照旧走完：轮次收尾、时间戳落库、通知发得出去。
+    skipped = [
+        record
+        for record in caplog.records
+        if "跳过无法处理的视频文件" in record.getMessage()
+    ]
+    assert [record.getMessage() for record in skipped] == [
+        "跳过无法处理的视频文件: /lib/老片二.mp4"
+    ]
+    assert skipped[0].exc_info is not None
+    assert result["new_videos"] == 0 and result["files_found"] == 2
+    assert source.last_scan_at is not None
+    assert await _notifications(db_session) == [
+        ("scan_complete", "视频源 老片坏字幕 扫描完成，发现 0 个新视频、1 条字幕")
+    ]
