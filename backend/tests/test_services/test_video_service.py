@@ -919,3 +919,186 @@ async def test_a_progress_report_for_a_video_that_is_gone_raises_and_writes_noth
     event_rows = await db_session.execute(select(func.count()).select_from(WatchEvent))
     assert history_rows.scalar_one() == 0
     assert event_rows.scalar_one() == 0
+
+
+# --- 删影片也要带走转码产物（#185，第二块选项板⑦甲）---
+
+
+def _product_root(monkeypatch, tmp_path):
+    """把产物的去处挪进这一条用例自己的临时目录，回那个目录。
+
+    改的是 `settings` 那个共享实例上的属性，和 `tests/test_services/test_transcode_service.py`
+    同一个写法——`transcode_service.product_path` 读的就是这一项，两处必须一起动。
+    """
+    from src.config import settings
+
+    root = tmp_path / "products"
+    monkeypatch.setattr(settings, "transcode_output_dir", str(root))
+    return root
+
+
+def _write_product(root, video_id: int, name: str):
+    """在产物目录里摆出一份"真转过的文件"，回它的路径。"""
+    from pathlib import Path
+
+    product = Path(root) / str(video_id) / name
+    product.parent.mkdir(parents=True, exist_ok=True)
+    product.write_bytes(b"a product")
+    return product
+
+
+@pytest.mark.asyncio
+async def test_delete_video_takes_its_transcode_products_with_it(
+    db_session, tmp_path, monkeypatch
+):
+    """⑦甲：行没了、文件还在，就是永久孤儿——产物目录不在任何片源的扫描范围内。
+
+    `transcode_outputs` 早在级联清单里（行是删得掉的），可那个目录 `list_outputs` 只会
+    在有人来问的时候 stat 一次；影片一删，那一行就再没人读得到，盘上那份文件从此没有任何
+    东西能看见。这里同时钉住"这部片子的两份都走"和"别人那份一个字节不动"。
+    """
+    from src.models.transcode_output import TranscodeOutput
+
+    root = _product_root(monkeypatch, tmp_path)
+    media = tmp_path / "深夜测试.mp4"
+    media.write_bytes(b"not really a video")
+    video = await _create_video(db_session, title="删我", filepath=str(media))
+    other = await _create_video(db_session, title="别删", filepath="/other.mp4")
+
+    mkv = _write_product(root, video.id, "深夜测试.mkv")
+    webm = _write_product(root, video.id, "深夜测试.webm")
+    keeper = _write_product(root, other.id, "other.mkv")
+    db_session.add_all(
+        [
+            TranscodeOutput(video_id=video.id, target_format="mkv", output_path=str(mkv)),
+            TranscodeOutput(
+                video_id=video.id, target_format="webm", output_path=str(webm)
+            ),
+            TranscodeOutput(
+                video_id=other.id, target_format="mkv", output_path=str(keeper)
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    await VideoService(db_session).delete_video(video.id)
+
+    assert not mkv.exists()
+    assert not webm.exists()
+    assert keeper.exists(), "别人的产物不能被带掉"
+    assert media.exists(), "源文件属于用户，永远不删"
+    rows = (await db_session.execute(select(TranscodeOutput.output_path))).scalars().all()
+    assert list(rows) == [str(keeper)], rows
+
+
+@pytest.mark.asyncio
+async def test_an_old_product_row_that_points_next_to_the_source_is_left_alone(
+    db_session, tmp_path, monkeypatch
+):
+    """这道闸门是安全边界不是洁癖：`output_path` 是库里的一串字符串。
+
+    #154 之前它写的就是**源的旁边**，而那一层是片库本身。放开了删，最坏的一格是有人把
+    同一部片子转成和源同名的容器（`movie.mp4` → `movie.mp4`），于是"删掉一行产物记录"
+    变成删掉用户真正的影片。
+    所以收集这一头只认产物目录里面的路径，外面的一律留着（宁可剩孤儿，不许伸手进片库）。
+    """
+    from src.models.transcode_output import TranscodeOutput
+
+    _product_root(monkeypatch, tmp_path)
+    media = tmp_path / "movie.mp4"
+    media.write_bytes(b"the user's film")
+    legacy = tmp_path / "movie.mkv"
+    legacy.write_bytes(b"a pre-#154 product")
+    video = await _create_video(db_session, title="老产物", filepath=str(media))
+    db_session.add(
+        TranscodeOutput(video_id=video.id, target_format="mkv", output_path=str(legacy))
+    )
+    await db_session.commit()
+
+    await VideoService(db_session).delete_video(video.id)
+
+    assert legacy.exists(), "产物目录以外的路径不由这一条负责"
+    assert media.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_product_that_is_already_gone_leaves_no_word(
+    db_session, tmp_path, monkeypatch, caplog
+):
+    """第二块闸门（⑦甲复用封面那两道）：文件早被人移走了不算一次失败，行已经提交了。"""
+    from src.models.transcode_output import TranscodeOutput
+
+    root = _product_root(monkeypatch, tmp_path)
+    video = await _create_video(db_session, title="产物没了", filepath="/v.mp4")
+    vanished = _write_product(root, video.id, "gone.mkv")
+    db_session.add(
+        TranscodeOutput(video_id=video.id, target_format="mkv", output_path=str(vanished))
+    )
+    await db_session.commit()
+    vanished.unlink()
+
+    with caplog.at_level(logging.WARNING, logger="src.services.video_service"):
+        await VideoService(db_session).delete_video(video.id)
+
+    assert await db_session.get(Video, video.id) is None
+    assert [r for r in caplog.records if r.name == "src.services.video_service"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_cascade_reports_products_before_the_commit_so_a_rollback_loses_nothing(
+    db_session, tmp_path, monkeypatch
+):
+    """和封面同一条顺序（⑦甲）：级联只**报出**该删谁，落盘排在提交之后。
+
+    反过来的话，一次回滚的删除会留下"行还在、产物没了"的影片——比孤儿文件更难看，因为
+    `/api/transcode/{id}/outputs` 会当着人的面报出 `文件已丢失`。
+    """
+    from src.models.transcode_output import TranscodeOutput
+    from src.services.video_service import delete_videos_cascade
+
+    root = _product_root(monkeypatch, tmp_path)
+    video = await _create_video(db_session, title="回滚我", filepath="/v.mp4")
+    product = _write_product(root, video.id, "movie.mkv")
+    db_session.add(
+        TranscodeOutput(video_id=video.id, target_format="mkv", output_path=str(product))
+    )
+    await db_session.commit()
+
+    paths = await delete_videos_cascade(db_session, Video.id == video.id)
+
+    assert paths == [str(product)], paths
+    assert product.exists(), "提交之前不许碰磁盘"
+
+
+@pytest.mark.asyncio
+async def test_the_video_caller_unlinks_products_only_after_its_commit(
+    db_session, tmp_path, monkeypatch
+):
+    """⑦甲的顺序半边：这一条盯的是**调用方**，不是级联——提交在前、落盘在后。
+
+    上面那条只证明级联自己不碰磁盘；把调用方里那两句换个位置，它照样全绿。换过来之后，
+    一次回滚的删除留下的是"行还在、产物没了"的影片，而 /api/transcode/{id}/outputs
+    会当着人的面报"文件已丢失"。所以在这里把提交包起来，于提交那一刻回头看一眼盘子。
+    """
+    from src.models.transcode_output import TranscodeOutput
+
+    root = _product_root(monkeypatch, tmp_path)
+    video = await _create_video(db_session, title="顺序", filepath="/v.mp4")
+    product = _write_product(root, video.id, "movie.mkv")
+    db_session.add(
+        TranscodeOutput(video_id=video.id, target_format="mkv", output_path=str(product))
+    )
+    await db_session.commit()
+
+    seen: list[bool] = []
+    real_commit = db_session.commit
+
+    async def commit_then_look() -> None:
+        seen.append(product.exists())
+        await real_commit()
+
+    monkeypatch.setattr(db_session, "commit", commit_then_look)
+    await VideoService(db_session).delete_video(video.id)
+
+    assert seen == [True], "落盘必须排在提交之后"
+    assert not product.exists()

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.source import VideoSource
 from src.models.video import Video
 from src.scheduler import scheduler
-from src.services.video_service import delete_cover_files, delete_videos_cascade
+from src.services.video_service import delete_generated_files, delete_videos_cascade
 
 
 class SourceService:
@@ -96,10 +96,10 @@ class SourceService:
 
         # videos.source_id is NOT NULL, so the source cannot be removed while
         # its videos still point at it.
-        covers = await delete_videos_cascade(self.session, Video.source_id == source_id)
+        generated = await delete_videos_cascade(self.session, Video.source_id == source_id)
         await self.session.delete(source)
         await self.session.commit()
-        delete_cover_files(covers)
+        delete_generated_files(generated)
 
         # Remove scheduled job for deleted source
         scheduler.remove_source_job(source_id)

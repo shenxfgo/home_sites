@@ -239,3 +239,97 @@ async def test_delete_source_takes_the_covers_with_it(db_session, tmp_path):
     assert not doomed_cover.exists()
     # 别的源的封面不能被带掉
     assert keeper_cover.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_source_takes_the_transcode_products_with_it(
+    db_session, tmp_path, monkeypatch
+):
+    """⑦甲的第二条调用路径：删整个源和删一部影片走的是同一个级联，产物也得一起走。
+
+    这一条值得单独钉，因为"收集"发生在级联函数里、"落盘"发生在**两个不同的调用方**里——
+    只测删影片那一路的话，删源这一路忘记调落盘那句照样全绿。
+    """
+    from src.config import settings
+    from src.models.transcode_output import TranscodeOutput
+    from src.models.video import Video
+    from src.services.source_service import SourceService
+
+    root = tmp_path / "products"
+    monkeypatch.setattr(settings, "transcode_output_dir", str(root))
+
+    service = SourceService(db_session)
+    doomed = await service.create(name="Doomed", path="/doomed", type="local")
+    keeper = await service.create(name="Keeper", path="/keeper", type="local")
+
+    doomed_video = Video(source_id=doomed.id, filepath="/doomed/a.mp4", title="a")
+    keeper_video = Video(source_id=keeper.id, filepath="/keeper/b.mp4", title="b")
+    db_session.add_all([doomed_video, keeper_video])
+    await db_session.commit()
+
+    doomed_product = root / str(doomed_video.id) / "a.mkv"
+    keeper_product = root / str(keeper_video.id) / "b.mkv"
+    for path in (doomed_product, keeper_product):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"a product")
+    db_session.add_all(
+        [
+            TranscodeOutput(
+                video_id=doomed_video.id, target_format="mkv", output_path=str(doomed_product)
+            ),
+            TranscodeOutput(
+                video_id=keeper_video.id, target_format="mkv", output_path=str(keeper_product)
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    await service.delete(doomed.id)
+
+    assert not doomed_product.exists()
+    assert keeper_product.exists(), "别的源的产物不能被带掉"
+
+
+@pytest.mark.asyncio
+async def test_delete_source_unlinks_products_only_after_its_commit(
+    db_session, tmp_path, monkeypatch
+):
+    """删源这一路的顺序半边：提交在前、落盘在后，和删影片那条同一个约定。
+
+    两个调用方共用同一个级联，落盘却各自写在自己那一头——级联只报名字，谁先谁后由调用方定。
+    所以这一条不能省：只测删影片那一路的话，删源这头把两句换了位置照样全绿。
+    """
+    from src.config import settings
+    from src.models.transcode_output import TranscodeOutput
+    from src.models.video import Video
+    from src.services.source_service import SourceService
+
+    root = tmp_path / "products"
+    monkeypatch.setattr(settings, "transcode_output_dir", str(root))
+
+    service = SourceService(db_session)
+    doomed = await service.create(name="Doomed", path="/doomed", type="local")
+    video = Video(source_id=doomed.id, filepath="/doomed/a.mp4", title="a")
+    db_session.add(video)
+    await db_session.commit()
+
+    product = root / str(video.id) / "a.mkv"
+    product.parent.mkdir(parents=True, exist_ok=True)
+    product.write_bytes(b"a product")
+    db_session.add(
+        TranscodeOutput(video_id=video.id, target_format="mkv", output_path=str(product))
+    )
+    await db_session.commit()
+
+    seen: list[bool] = []
+    real_commit = db_session.commit
+
+    async def commit_then_look() -> None:
+        seen.append(product.exists())
+        await real_commit()
+
+    monkeypatch.setattr(db_session, "commit", commit_then_look)
+    await service.delete(doomed.id)
+
+    assert seen == [True], "落盘必须排在提交之后"
+    assert not product.exists()

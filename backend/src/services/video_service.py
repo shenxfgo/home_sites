@@ -11,6 +11,7 @@ from sqlalchemy import ColumnElement, Table, case, delete, exists, func, or_, se
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnOperators
 
+from src.config import settings
 from src.models.favorite import Favorite
 from src.models.history import PlayHistory
 from src.models.new_video import NewVideo
@@ -62,14 +63,28 @@ VIDEO_CHILD_TABLES: tuple[Table, ...] = cast(
 )
 
 
+def _owned_products(paths: Iterable[str]) -> list[str]:
+    """Only those product paths that really live inside the app's own output directory.
+
+    ``transcode_outputs.output_path`` is a string out of the database, and before #154 it
+    named a file **next to the source** — which is the library itself. Deleting a video
+    must never reach in there: the worst cell is a re-encode into the same container as
+    the source, where the recorded "product" and the user's film are the same path.
+    """
+    root = os.path.normcase(os.path.realpath(settings.transcode_output_dir)) + os.sep
+    return [
+        path for path in paths if os.path.normcase(os.path.realpath(path)).startswith(root)
+    ]
+
+
 async def delete_videos_cascade(
     session: AsyncSession, video_filter: ColumnElement[bool]
 ) -> list[str]:
     """Delete the matching videos together with every row pointing at them.
 
-    Returns the cover files those rows referenced, without touching them: the
-    caller removes them **after** its commit, so a rolled-back delete cannot
-    leave a row in the library whose picture is gone.
+    Returns the files those rows referenced -- generated covers and transcode products --
+    without touching them: the caller removes them **after** its commit, so a rolled-back
+    delete cannot leave a row in the library whose picture or product is gone.
 
     The schema declares ``ondelete="CASCADE"``, and PostgreSQL honours it while
     SQLite does not enforce foreign keys at all. The two dialects therefore fail
@@ -80,6 +95,13 @@ async def delete_videos_cascade(
     """
     covers = (
         await session.execute(select(Video.thumbnail_path).where(video_filter))
+    ).scalars().all()
+    products = (
+        await session.execute(
+            select(TranscodeOutput.output_path).where(
+                TranscodeOutput.video_id.in_(select(Video.id).where(video_filter))
+            )
+        )
     ).scalars().all()
 
     video_ids = select(Video.id).where(video_filter)
@@ -96,13 +118,13 @@ async def delete_videos_cascade(
             delete(table).where(table.c.video_id.in_(video_ids))
         )
     await session.execute(delete(Video).where(video_filter))
-    return [path for path in covers if path]
+    return [path for path in covers if path] + _owned_products(products)
 
 
-def delete_cover_files(paths: Iterable[str]) -> None:
-    """Remove the covers the app generated for deleted videos.
+def delete_generated_files(paths: Iterable[str]) -> None:
+    """Remove the files the app generated for deleted videos: covers and products.
 
-    A cover that cannot be removed is logged and skipped: the rows are already
+    Either kind that cannot be removed is logged and skipped: the rows are already
     committed, and failing the request over a leftover jpg would strand the
     library worse than an orphaned file does.
     """
@@ -112,7 +134,7 @@ def delete_cover_files(paths: Iterable[str]) -> None:
         try:
             os.remove(path)
         except OSError:
-            logger.warning("封面文件没能删掉: %s", path, exc_info=True)
+            logger.warning("应用生成的文件没能删掉: %s", path, exc_info=True)
 
 
 
@@ -535,14 +557,14 @@ class VideoService:
         return video
 
     async def delete_video(self, video_id: int) -> None:
-        """Delete a video, its rows in every account, and the cover we generated."""
+        """Delete a video, its rows in every account, and the files we generated for it."""
         video = await self.session.get(Video, video_id)
         if not video:
             raise ValueError(f"Video with id {video_id} not found")
 
-        covers = await delete_videos_cascade(self.session, Video.id == video_id)
+        generated = await delete_videos_cascade(self.session, Video.id == video_id)
         await self.session.commit()
-        delete_cover_files(covers)
+        delete_generated_files(generated)
 
     async def get_new_videos(self, user_id: int, source_id: int | None = None) -> list[Video]:
         """Get videos the caller discovered and has not looked at yet."""
