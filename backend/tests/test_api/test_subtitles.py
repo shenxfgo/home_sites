@@ -150,6 +150,29 @@ async def test_create_rejects_path_outside_video_directory(client, db_session, t
     assert "视频所在目录" in response.json()["detail"]
 
 
+async def test_create_refuses_a_sidecar_with_no_cue_as_415(client, db_session, tmp_path):
+    """⑧乙（#187）：手工这条路读一遍那个文件，读不出一句 cue 就回 415、库里不留行。
+
+    状态码跟着的是**原因**不是动词：同一次"这份文件没有字幕"，GET 那条轨回的是 415（上面两条），
+    POST 挂新文件也回 415，而不是因为它是写操作就换一句 400 的说法。这一格同时钉住"没落行"——
+    415 而库里多出一行，界面上的菜单照样多出一个永远不会出词的条目。
+    """
+    video, _ = await _video_with_subtitle(db_session, tmp_path)
+    empty = tmp_path / "media" / "movie.ja.srt"
+    empty.write_text("hello\n\nworld\n", encoding="utf-8")
+
+    created = await client.post(
+        f"/api/videos/{video.id}/subtitles", json={"filepath": str(empty)}
+    )
+
+    assert created.status_code == 415
+    assert "没有解析出任何一条字幕" in created.json()["detail"]
+
+    listed = await client.get(f"/api/videos/{video.id}/subtitles")
+    assert listed.status_code == 200
+    assert listed.json() == []
+
+
 async def test_stream_converts_srt_to_webvtt(client, db_session, tmp_path):
     video, subtitle_path = await _video_with_subtitle(db_session, tmp_path)
     created = await client.post(

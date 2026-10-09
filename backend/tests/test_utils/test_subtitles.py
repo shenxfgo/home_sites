@@ -197,10 +197,12 @@ def test_convert_to_webvtt_rejects_unknown_extension(tmp_path):
 
 def test_convert_ass_uses_ffmpeg(tmp_path):
     path = _touch(str(tmp_path), "movie.ass", "[Events]\n")
-    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="WEBVTT\n\n", stderr="")
+    # 那份假产物里真的写着一条 cue：转换结果一条 cue 也没有的话，现在轮不到这句"成功"了（#187）。
+    stdout = "WEBVTT\n\n00:05.000 --> 00:08.000\n第一句 ONE\n"
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
 
     with patch("src.utils.subtitles.subprocess.run", return_value=completed) as run:
-        assert convert_to_webvtt(path) == "WEBVTT\n\n"
+        assert convert_to_webvtt(path) == stdout
 
     assert run.call_args[0][0][0] == "ffmpeg"
     assert "-f" in run.call_args[0][0]
@@ -324,16 +326,27 @@ def test_convert_srt_keeps_a_break_led_text_inside_its_cue(tmp_path):
     assert text.startswith("WEBVTT\n\n")
 
 
-def test_convert_leaves_the_header_separator_alone_when_nothing_parses(tmp_path):
-    """`WEBVTT` 后面那个空行是语法要求的：一行 cue 都没认出来时也不许被折叠吃掉。
+def test_convert_keeps_the_header_separator_of_a_file_that_has_a_cue(tmp_path):
+    """`WEBVTT` 后面那个空行是语法要求的：修复只许动 cue 内部的那些空行。
 
-    这一条是真跑出来的。#140 第一版的规则只看"下一句非空文本是不是时间戳"，于是第 23 条那个没有
-    BOM 的 UTF-16 文件（整份被当成 UTF-8 读、连时间戳都拼不出来）在头部就被折掉一行，红在真后端
-    e2e 那句 `startsWith('WEBVTT…')` 上。所以规则多了一道闸门：走到第一条时间戳之前一律不动。
+    这一条是真跑出来的。#140 第一版的规则只看"下一句非空文本是不是时间戳"，于是那个连时间戳都拼
+    不出来的文件在头部就被折掉一行，红在真后端 e2e 那句 `startsWith('WEBVTT…')` 上。所以规则多了
+    一道闸门：走到第一条时间戳之前一律不动。
+
+    原来这一格钉的是一份**没有 cue** 的文件（`hello\\n\\nworld`），因为那时那样的文件照样交得出去。
+    #187 之后它归 415 管，于是这句头部规则改对着一份有 cue、文本行前面也有空行的形状钉——闸门
+    本身一个字没动。
     """
-    path = _touch(str(tmp_path), "movie.srt", "hello\n\nworld\n")
+    path = _touch(
+        str(tmp_path),
+        "movie.srt",
+        "hello\n\n1\n00:00:01,000 --> 00:00:02,000\n第二句 TWO\n",
+    )
 
-    assert convert_to_webvtt(path) == "WEBVTT\n\nhello\n\nworld\n"
+    text = convert_to_webvtt(path)
+
+    assert text.startswith("WEBVTT\n\nhello\n\n")
+    assert "00:00:01.000 --> 00:00:02.000\n第二句 TWO" in text
 
 
 def test_convert_vtt_stays_byte_faithful_even_with_the_same_shape(tmp_path):
@@ -348,6 +361,56 @@ def test_convert_vtt_stays_byte_faithful_even_with_the_same_shape(tmp_path):
         handle.write(body)
 
     assert convert_to_webvtt(path) == body
+
+
+# --- 零条 cue 的转换算失败（#187，第二块选项板⑧子问一乙 + 子问二甲）---
+
+
+def test_convert_a_sidecar_that_parses_into_no_cue_fails(tmp_path):
+    """一句 cue 都没解析出来的那份文件，不能再交出一份"合法但空"的 WebVTT 当作成功。
+
+    这是本单的正门：以前这条路回 200、`WEBVTT` 后面什么都没有，浏览器把那条轨加载完（`readyState`
+    2）、cue 清单是空的、菜单照常可点——**它自己完全不觉得有事**，界面上因此没有任何东西可说
+    （真后端 e2e 第 22 条第 6 步曾经把这个形状钉成现状）。现在失败在转换这一次调用上就发生，
+    接口那句 415 因此和 `<track>` 那个 `error` 事件是同一个来处。
+    """
+    path = _touch(str(tmp_path), "movie.srt", "hello\n\nworld\n")
+
+    with pytest.raises(SubtitleConversionError) as excinfo:
+        convert_to_webvtt(path)
+
+    assert "没有解析出任何一条字幕" in str(excinfo.value)
+
+
+def test_convert_a_vtt_with_no_cue_fails_too(tmp_path):
+    """⑧子问一甲：`.vtt` 那一支也算 cue——直通的是**转换**，不是"这道闸门"。
+
+    这一格划的就是边界在哪儿：字节一个不许动（上一条），和"这份文件里到底有没有一句字幕"是两件
+    事。别人写好的 WebVTT 长得再难看也照原样交出去，但一份只有头的 `.vtt` 交出去，浏览器那一头
+    拿到的还是零条 cue，跟上一条那个洞一模一样。
+    """
+    path = _touch(str(tmp_path), "movie.zh.vtt", "WEBVTT\n\n这一句不是时间戳\n")
+
+    with pytest.raises(SubtitleConversionError):
+        convert_to_webvtt(path)
+
+
+def test_convert_an_ass_that_ffmpeg_turned_into_nothing_fails(tmp_path):
+    """ffmpeg 那句"转换成功"只剩一个头时，退出码 0 不算数。
+
+    这一份 stdout 就是真 ffmpeg 8.x 对着"只有 `[Events]`、没有 `[Script Info]`"那种 ASS 吐出来的
+    东西（真后端 e2e 第 22 条那个截断夹具），本机实测：容器被认成 `lrc`，退出码 0，`WEBVTT`
+    后面一个 cue 都没有。`_ffmpeg_to_webvtt` 那一头挡的是**空 stdout**，这一头挡的是非空的空壳。
+    """
+    path = _touch(str(tmp_path), "movie.ass", "[Events]\n")
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="WEBVTT\n\n", stderr="")
+
+    with patch("src.utils.subtitles.subprocess.run", return_value=completed):
+        with pytest.raises(SubtitleConversionError) as excinfo:
+            convert_to_webvtt(path)
+
+    # 后缀跟着走出来：同一条 415 在三种格式上说的是三件不同的事，读的人得能分辨。
+    assert ".ass" in str(excinfo.value)
 
 
 # --- 没有 BOM 的 UTF-16（#186，第二块选项板⑧子问二乙）---
@@ -413,23 +476,32 @@ def test_an_empty_sidecar_still_reads_as_nothing(tmp_path):
     猜编码要先算 NUL 率，而 NUL 率是一次除法——空文件摊到这里分母是 0，`ZeroDivisionError`
     从一条 HTTP 请求上出去就是 500。一个 0 字节的 `.srt` 不是假设：下载断在半路、编辑器建了
     个空文件都会留下它，而扫描只看文件名，会照样把它登记成一条轨道。
+
+    #187 之后它的下场是 415 而不是 200，但这两句得**同时**成立：读这一层不许抛（所以那句
+    `read_subtitle_text == ""` 留着），而失败要说得出口（所以这一格钉的是 `SubtitleConversionError`
+    而不是随便一个异常——`ZeroDivisionError` 逃出来时这一格同样会红）。
     """
     path = tmp_path / "movie.chi.srt"
     path.write_bytes(b"")
 
     assert read_subtitle_text(str(path)) == ""
-    assert isinstance(convert_to_webvtt(str(path)), str)
+
+    with pytest.raises(SubtitleConversionError):
+        convert_to_webvtt(str(path))
 
 
-def test_a_truncated_utf16_file_raises_nothing(tmp_path):
+def test_a_truncated_utf16_file_raises_nothing_but_the_honest_failure(tmp_path):
     """奇数字节（写到一半断的）不是 UTF-16 的合法长度：可以读错，不许抛。
 
-    `convert_to_webvtt` 挂在一条 HTTP 请求上，`UnicodeDecodeError` 从这儿出去就是 500。
+    `convert_to_webvtt` 挂在一条 HTTP 请求上，`UnicodeDecodeError` 从这儿出去就是 500。#187 之后
+    这一份的下场从"200 而零条 cue"换成 415，而弃权那一步和零 cue 那道闸门是两句各自独立的话：
+    前面这一句管的是异常出不去，后面这一句管的是它不该成功时不装成功。
     """
     path = tmp_path / "movie.chi.srt"
     path.write_bytes(_UTF16_SRT.encode("utf-16-le") + b"\x00")
 
-    assert isinstance(convert_to_webvtt(str(path)), str)
+    with pytest.raises(SubtitleConversionError):
+        convert_to_webvtt(str(path))
 
 
 def test_a_bomless_utf16_guess_with_a_broken_tail_raises_nothing(tmp_path):
@@ -440,6 +512,9 @@ def test_a_bomless_utf16_guess_with_a_broken_tail_raises_nothing(tmp_path):
     ——它**过了**，所以这一格钉的是猜测那一支自己的弃权：猜出来的编码没有 BOM 那句"我就是
     UTF-16"的保证，猜错就必须退回原来的阶梯，而不是把异常递出去变成 500。上一条奇数字节的
     测试走的是同一道弃权，只是断在另一个地方——长度对不上，编到最后一组少一个字节。
+
+    两条现在都收在 415 上（#187）：这一格断言的仍然是**那一个类型**，异常换成 `UnicodeDecodeError`
+    就红，所以弃权没有被新的闸门吃掉。
     """
     raw = _UTF16_SRT.encode("utf-16-le") + b"\x00\xd8"
     assert len(raw) % 2 == 0, "这一格要的就是长度闸门拦不住"
@@ -448,4 +523,5 @@ def test_a_bomless_utf16_guess_with_a_broken_tail_raises_nothing(tmp_path):
     path = tmp_path / "movie.chi.srt"
     path.write_bytes(raw)
 
-    assert isinstance(convert_to_webvtt(str(path)), str)
+    with pytest.raises(SubtitleConversionError):
+        convert_to_webvtt(str(path))

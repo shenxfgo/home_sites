@@ -1,4 +1,5 @@
 """SubtitleService for managing subtitle tracks attached to videos."""
+import asyncio
 import os
 
 from sqlalchemy import select
@@ -7,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.subtitle import Subtitle
 from src.models.video import Video
 from src.storage import storage_for_locator
-from src.utils.subtitles import sidecar_identity
+from src.utils.subtitles import convert_to_webvtt, sidecar_identity
 
 
 class SubtitleService:
@@ -59,6 +60,12 @@ class SubtitleService:
         video_dir = os.path.dirname(os.path.abspath(video.filepath))
         if not _within(video_dir, os.path.abspath(normalized)):
             raise ValueError("字幕文件必须位于视频所在目录内")
+
+        # 手工这条路把那个文件真读一遍再落行（⑧乙）。挡的是"点了挂字幕、挂上了一条永远不会
+        # 有词的轨"：那一行一旦写进库，菜单上就多一个条目，而它唯一会说的话是浏览器那句
+        # "没能加载"。扫描那一路照旧只看文件名（`register`），所以这份不对称是**故意的**——
+        # 一趟扫描不该因为磁盘上有一个空壳文件就少登记一条轨道，而一个人按下的那一下可以。
+        await asyncio.to_thread(convert_to_webvtt, normalized)
 
         derived_language, derived_label = sidecar_identity(video.filepath, normalized)
         subtitle = Subtitle(
@@ -129,6 +136,11 @@ class SubtitleService:
         """Add a discovered sidecar file unless it is already registered.
 
         ``known`` is updated in place so a repeated scan stays idempotent.
+
+        This is the scan's half of the two registration paths and it deliberately
+        never opens the file: ``add`` (the manual one) does. A scan that read every
+        sidecar would fail on one bad file the same way it used to fail on one bad
+        video -- and it would drop tracks a person can still remove by hand.
         """
         path = _norm(subtitle_file["filepath"])
         if path in known:

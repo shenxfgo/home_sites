@@ -358,6 +358,36 @@ async def test_scan_source_registers_sidecar_subtitles(db_session):
 
 
 @pytest.mark.asyncio
+async def test_scan_registers_a_sidecar_that_would_show_nothing(db_session):
+    """⑧乙（#187）：两条登记路子故意不一样——扫描只看文件名，手工那条才把文件读一遍。
+
+    这一格挡的是"把那道 cue 闸门顺手也装到扫描上"。一趟扫描面对的是整个目录：一个空壳文件
+    因此不该少登记一条轨道（那一个人还能伸手把它删掉），而按下"挂字幕"那一下的人可以被告知
+    挂不上。服务层那一头的同一种文件是 `test_add_refuses_a_sidecar_that_has_no_cue`。
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _write_video(tmpdir, "movie.mp4")
+        with open(os.path.join(tmpdir, "movie.zh.srt"), "w", encoding="utf-8") as handle:
+            handle.write("hello\n\nworld\n")
+
+        source = await _create_source(db_session, path=tmpdir)
+        service = ScanService(db_session)
+
+        with patch("src.services.scan_service.extract_video_info") as mock_info, \
+             patch("src.services.scan_service.generate_thumbnail") as mock_thumb:
+            mock_info.return_value = {"duration": 10, "resolution": None, "format": "mp4"}
+            mock_thumb.return_value = ""
+            result = await service.scan_source(source.id)
+
+        video = (await db_session.execute(
+            select(Video).where(Video.source_id == source.id)
+        )).scalars().one()
+
+        assert result["subtitles_found"] == 1
+        assert [s.language for s in await _subtitles_of(db_session, video.id)] == ["zh"]
+
+
+@pytest.mark.asyncio
 async def test_scan_source_subtitles_are_idempotent(db_session):
     """Re-scanning the same directory must not duplicate subtitle rows."""
     with tempfile.TemporaryDirectory() as tmpdir:

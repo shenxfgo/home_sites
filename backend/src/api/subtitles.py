@@ -181,6 +181,11 @@ async def add_subtitle(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # 同一个异常在这一族地址上只对应一个状态码：GET 那条轨读到零条 cue 是 415（上面），
+    # POST 挂一个新文件读到零条 cue 也是 415，不因为"这是写操作"就换成第二套说法。
+    # 挂不上就是挂不上——库里没有那一行，菜单上也就没有那个永远不会出词的条目。
+    except SubtitleConversionError as e:
+        raise HTTPException(status_code=415, detail=str(e))
 
     return subtitle
 

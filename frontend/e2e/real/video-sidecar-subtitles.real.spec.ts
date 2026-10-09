@@ -7,7 +7,8 @@
  * 两头都覆盖了，但**转换那一半只有一条真进程**：`.ass`/`.ssa` 走的是 `_ffmpeg_to_webvtt`，而它
  * 唯一的用例（`test_convert_ass_uses_ffmpeg`）把 `subprocess.run` 换成一份写死的
  * `subprocess.CompletedProcess(stdout="WEBVTT\n\n")`——真 ffmpeg 遇到真 ASS 会吐出什么，从来没
- * 有人问过真进程。于是这一格能红的原因有好几个各自独立：`-f webvtt` 写错成别的格式、输入没按
+ * 有人问过真进程。（那份假 stdout 从 #187 起必须真写着一条 cue，不然它自己就先撞上那道新闸门；
+ * "零 cue 的转换"因此有了自己的两条单元用例，真进程这一头剩下的还是本条。）于是这一格能红的原因有好几个各自独立：`-f webvtt` 写错成别的格式、输入没按
  * 容器自动认（本机实测：把 `[Script Info]` 那一段去掉，ffprobe 报的是 `lrc`，ffmpeg 用 `text`
  * 解码器读完，出来一句 `WEBVTT` 后面**一个 cue 都没有**，退出码仍是 0）、ASS 的覆写标记没被剥掉
  * （真转换会把 `{\an8}` 吃掉、把 `\N` 变成换行）。还有 `_LANGUAGE_ALIASES` 那一张表：
@@ -23,8 +24,11 @@
  * 同一次转换里两条时间轴方言：Python 手写的那条保留小时（`00:00:03.000 -->`），ffmpeg 那条把
  * 小时省了（`00:05.000 -->`），谁把两边统一成一种写法就说明其中一路没走真进程；`{\an8}` 在
  * WebVTT 里必须消失而 `Dialogue:` 和 `ScriptType` 必须整个不见（原样吐回一个 `.ass` 是这一路
- * 最像"成功"的失败）；以及两句只有真文件才会给的现状——**一个 cue 都解析不出来的转换仍然回
- * 200**，而**字幕文件被人删掉之后界面上有两副样子**：不重载时那条轨放的是浏览器早就解析完存在
+ * 最像"成功"的失败）；以及**一个 cue 都解析不出来的那一份现在回 415**（第 5 步；#187 之前这一格
+ * 钉的是"200 而响应体只有一个 `WEBVTT` 头"——浏览器把它标成已加载、cue 清单是空的、界面上没有任何
+ * 东西可说，那正是这个洞的签名），而同一份文件从**手工**那条路挂不进来（POST 也 415、库里不留行；
+ * 扫描那一路照旧只看文件名，所以那一行确实躺在库里，是第 1 步那三个 `subtitles_found` 之一），
+ * 以及**字幕文件被人删掉之后界面上有两副样子**：不重载时那条轨放的是浏览器早就解析完存在
  * 内存里的旧 cue（接口那句 404 谁也没听见，切过去照样那两句词），重载之后要等那一条被点下去、
  * `mode` 从 `disabled` 拨走，`<track>` 才真的去拉这一次、`readyState` 变成 3。本条曾经把这一刻
  * 的「条目照旧在、照旧可点、照旧什么都不提示」钉成现状，#146 把它翻了过来：从浏览器报出失败的
@@ -336,14 +340,26 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     expect(srt.text).not.toContain(',000 -->')
     expect(srt.text.split('\n').some((line) => /^\s*\d+\s*$/.test(line)), srt.text).toBe(false)
 
-    // ---- 5. 现状：一个 cue 都没有的转换仍然回 200，界面上没有任何东西说它坏了
+    // ---- 5. 一个 cue 都没有的那份文件：415 说的是它自己的原因（#187 翻掉了这里的"200 而零条 cue"）
     const broken = await fetchInPage(page, `/api/videos/${videoId}/subtitles/${rows[2].id}/stream`)
-    expect(broken.status, broken.text).toBe(200)
-    expect(broken.contentType).toContain('text/vtt')
-    expect(broken.text.trim(), 'ffmpeg 认不出这个容器时的整段输出').toBe('WEBVTT')
-    // 那句词在文件里、却不在响应里——"200 而零条 cue"要是不钉住这一句，它和一次成功的转换长得一模一样。
+    expect(broken.status, broken.text).toBe(415)
+    expect(broken.text).toContain('没有解析出任何一条字幕')
+    // 那句词**在文件里**、只是不在任何一条 cue 里：这不是"文件没内容"，是真 ffmpeg 把这个没有
+    // `[Script Info]` 的 ASS 认成 `lrc`、退出码 0、`WEBVTT` 后面一个 cue 也没写出来。以前这一格
+    // 钉的是"200 而响应体只有一个头"，那是整个洞最像成功的样子。
     expect(readFileSync(BROKEN_FILE, 'utf8')).toContain(CUE_BROKEN)
-    expect(broken.text).not.toContain(CUE_BROKEN)
+
+    // ⑧乙的另一半：同一份文件从**手工**那条路进不来，库里因此不会多出一个永远不会出词的条目。
+    // 这一句只能打真后端——替身那个 POST 处理器（`fixtures.ts`）回的是手抄的一行，它不读磁盘。
+    const refused = await fetchInPage(page, `/api/videos/${videoId}/subtitles`, {
+      method: 'POST',
+      headers: { ...CSRF, 'content-type': 'application/json' },
+      body: JSON.stringify({ filepath: BROKEN_FILE }),
+    })
+    expect(refused.status, refused.text).toBe(415)
+    // 拒绝得干净：三条还是那三条，一条也没多。
+    const afterRefusal = await requestJson<SubtitleRow[]>(page, `/api/videos/${videoId}/subtitles`)
+    expect(afterRefusal.map((row) => row.id)).toEqual(rows.map((row) => row.id))
 
     // ---- 6. 界面上：三条都在菜单里，名字和内嵌那一路同一张表（#143）；点下去浏览器真有词
     // 播放器挂在 `VideoDetail.vue` 的 `v-if="isPlaying"` 下面——不点这张海报，`.subtitle-btn`
@@ -373,9 +389,9 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
         cues: [CUE_ASS_ONE, CUE_ASS_TWO],
       })
 
-    // 三条轨一次看全。第三条是第 5 步那个"200 而零条 cue"在浏览器那一头的样子：加载状态
-    // 2（=已加载）、cue 清单空、模式照常可切——**浏览器完全不觉得有事**。这一句是整条用例
-    // 里唯一能证明"这个洞是安静的"的断言，替身夹具那一头永远给不出这个形状。
+    // 三条轨一次看全。第三条是第 5 步那个 415 在浏览器那一头的样子：加载状态 3（=**失败**）、
+    // cue 清单空，而界面为此说了一句话。这一格翻的就是本条当初那个"这个洞是安静的"——200 而
+    // 零条 cue 的时候，浏览器把它标成 2（已加载）、一句也不说，用户手里只有一个能点的菜单条目。
     // 用 poll 而不是直接读一次：另外两条轨的加载和这条一样是异步的。
     await expect.poll(() => trackStates(page)).toEqual([
       {
@@ -393,10 +409,14 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
       {
         src: `/api/videos/${videoId}/subtitles/${rows[2].id}/stream`,
         mode: 'hidden',
-        elementState: 2,
+        elementState: 3,
         cues: [],
       },
     ])
+
+    // 三条一起从 `disabled` 拨走，所以那条空壳也发了它唯一的请求，也带了它唯一的失败回来（#146
+    // 那两句话的来处：`<track>` 上的 `error` 事件）。谁把这条 415 改回 200，这一句就先红。
+    await expect(errorToasts(page).filter({ hasText: '字幕「日文」没能加载' })).toHaveCount(1)
 
     // ---- 7. 文件从磁盘上没了（行还在）：接口换 404 那句原话，浏览器那一头两段都安静
     rmSync(SRT_FILE, { force: true })
@@ -419,7 +439,7 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
     // 是本条超时报在 `.click()` 上，而不是报在断言上）。
     await page.locator('.subtitle-btn').click()
     await expect(page.locator('.subtitle-menu')).toBeVisible()
-    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文'])
+    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文（加载失败）'])
     await page.locator('.subtitle-menu-item', { hasText: '英文' }).click()
     await expect
       .poll(() => trackStates(page), {
@@ -432,12 +452,13 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
         cues: [CUE_SRT_ONE, CUE_SRT_TWO],
       })
 
-    // 磁盘上那个文件此刻确实已经没了，而界面上一个字都不许报：那句话说的是"浏览器取不到"，
-    // 不是"行还在、文件没了"。这是整个修复的反面——标记的来处只能是那个 `error` 事件。
-    await expect(errorToasts(page)).toHaveCount(0)
+    // 磁盘上那个文件此刻确实已经没了，而界面上关于**它**一个字都不许报：那句话说的是"浏览器
+    // 取不到"，不是"行还在、文件没了"。这是整个修复的反面——标记的来处只能是那个 `error` 事件。
+    // （「日文」那一条在第 6 步已经报过一次了，所以这里筛的是「英文」那一句，不是"整个屏幕安静"。）
+    await expect(errorToasts(page).filter({ hasText: '字幕「英文」' })).toHaveCount(0)
     await page.locator('.subtitle-btn').click()
     await expect(page.locator('.subtitle-menu')).toBeVisible()
-    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文'])
+    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文', '日文（加载失败）'])
 
     // 重载一次才轮到那个 404 走到浏览器：行还在，所以应用照样列出这条轨、照样给它拼出地址。
     // 但刚重载完的那一刻它和好轨长得一模一样，这不是漏——本机实测：重载后三条轨的 `mode` 全是
@@ -454,8 +475,10 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
 
     // 点下去浏览器才去拉，而它拉到的就是接口那句 404。从这一刻起界面上必须有一句话说得出是
     // 哪一条取不到：toast 说的是"刚刚没取到"，菜单条目上那五个字是说给 toast 消失之后的。
+    // 筛「英文」而不是取最后一条：这一拨同时把第 5 步那条空壳也拉了一次，两条各报各的，谁
+    // 先报错由浏览器决定。
     await page.locator('.subtitle-menu-item', { hasText: '英文' }).click()
-    await expect(errorToasts(page).last()).toContainText('字幕「英文」没能加载')
+    await expect(errorToasts(page).filter({ hasText: '字幕「英文」没能加载' })).toHaveCount(1)
     await expect
       .poll(() => trackStates(page), {
         message: '那条已经不在磁盘上的轨没有被浏览器标成失败',
@@ -468,10 +491,16 @@ test('sidecar 字幕那一路：真文件名认出三种语言、真 ffmpeg 转�
       })
 
     // 而那一段唯一会说话的两个位置现在都说话了：条目带着标记，`.subtitle-menu-note`
-    //（内嵌那一路用它报「1 条图像字幕浏览器放不出来」）依旧一个字都不加。
+    //（内嵌那一路用它报「1 条图像字幕浏览器放不出来」）依旧一个字都不加。两条都带标记——
+    // 「英文」是文件没了（404），「日文」是文件还在、里面一句 cue 都没有（415，第 5 步那一条）。
     await page.locator('.subtitle-btn').click()
     await expect(page.locator('.subtitle-menu')).toBeVisible()
-    expect(await subtitleMenuItems(page)).toEqual(['关闭', '中文', '英文（加载失败）', '日文'])
+    expect(await subtitleMenuItems(page)).toEqual([
+      '关闭',
+      '中文',
+      '英文（加载失败）',
+      '日文（加载失败）',
+    ])
     await expect(page.locator('.subtitle-menu-note')).toHaveCount(0)
 
     // ---- 8. 扫一次，那一行跟着文件走（#147：扫描以前只会登记字幕，从不核对）

@@ -245,23 +245,38 @@ def convert_to_webvtt(filepath: str) -> str:
     rather than served raw. A ``.vtt`` is already the browser's own format and
     stays byte-for-byte as written, defects included: only text this module
     converts gets repaired.
+
+    All three branches answer the same question before they return: is there a
+    single cue in there? A file whose lines never parse as timestamps, a truncated
+    download ffmpeg reads as ``lrc``, a `.vtt` that is only a header -- each used to
+    hand back a well-formed empty WebVTT with HTTP 200, which the browser loads
+    happily (``readyState`` 2, zero cues) and the player can therefore not report.
+    Failing here is what makes the 415, and with it the ``<track>`` ``error`` event
+    (#146), reachable at all.
     """
     if not os.path.isfile(filepath):
         raise FileNotFoundError(filepath)
 
     ext = os.path.splitext(filepath)[1].lower()
     if ext == ".vtt":
-        return read_subtitle_text(filepath)
-    if ext == ".srt":
-        return fold_blank_lines_inside_cues(srt_to_webvtt(read_subtitle_text(filepath)))
-    if ext in (".ass", ".ssa"):
-        return fold_blank_lines_inside_cues(_ffmpeg_to_webvtt(filepath))
-    raise SubtitleConversionError(f"不支持的字幕格式: {ext}")
+        webvtt = read_subtitle_text(filepath)
+    elif ext == ".srt":
+        webvtt = fold_blank_lines_inside_cues(srt_to_webvtt(read_subtitle_text(filepath)))
+    elif ext in (".ass", ".ssa"):
+        webvtt = fold_blank_lines_inside_cues(_ffmpeg_to_webvtt(filepath))
+    else:
+        raise SubtitleConversionError(f"不支持的字幕格式: {ext}")
+
+    if not any(_CUE_TIMESTAMP_LINE.match(line) for line in webvtt.splitlines()):
+        raise SubtitleConversionError(
+            f"字幕转换失败：这份文件里没有解析出任何一条字幕（{ext}）"
+        )
+    return webvtt
 
 
 # One line of a finished WebVTT cue: "00:01:02.003 --> ..." or the
 # "00:02.003 --> ..." dialect ffmpeg writes. Tells a cue separator apart from a
-# stray blank line.
+# stray blank line, and tells an empty conversion apart from a real one.
 _CUE_TIMESTAMP_LINE = re.compile(
     r"^\s*(?:\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})\s*-->"
 )
