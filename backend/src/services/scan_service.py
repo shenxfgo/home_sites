@@ -332,8 +332,10 @@ class ScanService:
                     logger.warning("跳过无法处理的视频文件: %s", filepath, exc_info=True)
                     continue
 
-            # Update source last_scan_at
-            source.last_scan_at = datetime.now(timezone.utc)
+            # 按了停止的这一轮没扫完清单，不许留下"我来过"的时间戳：这一列就是
+            # 自动扫描排下一次的依据。下面的核对照旧做——清单是完整的，少的是处理。
+            if not _scan_state["stop_requested"]:
+                source.last_scan_at = datetime.now(timezone.utc)
             # A row whose file the scan could not find is marked lost rather
             # than deleted, but only when the source itself was reachable: an
             # unmounted share returns an empty listing and must not black out

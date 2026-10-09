@@ -1081,10 +1081,11 @@ async def test_a_stop_mid_source_leaves_the_rest_of_the_listing_alone(
     assert "扫描已按请求停止: 停止源" in caplog.text
     await db_session.refresh(already)
     assert already.is_missing is False
-    # 现状，不背书：半途停掉的一轮照样把 last_scan_at 写成"刚刚扫过"，通知也照样说
-    # 「扫描完成」。源到底有没有扫完，界面在这一轮之后读不出来 —— 这是产品决定，
-    # 见 CHANGELOG 里 #176 那条待用户定夺。
-    assert source.last_scan_at is not None
+    # 第二块选项板②甲（#182）：半途停掉的一轮**不许**写成"刚刚扫过"。这一列是自动扫描
+    # 用来决定下一次什么时候来的，记了时间就等于宣布这一轮把清单扫完了；而这一轮明明还有
+    # 两个文件没碰。通知照旧发（那说的是"这一轮发现了什么"，不是心跳），措辞不改是他选的
+    # 另一头——"保留时间戳、只改通知文案"那一案被他否掉了。
+    assert source.last_scan_at is None
     assert await _notifications(db_session) == [
         ("scan_complete", "视频源 停止源 扫描完成，发现 1 个新视频")
     ]

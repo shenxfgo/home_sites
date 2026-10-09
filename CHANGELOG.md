@@ -1,13 +1,21 @@
 # 更新日志
 
 ## 2026-10-09
+### 扫描中途按了停止的那一轮，不再在源上留下"刚刚扫过"（#182）
+
+- **这一单修的是 #176 量出来那个洞一**：`scan_source` 文件那一圈的 `break` 之后，`source.last_scan_at` 照写、通知照发「扫描完成，发现 N 个新视频」，而清单里剩下的文件一个都没打开过。这一列是自动扫描排下一轮的依据（#150 那条链路），记了时间就等于宣布这一轮把清单扫完了。用户在第二块选项板上选**甲：停掉的那一轮不写时间戳**，否掉的是"照写但通知改口说还剩多少没扫"和"只在 docstring 承认这句完成是近似"。
+- **形状**：`if not _scan_state["stop_requested"]:` 只包住那一句赋值。**丢失核对和通知照旧**——清单本身是完整的，缺的是处理，而"按了停止不许把没来得及扫的行刷成「已找不到」"是另一条已有的钉子（V11），这一单没碰它。
+- **红是先看过的**：把 `test_a_stop_mid_source_leaves_the_rest_of_the_listing_alone` 末尾那句 `assert source.last_scan_at is not None` 翻成 `is None`，在**未改的 `src/`** 上跑 = **1 failed / 3 passed**（电池 V12 量的就是这个拆法：恰好红这一条，其余 40 条不动）；加完闸门这一文件连同扫描那三组共 **76 passed**。
+- **后果（用户已认）**：手动停止之后，源详情页那个"上次扫描时间"保持旧值，自动扫描因此更早重试——这是刻意的，界面上"这一轮没扫完"从此看得出来，代价是停止本身不留痕。
+- **顺手更正 #181 那条里写错的一句**：`tests/test_backup_child_process.py` 在工作树里是**纯 LF**（197 lone LF / 0 CRLF），初稿写成了"197 CRLF"。根因值得记一句：Git Bash 里 `grep -c $'\r'` 的模式会塌成空串、每行都算命中，那个数**永远等于行数**，用它判换行必然出错；正确的是 `count(b'\r\n')` 对比 `count(b'\n')`。仓里其余 25 个 CRLF 文件的记录方式是逐个 python 量的，重测确认没被这个方法带错。
+- **基线**：后端 PG 全量 **933 passed**（这一条是改写不是新增），SQLite 分支被改动的两个文件 **47 passed**，`ruff check src tests` 干净，`mypy src` 仍是 **34** 条基线错误。`src/services/scan_service.py` 现在 **444 CRLF / 0 lone LF**，md5 `ffd184c2614a0676507056f6321b3ec4`。
 ### 备份目录里那份转储在"挑最新"之前就消失时，启动补跑不再当场死掉（#181）
 
 - **这一单修的是 #174 量出来那个洞**：`is_stale` 的 docstring 明写"stat 不出的条目按陈旧处理而不是抛异常，因为它跑在启动那一段，一个悬空条目不该把应用带下去"，可那个 `try` 从前只包住**后面那一次** stat。而 `latest_backup` 挑最新那一份用的是 `max(key=os.path.getmtime)`——同一个 `OSError` 只要早一步发生就从外面穿出去。调用方 `scheduler/tasks.py:93` 那句 `if not backup.is_stale(...)` 没有任何 `try` 包着（那句 `try` 在 `_dump_and_notify` 里面，要过了这一行才进得去），于是补跑在**还没开始备份之前**就死掉：库从此没有保险检查，也没有一条通知说得清为什么（#100 那一族"悄悄停掉的备份没人报"）。用户在第二块选项板上选**甲：把那两句一起纳入 `try`**。
 - **红是先看过的**：先把 `test_an_entry_that_was_already_gone_before_the_listing_gets_out_as_an_error`（钉"会抛"的那条现状）翻成断言 `is_stale(...) is True`，在**未改的 `src/backup.py`** 上跑 = **1 failed / 8 passed**，失败信息正是量出的形状：`FileNotFoundError` 从 `latest_backup` 的 `max` 里抛出、经 `is_stale` 穿出。改完这一文件 **9 passed**。
 - **顺带接受的后果（写在这里是因为它是个真实的取舍）**：`latest_backup` 里那句 `os.listdir` 失败也是 `OSError`，所以**目录整个读不出**现在同样答"没有保险"。这是刻意的——这一问句问的是"库现在有没有保险"，答"没有"的下一步就是真去 dump，而那一趟失败有自己的通知；比在这里安静地返回"还保险"要好。docstring 把这两条 stat 和这一后果都写清了。
 - **没动的**：`latest_backup` 自己仍可抛（它的 docstring 从来没承诺相反，`is_stale` 是唯一调用方）；"挑完才消失"那条路径照旧由 `test_a_dump_that_vanishes_between_the_listing_and_the_stat_counts_as_stale` 钉着；轮转那两行 `except OSError` 不动。
-- **基线**：后端 PG 全量 **933 passed**（用例总数不变——这一条是改写不是新增），SQLite 分支上被改动的两个文件 **27 passed**，`ruff check src tests` 干净，`mypy src` 仍是 **34** 条基线错误。`src/backup.py` 现在 **277 CRLF / 0 lone LF**，md5 `1eb7195b58a09f5da2249a9bbfa73ed5`；`tests/test_backup_child_process.py` **197 CRLF / 0 lone LF**，md5 `79156408f625d230ddb7d9795cc47e53`。
+- **基线**：后端 PG 全量 **933 passed**（用例总数不变——这一条是改写不是新增），SQLite 分支上被改动的两个文件 **27 passed**，`ruff check src tests` 干净，`mypy src` 仍是 **34** 条基线错误。`src/backup.py` 现在 **277 CRLF / 0 lone LF**，md5 `1eb7195b58a09f5da2249a9bbfa73ed5`；`tests/test_backup_child_process.py` 在工作树里是 **纯 LF**（197 lone LF / 0 CRLF，md5 `79156408f625d230ddb7d9795cc47e53`）——顺带纠正这一条初稿里写成的"197 CRLF"：`grep -c $'\r'` 在 Git Bash 里模式会塌成空串、每行都算命中，所以那个数永远等于行数；换行要看的是 `count(b'\r\n')` 对 `count(b'\n')`。
 ### 拿一个已被删掉的标签 id 发 PUT，从此不会把这部片子的标签一起带走（#180）
 
 - **这一单修的是 #173 量出来那个洞**：`PUT /api/videos/{id}` 里 `select(Tag).where(Tag.id.in_(tag_ids))` 只回查得到的行，查不到的**不当成错误**，而后面那句 `video.tags = tags` 是**整串替换**——两者叠起来，一个已经被删掉的标签 id 就能把这部片子原有的标签一起清空，接口照样回 200，也没有一句说得出是哪个 id 不存在。用户在第二块选项板上选**甲：拒绝**。
