@@ -11,9 +11,10 @@
 这里补的是**另一头**：真的起一个真子进程（用 `sys.executable`，不依赖 pg_dump 在不在 PATH 上），
 以及真把 `os.path.getmtime` 抛一次。探针量出来的那条更要紧：`is_stale` 的 docstring 明写
 "stat 不出的条目按陈旧处理而不是抛异常，因为它跑在启动那一段，一个悬空条目不该把应用带下去"，
-而实测**只有晚一步消失的文件才走得到那句 `return True`**——如果它在 `latest_backup` 挑最新那一份
-之前就已经 stat 不出，异常是从 `261` 那行外抛的，`264-267` 那个 `try` 包不住。改成包不住就是行为
-变更，已记入待用户定夺；下面的用例钉的是**现状**。
+而本单测出来**只有晚一步消失的文件才走得到那句 `return True`**——如果它在 `latest_backup` 挑最新
+那一份之前就已经 stat 不出，异常是从外面试图包不住的 `261` 那行抛出去的。那就是 #181：把这两句
+并进同一个 `try`，docstring 的承诺从此起码是真的（下面倒数第二条用例从前钉的是"会抛"的现状，#181
+把它翻过来了）。
 """
 
 import os
@@ -181,17 +182,16 @@ def test_a_dump_that_vanishes_between_the_listing_and_the_stat_counts_as_stale(
     assert backup.is_stale(str(tmp_path), now=NOW) is True
 
 
-def test_an_entry_that_was_already_gone_before_the_listing_gets_out_as_an_error(
+def test_an_entry_that_was_already_gone_before_the_listing_counts_as_stale_too(
     tmp_path, monkeypatch
 ):
-    """本单量出的那个洞（钉的是现状，不是认可）：异常从 `261` 外抛，`try` 包不住。
+    """⑤甲（#181）：`latest_backup` 挑最新那一份时的那次 stat，现在也在 `try` 里面。
 
-    `is_stale` 的 docstring 承诺 stat 不出的条目按陈旧处理，而 `latest_backup` 自己就要
-    `max(key=getmtime)`——同一个 OSError 早一步发生就穿出去。调用方
-    `scheduler/tasks.py:93` 那句 `if not backup.is_stale(...)` 没有任何 `try` 包着，
-    于是补跑任务在还没开始备份之前就死掉：库从此没有保险，也没有一条通知说得清为什么。
+    这两句从前在 `try` 外面，于是同一个 `OSError` 只要早一步发生就穿出去，而调用方
+    `scheduler/tasks.py:93` 那句 `if not backup.is_stale(...)` 没有任何 `try` 包着——补跑
+    在还没开始备份之前就死掉：库从此没有保险，也没有一条通知说得清为什么（#100 那一族）。
+    docstring 从头到尾承诺的是"一个悬空条目不该把应用带下去"，这一条是它第一次被真的兑现。
     """
     _listdir(monkeypatch, [GHOST])
 
-    with pytest.raises(FileNotFoundError):
-        backup.is_stale(str(tmp_path), now=NOW)
+    assert backup.is_stale(str(tmp_path), now=NOW) is True

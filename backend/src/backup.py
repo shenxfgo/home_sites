@@ -256,12 +256,16 @@ def is_stale(
     incident on the morning the machine wakes late.
 
     Unstatable files are treated as stale rather than raising; this runs at
-    startup, where a dangling entry must not take the app down.
+    startup, where a dangling entry must not take the app down. That covers both
+    stats — the one that picks the newest dump and the one that reads its mtime —
+    since a hand-rotated entry can disappear between them. A directory that cannot
+    be read at all reads as "not insured" for the same reason: the question asked
+    is about the database, and the dump this triggers reports its own failure.
     """
-    newest = latest_backup(backup_dir)
-    if newest is None:
-        return True
     try:
+        newest = latest_backup(backup_dir)
+        if newest is None:
+            return True
         modified = datetime.fromtimestamp(os.path.getmtime(newest), tz=timezone.utc)
     except OSError:
         return True

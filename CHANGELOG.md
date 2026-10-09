@@ -1,6 +1,13 @@
 # 更新日志
 
 ## 2026-10-09
+### 备份目录里那份转储在"挑最新"之前就消失时，启动补跑不再当场死掉（#181）
+
+- **这一单修的是 #174 量出来那个洞**：`is_stale` 的 docstring 明写"stat 不出的条目按陈旧处理而不是抛异常，因为它跑在启动那一段，一个悬空条目不该把应用带下去"，可那个 `try` 从前只包住**后面那一次** stat。而 `latest_backup` 挑最新那一份用的是 `max(key=os.path.getmtime)`——同一个 `OSError` 只要早一步发生就从外面穿出去。调用方 `scheduler/tasks.py:93` 那句 `if not backup.is_stale(...)` 没有任何 `try` 包着（那句 `try` 在 `_dump_and_notify` 里面，要过了这一行才进得去），于是补跑在**还没开始备份之前**就死掉：库从此没有保险检查，也没有一条通知说得清为什么（#100 那一族"悄悄停掉的备份没人报"）。用户在第二块选项板上选**甲：把那两句一起纳入 `try`**。
+- **红是先看过的**：先把 `test_an_entry_that_was_already_gone_before_the_listing_gets_out_as_an_error`（钉"会抛"的那条现状）翻成断言 `is_stale(...) is True`，在**未改的 `src/backup.py`** 上跑 = **1 failed / 8 passed**，失败信息正是量出的形状：`FileNotFoundError` 从 `latest_backup` 的 `max` 里抛出、经 `is_stale` 穿出。改完这一文件 **9 passed**。
+- **顺带接受的后果（写在这里是因为它是个真实的取舍）**：`latest_backup` 里那句 `os.listdir` 失败也是 `OSError`，所以**目录整个读不出**现在同样答"没有保险"。这是刻意的——这一问句问的是"库现在有没有保险"，答"没有"的下一步就是真去 dump，而那一趟失败有自己的通知；比在这里安静地返回"还保险"要好。docstring 把这两条 stat 和这一后果都写清了。
+- **没动的**：`latest_backup` 自己仍可抛（它的 docstring 从来没承诺相反，`is_stale` 是唯一调用方）；"挑完才消失"那条路径照旧由 `test_a_dump_that_vanishes_between_the_listing_and_the_stat_counts_as_stale` 钉着；轮转那两行 `except OSError` 不动。
+- **基线**：后端 PG 全量 **933 passed**（用例总数不变——这一条是改写不是新增），SQLite 分支上被改动的两个文件 **27 passed**，`ruff check src tests` 干净，`mypy src` 仍是 **34** 条基线错误。`src/backup.py` 现在 **277 CRLF / 0 lone LF**，md5 `1eb7195b58a09f5da2249a9bbfa73ed5`；`tests/test_backup_child_process.py` **197 CRLF / 0 lone LF**，md5 `79156408f625d230ddb7d9795cc47e53`。
 ### 拿一个已被删掉的标签 id 发 PUT，从此不会把这部片子的标签一起带走（#180）
 
 - **这一单修的是 #173 量出来那个洞**：`PUT /api/videos/{id}` 里 `select(Tag).where(Tag.id.in_(tag_ids))` 只回查得到的行，查不到的**不当成错误**，而后面那句 `video.tags = tags` 是**整串替换**——两者叠起来，一个已经被删掉的标签 id 就能把这部片子原有的标签一起清空，接口照样回 200，也没有一句说得出是哪个 id 不存在。用户在第二块选项板上选**甲：拒绝**。
