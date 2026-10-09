@@ -1,6 +1,37 @@
 # 更新日志
 
 ## 2026-10-09
+### 探针自己跑不起来时，接口说的是关于这部片子的假话——media_streams 的三路坏输出第一次各有签字（#175）
+
+- **症状**：`src/utils/media_streams.py` 停在 **92%**（61 句缺 5 句：`57-58, 66, 176-177`），缺的三格有一个共同形状：**"探针跑不起来 / 输出不是预期那样"这一族，原先十条用例一条都没演过**——它们把 `subprocess.run` 换成替身，演的全是"一切顺利"那一路。`57-58` 是 ffprobe 回了一段坏 JSON（半截、被中途杀掉、磁盘写满）时"当作读不出来"的那道兜底，`66` 是一条**连 `tags` 都没有**的轨（裸 AAC、裸 srt 常见；`65` 那个判断本身早有分支经过，缺的是它的 `return`），`176-177` 是提取时 ffmpeg 那个子进程根本起不来 / 挂住 / 被拒绝。
+- **替身是对的，但盲区留下了**：原先 10 条钉住了 argv（`-show_streams`、`-map 0:N`、末尾那个 `-`），代价和 #174 完全同形：**发出去的超时与解码约定（`timeout=30` / `timeout=60` / `encoding` / `errors`）在替身之下没有任何一格签字**，两处 `except (FileNotFoundError, subprocess.TimeoutExpired, OSError)` 里也只有 `FileNotFoundError` 一支被真的抛过。这次让替身把 kwargs 记下来，并把喂进去的异常实例当作"子进程那一步真的坏了"往上 `raise`。
+- **回归用例 10 条**（本文件 10 → 20 条；单跑本文件时 `media_streams.py` 61 句 0 缺 **100%**）：半截 JSON 落成 `probed: False` 而不是 500；无 `tags` 的轨退回"轨道 N"且**不影响** `supported`（能不能转 WebVTT 只看编码器）；`""` 与 `"  "` 两种坏法走的是两个不同口子（前者在 `or` 那里就假了，只有空白能活到那个占位集合）；`und` / `xxx` 两个占位码各归一枚钉（`xxx` 此前全库没被喂过）；`language` / `LANGUAGE`、`title` / `TITLE` 四种拼法都认（大写字面此前摘掉任何半边都量不出红）；两次子调用的超时与编码约定；ffmpeg 起不来 / 挂住 / 被拒绝三种坏法各走一遍且原因带在句子里；探针挂住或共享被拒绝时详情页只是"探不到"。
+- **本单量出的洞（新的待用户定夺）**：`extract_subtitle_webvtt` 在 ffprobe **自己**跑不起来（没装、不在服务账号的 PATH 上、30 秒没回）或**非零退出**（文件坏、share 掉线）时，`_run_ffprobe` 回 `{}`，于是 `wanted` 是空集，接口说的是「文件里没有编号为 N 的字幕轨」并回 404（`api/subtitles.py` 把 `StreamNotFoundError` 映射成 404）——**真原因（工具没跑成）被换成了一句关于这部片子的假话**，而它恰好是用户听得见、也修得了的那一句。对照 #142：外挂字幕那一路后来把 ffmpeg 的原因带上了，内嵌这一路今天仍然没有。三个选项：**甲**把"探测失败"和"没有这条轨"分开说话（回 404 还是 503/415 请用户定），**乙**只在 docstring 承认这一句是近似，**丙**让 `probe_streams` 的 `probed: False` 一并带上原因。两条钉住**现状**的用例把这句话原样锁住（`test_a_probe_that_could_not_run_is_blamed_on_the_file` / `test_a_probe_that_exits_non_zero_is_blamed_on_the_file_too`），不是认可；电池里的 **Y17 就是甲的最小预备 fix**——它红的那两条恰好就是这两条，其余 18 条一动不动，说明这一改法不会碰到别的行为。
+- **另有一处测量结果，选择不钉**：ffprobe 理论上可能回一段**合法但不是对象**的 JSON（`[]` / `null`），那时 `probe_streams` 会把 `AttributeError` 送到接口外面。真 ffprobe 带 `-print_format json` 不会这样回，所以只记不钉——免得留一条永远红不了也永远绿不了的用例。
+- **红在先（本单 `src/` 一行未改，红由电池给）**：Y1–Y17 十七格 → **14 红 + 3 实测等价**（其中 Y17 是预备翻转）。范围是 `tests/test_utils/test_media_streams.py` 的 20 条（`tests/test_api/test_subtitles.py` 那 20 条把 `probe_streams` / `extract_subtitle_webvtt` 整个换成替身，红不到这一文件的内部，所以不在范围内）；`src/utils/media_streams.py` 在工作树里是 **CRLF**（182 CRLF / 0 lone LF），锚点按它自己的换行归一，每格先断言锚点命中恰好一次且字节真的变了，改完即按字节还原并 md5 复核（`b7e76de876ad8a05db2351dfe4c4c462`，十七行 `restored_md5` 全 True，收尾 `git diff --ignore-cr-at-eol -- src/utils/media_streams.py` 为空）。三格绿各有道理，都不是"忘了测"：摘掉 `text=True` 是结构上红不了的等价参数（#174 的 Z4 同族），从两处元组里单独摘 `FileNotFoundError` 摘不出红是因为**它是 `OSError` 的子类**——真正承重的是 `OSError` 与 `TimeoutExpired` 那两支，这一条已写进用例 docstring，别把它读成"三个成员各有签字"。
+
+| 格 | 改的那一处 | 结果 | 红几条 | 坏掉的话 |
+|---|---|---|---|---|
+| Y1 | `except ValueError` → `except KeyError` | 红 | 1 | 半截 JSON 不再是"读不出来"，片源详情页变 500 |
+| Y2 | `if not code:` → `if False:` | 红 | 4 | 没有语言标签的轨在 `None.strip()` 上炸 |
+| Y3 | 占位集合去掉 `""` | 红 | 1 | 一条 `"  "` 的轨把空串当语言发给前端 |
+| Y4 | 占位集合去掉 `"und"` | 红 | 1 | `und` 原样进菜单 |
+| Y5 | 占位集合去掉 `"xxx"` | 红 | 1 | 同上；`xxx` 此前全库零签字 |
+| Y6 | 去掉探测的 `timeout=30` | 红 | 1 | ffprobe 挂住时那个请求跟着挂 |
+| Y7 | 去掉提取的 `timeout=60` | 红 | 1 | 播放器等一条字幕可以等到无限 |
+| Y8 | 去掉探测的 `text=True`（`encoding` 留着） | **绿** | 0 | 实测等价：`subprocess` 见 `encoding` 就进文本模式 |
+| Y9 | 提取元组去掉 `TimeoutExpired` | 红 | 1 | ffmpeg 挂住时异常穿出接口 |
+| Y10 | 提取元组去掉 `OSError` | 红 | 2 | 起不来 / 被拒绝两种坏法穿成 500 |
+| Y11 | 提取元组去掉 `FileNotFoundError` | **绿** | 0 | 它是 `OSError` 的子类，父类照样接住 |
+| Y12 | 探测元组去掉 `TimeoutExpired` | 红 | 1 | 探测那一头挂住时详情页 500 |
+| Y13 | 探测元组去掉 `OSError` | 红 | 1 | 共享被拒绝时详情页 500 |
+| Y14 | 探测元组去掉 `FileNotFoundError` | **绿** | 0 | 同 Y11 |
+| Y15 | 去掉 `tags.get("LANGUAGE")` 那半边 | 红 | 1 | 打包器只写大写键时语言全丢、菜单变成"轨道 N" |
+| Y16 | 去掉 `tags.get("TITLE")` 那半边 | 红 | 1 | 同上，轨名丢了 |
+| Y17 | 预备 fix：探测空结果时改口说"读不出来" | 红 | 2 | 恰好是上面那两条钉现状的用例 |
+
+- **基线**：PG 全量 **915 passed，2 warnings，192.76s**，TOTAL **95.77%**（4613 句缺 195，上一轮 200——少的正是这一文件那 5 行）；SQLite 分支同轮 **914 passed + 1 skipped，79.70s**；两遍 RC 均 0。`ruff check tests src` 干净，`mypy src` 维持 34 条基线。
+
 ### 备份那台子进程第一次真的起了进程，三道兜底分支第一次被走到（#174）
 
 - **症状**：`src/backup.py` 停在 **95%**，缺的六行是四类各一，而且**没有一类是"某条分支忘了测"**：`124` 是 `_run` 里那句真的 `subprocess.run`——整个备份套把 `_run` 换成替身，这台子进程从 pytest 进来一次也没起过；`152` 是 `BACKUP_DIR` 为空那道闸门（今天没有调用方给过空串）；`217-218` 是轮转碰到 stat 不出的条目就跳过；`266-267` 是陈旧判断碰到 stat 不出的文件算陈旧。后两格要有"目录里列得出、`getmtime` 抛一次"的条目才走得到。
