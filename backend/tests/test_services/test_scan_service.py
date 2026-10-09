@@ -1,4 +1,5 @@
 """Tests for ScanService operations."""
+import logging
 import os
 import tempfile
 from contextlib import contextmanager
@@ -943,3 +944,320 @@ async def test_a_source_without_sidecar_capability_is_not_pruned_locally(
 
     assert result["subtitles_gone"] == 0
     assert len(await _subtitles_of(db_session, video.id)) == 1
+
+
+# ---------------------------------------------------------------------------
+# 一轮扫描的两种「半途」：中途按停止，和一个文件写坏了
+#
+# #176 补的是本文件此前零签字的三格（196 句缺 7 句：`183-184, 238-239, 331-333`）：
+# `is_scanning` 这个属性一次也没有被任何用例读过、扫描途中按下停止后剩下的文件到底
+# 还扫不扫（`scan_all_active` 那条只钉了"剩下的**源**"，文件那一圈没有）、以及每个
+# 文件外面那圈 `except Exception` 到底有没有真的接过一个坏文件 —— 那句「单个文件失败
+# 只跳过，不中断整个视频源的扫描」一直只是注释。
+
+
+@pytest.fixture
+def idle_scan_state():
+    """进场前把模块级扫描状态收干净，出场也收干净。
+
+    `_scan_state` 是模块级的（每个请求都会新建一个 ScanService，见文件顶部那段注释），
+    所以一条用例留下的 `stop_requested` 会让下一条莫名其妙地"一开场就被按了停止"。
+    """
+    scan_module._reset_scan_state()
+    yield scan_module._scan_state
+    scan_module._reset_scan_state()
+
+
+@pytest.mark.asyncio
+async def test_is_scanning_property_reports_the_shared_flag_to_other_instances(
+    db_session, monkeypatch, idle_scan_state
+):
+    """扫描进行中，另一个实例读这个属性得说 True。
+
+    进度接口走的是 `get_scan_progress()`，所以这条属性（`183-184`）此前只有 docstring
+    说它存在。它和那张字典读的是同一份模块级状态，这一点没人签过。
+    """
+    source = await _create_source(db_session, name="属性源", path="/lib")
+    observed: list[bool] = []
+
+    _patch_storage(
+        monkeypatch,
+        _FakeStorage(
+            on_list=lambda: observed.append(ScanService(db_session).is_scanning)
+        ),
+    )
+
+    with _no_media_probe():
+        await ScanService(db_session).scan_source(source.id)
+
+    assert observed == [True]
+    assert ScanService(db_session).is_scanning is False
+
+
+@pytest.mark.asyncio
+async def test_a_scan_that_crashed_leaves_no_spinning_flag(
+    db_session, monkeypatch, idle_scan_state
+):
+    """扫描自己炸了，进度不能永远停在「正在扫描」。
+
+    收尾写在 `_tracked_scan` 的 `finally` 里：不这么写的话，一次列目录失败就把界面永久
+    卡在转圈，而 `POST /scan/stop` 又救不回来（按完停止要等下一圈检查才生效）。
+    """
+    source = await _create_source(db_session, name="崩掉的源", path="/lib")
+
+    class _Unreadable(_FakeStorage):
+        def list_videos(self, root: str) -> list[FoundFile]:
+            raise RuntimeError("目录读不动")
+
+    _patch_storage(monkeypatch, _Unreadable())
+
+    with pytest.raises(RuntimeError, match="目录读不动"):
+        await ScanService(db_session).scan_source(source.id)
+
+    assert ScanService(db_session).is_scanning is False
+    assert ScanService(db_session).get_scan_progress()["is_scanning"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_stop_pressed_before_any_scan_started_is_dropped(
+    db_session, monkeypatch, idle_scan_state
+):
+    """按钮按早了不许把下一轮扫描掐死。
+
+    `_tracked_scan` 在最外层进场时把整份状态重置（含 `stop_requested`），所以扫描开始
+    之前那一次停止会被丢掉。用例只钉现状并说明它为什么是对的：不丢的话，一次误按会让
+    之后的每一轮都刚起步就散场。
+    """
+    _patch_storage(
+        monkeypatch,
+        _FakeStorage(files=[_found("/lib/a.mp4"), _found("/lib/b.mp4")]),
+    )
+    source = await _create_source(db_session, name="提前按停止", path="/lib")
+    service = ScanService(db_session)
+
+    await service.stop_scan()
+    with _no_media_probe():
+        result = await service.scan_source(source.id)
+
+    assert result["new_videos"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_stop_mid_source_leaves_the_rest_of_the_listing_alone(
+    db_session, monkeypatch, caplog, idle_scan_state
+):
+    """扫描途中按停止：手上这一部收尾，清单里剩下的一个也不碰。
+
+    `238-239` 这两句（那句 log 和那个 `break`）此前零签字：唯一的停止用例把
+    `scan_source` 整个换成了替身，所以"文件那一圈也认停止"从来没被演过。
+    """
+    first = _found("/lib/第一部.mp4")
+    second = _found("/lib/第二部.mp4")
+    third = _found("/lib/第三部.mp4")
+    _patch_storage(monkeypatch, _FakeStorage(files=[first, second, third]))
+    source = await _create_source(db_session, name="停止源", path="/lib")
+    # 第三部早就在库里，而这一轮根本轮不到它：核对用的是整份清单而不是"处理过的那些"，
+    # 所以它不许被记成丢失 —— 按了停止把两部好片子刷成「已找不到」是更坏的结局。
+    already = Video(source_id=source.id, filepath=third.locator, title="第三部")
+    db_session.add(already)
+    await db_session.commit()
+
+    def probe(filepath: str) -> dict:
+        if filepath.endswith("第一部.mp4"):
+            scan_module._scan_state["stop_requested"] = True
+        return {"duration": 20, "format": "mp4"}
+
+    with caplog.at_level(logging.INFO, logger="src.services.scan_service"):
+        with patch("src.services.scan_service.extract_video_info", side_effect=probe), patch(
+            "src.services.scan_service.generate_thumbnail", return_value=""
+        ):
+            result = await ScanService(db_session).scan_source(source.id)
+
+    stored = (await db_session.execute(select(Video.title).order_by(Video.id))).scalars().all()
+    assert list(stored) == ["第三部", "第一部"]
+    assert result["new_videos"] == 1
+    # 说的是清单有几部，不是处理了几部 —— 停止的那一轮这两个数就是不一样。
+    assert result["files_found"] == 3
+    assert "扫描已按请求停止: 停止源" in caplog.text
+    await db_session.refresh(already)
+    assert already.is_missing is False
+    # 现状，不背书：半途停掉的一轮照样把 last_scan_at 写成"刚刚扫过"，通知也照样说
+    # 「扫描完成」。源到底有没有扫完，界面在这一轮之后读不出来 —— 这是产品决定，
+    # 见 CHANGELOG 里 #176 那条待用户定夺。
+    assert source.last_scan_at is not None
+    assert await _notifications(db_session) == [
+        ("scan_complete", "视频源 停止源 扫描完成，发现 1 个新视频")
+    ]
+
+
+class _StorageByRoot(_FakeStorage):
+    """按根目录给不同清单：一条 `scan_all_active` 路上要看两个源。"""
+
+    def __init__(self, by_root: dict[str, list[FoundFile]]) -> None:
+        super().__init__()
+        self._by_root = by_root
+
+    def list_videos(self, root: str) -> list[FoundFile]:
+        self.listed_paths.append(root)
+        return self._by_root.get(root, [])
+
+
+@pytest.mark.asyncio
+async def test_a_stop_set_inside_one_source_also_skips_the_next(
+    db_session, monkeypatch, idle_scan_state
+):
+    """内层扫描收尾时不许把停止请求一起抹掉。
+
+    `scan_all_active` 把每个 `scan_source` 包在自己的 `_tracked_scan` 里，靠 `outermost`
+    那道闸门决定谁才配重置状态。把收尾改成无条件重置的话，第一个源里按下的停止会被
+    内层那一下抹平，第二个源照扫 —— 也就是「按了停止只停了一半」。
+    """
+    root_a, root_b = "/lib/a", "/lib/b"
+    _patch_storage(
+        monkeypatch,
+        _StorageByRoot(
+            {
+                root_a: [_found("/lib/a/1.mp4"), _found("/lib/a/2.mp4")],
+                root_b: [_found("/lib/b/1.mp4")],
+            }
+        ),
+    )
+    await _create_source(db_session, name="源一", path=root_a)
+    await _create_source(db_session, name="源二", path=root_b)
+
+    calls: list[str] = []
+
+    def stop_on_first_probe(filepath: str) -> dict:
+        calls.append(filepath)
+        scan_module._scan_state["stop_requested"] = True
+        return {"duration": 20, "format": "mp4"}
+
+    with patch(
+        "src.services.scan_service.extract_video_info", side_effect=stop_on_first_probe
+    ), patch("src.services.scan_service.generate_thumbnail", return_value=""):
+        result = await ScanService(db_session).scan_all_active()
+
+    rows = (await db_session.execute(select(Video))).scalars().all()
+    assert result["sources_scanned"] == 1
+    assert result["total_new_videos"] == 1
+    assert len(rows) == 1
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_broke_mid_write_is_skipped_and_the_round_survives(
+    db_session, monkeypatch, caplog, idle_scan_state
+):
+    """一个文件写库写到一半炸了：半截行不许留下，后面那个文件不许陪葬。
+
+    每个文件自己那层 SAVEPOINT（`begin_nested`）和外圈那圈 `except Exception` 在这之前
+    一次也没被真触发过。真机上它是唯一挡住"一个坏文件让整轮扫描 500"的东西。
+    """
+    _patch_storage(
+        monkeypatch,
+        _FakeStorage(
+            files=[
+                _found("/lib/好片一.mp4"),
+                _found("/lib/坏片.mp4"),
+                _found("/lib/好片二.mp4"),
+            ]
+        ),
+    )
+    source = await _create_source(db_session, name="含坏文件的源", path="/lib")
+    real_register = scan_module._register_subtitles
+
+    def register(service, video_id, video_filepath, known, storage):
+        if "坏片" in video_filepath:
+            raise RuntimeError("这条片子的字幕写不进库")
+        return real_register(service, video_id, video_filepath, known, storage)
+
+    monkeypatch.setattr(scan_module, "_register_subtitles", register)
+
+    with caplog.at_level(logging.WARNING, logger="src.services.scan_service"):
+        with _no_media_probe():
+            result = await ScanService(db_session).scan_source(source.id)
+
+    titles = sorted(
+        video.title for video in (await db_session.execute(select(Video))).scalars().all()
+    )
+    assert titles == ["好片一", "好片二"]
+    assert result["new_videos"] == 2
+    skipped = [
+        record
+        for record in caplog.records
+        if "跳过无法处理的视频文件" in record.getMessage()
+    ]
+    assert len(skipped) == 1
+    assert "/lib/坏片.mp4" in skipped[0].getMessage()
+    # 回溯必须留在日志里：只报"跳过了"而不带原因，运维就只能猜。
+    assert skipped[0].exc_info is not None
+
+
+@pytest.mark.asyncio
+async def test_a_file_skipped_by_one_failure_is_indexed_the_next_round(
+    db_session, monkeypatch, idle_scan_state
+):
+    """跳过是一次性的：下一轮它修好了就该正常建档。
+
+    要是失败把半截行留在库里（或者被记成"已认识"），第二轮就会走 `existing` 那条
+    continue 永远跳过它 —— 界面上看就是"这片子再也扫不进来了"。
+    """
+    _patch_storage(monkeypatch, _FakeStorage(files=[_found("/lib/坏一次.mp4")]))
+    source = await _create_source(db_session, name="重试源", path="/lib")
+    broken = {"fail": True}
+    real_register = scan_module._register_subtitles
+
+    def register(service, video_id, video_filepath, known, storage):
+        if broken["fail"]:
+            raise RuntimeError("第一轮它就是写不进去")
+        return real_register(service, video_id, video_filepath, known, storage)
+
+    monkeypatch.setattr(scan_module, "_register_subtitles", register)
+
+    with _no_media_probe():
+        first = await ScanService(db_session).scan_source(source.id)
+        broken["fail"] = False
+        second = await ScanService(db_session).scan_source(source.id)
+
+    assert first["new_videos"] == 0
+    assert second["new_videos"] == 1
+    rows = (await db_session.execute(select(Video))).scalars().all()
+    assert [video.title for video in rows] == ["坏一次"]
+
+
+@pytest.mark.asyncio
+async def test_a_known_videos_subtitle_failure_still_takes_the_round_down(
+    db_session, monkeypatch, idle_scan_state
+):
+    """「单个文件失败只跳过」今天只护着新片那半圈 —— 本单量出，钉的是现状。
+
+    老片走的是 `known is not None` 那一条 continue，它同样调 `_register_subtitles`，但那
+    一句在 `try` 外面（`try` 从新片那一段才开始）。所以库里已有一部片子的字幕写不进
+    去时，异常穿出 `scan_source`：这一轮的 `last_scan_at` 不写、通知不发，清单里剩下的
+    文件一个也没扫 —— 而同一份清单里一部新片出同样的毛病却只是跳过。真字幕注册今天只
+    做 add/flush、炸不出来，所以这一条没有现成的坏输入；把它钉住是为了让"两半圈对称"
+    这个改法一定要有用例跟着翻，不是认可现状。
+    """
+    first = _found("/lib/老片一.mp4")
+    second = _found("/lib/老片二.mp4")
+    _patch_storage(monkeypatch, _FakeStorage(files=[first, second], sidecar_subtitles=True))
+    source = await _create_source(db_session, name="老片坏字幕", path="/lib")
+    for locator, title in ((first.locator, "老片一"), (second.locator, "老片二")):
+        db_session.add(Video(source_id=source.id, filepath=locator, title=title))
+    await db_session.commit()
+
+    def register(service, video_id, video_filepath, known, storage):
+        if "老片二" in video_filepath:
+            raise RuntimeError("这条老片的字幕写不进库")
+        return 0
+
+    monkeypatch.setattr(scan_module, "_register_subtitles", register)
+
+    with _no_media_probe():
+        with pytest.raises(RuntimeError, match="这条老片的字幕写不进库"):
+            await ScanService(db_session).scan_source(source.id)
+
+    # 整轮死在半路：这一轮的写入没提交，界面从此读不到"扫过"，进度也不再转圈。
+    assert source.last_scan_at is None
+    assert await _notifications(db_session) == []
+    assert ScanService(db_session).is_scanning is False
