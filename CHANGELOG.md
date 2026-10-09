@@ -1,6 +1,15 @@
 # 更新日志
 
 ## 2026-10-09
+### 报进度给一条已经不存在的影片，从此说"没这部片子"而不是"好的收到"（#179）
+
+- **这一单修的是 #177 量出来那个洞**：`POST /api/videos/{id}/progress` 对一条播放途中被人删掉的影片回 **200 `{"status": "ok"}`**，而隔壁 `/play` 同样情况回 **404**。用户在第二块选项板上选**甲**：服务层看不见影片时 `raise ValueError`，路由像 `/play` 那样接住 `ValueError` 映射成 404。**改动就是量过的那 2 个文件**（`src/services/video_service.py:624-634`、`src/api/videos.py:290-299`），没有顺带清理。
+- **红是先看过的**：先把两条用例改成新行为、在**未改的 `src/`** 上跑，两条如实红——服务层 `Failed: DID NOT RAISE ValueError`，接口 `assert 200 == 404`。改完 `src` 后这两条翻绿，同一条路 #177 的电池 **W12** 早就量过：它红恰好这 2 条，其余 73 条不动。
+- **`update_progress` 的 docstring 跟着补了一句为什么这不是"尽力而为"**：播放器每几秒报一次、离开页面再报一次，删片恰好发生在中间——404 是它得知"没什么可报了"的唯一信号，静默的 ok 只会让它一直报下去。
+- **落地后新量到的一件事（写在这里是为了别把它改回去）**：这个 404 对用户是**无声**的，这正是想要的形状。`VideoPlayer.vue:294` 写的是 `updateProgress(...).catch(console.error)`，而 `src/api/client.ts` 的拦截器只把 `detail` 摊成 Error 再 reject、自己从不弹提示，所以 404 既不会变成一条toast也不会变成一次白屏。**别顺手给它加提示**——播放器要的是停止上报，不是打扰看片的人。
+- **openapi 快照不动**：路由仍只声明 `status_code=200`，`HTTPException` 的 404 不进 spec（`/play` 也一样），所以 `tests/test_openapi_snapshot.py` 与前端那四层静态守卫都不受影响。
+- **顺手更正 #177 记下的一句理由**：那条写着"拆掉 `634` 这句早退（W11）会让 PG 当场外键违例"，是推理不是重测。这次把同一拆法重新跑了一遍：**仍红 2 条**（服务层那条 + 接口那条，404 变 500），可先炸的是第 639 行 `is_completed(progress, video.duration)` 的 `AttributeError: 'NoneType' object has no attribute 'duration'`——外键那一段确实还在，只是被这句属性错误挡在后面、从来没真的执行到。"两种方言都承重"这类话里，闸门挡住的东西要重新量一遍。
+- **基线**：后端 PG 全量 **931 passed**（用例总数不变——两条是改写不是新增：`test_a_progress_report_for_a_video_that_is_gone_writes_nothing` → `..._raises_and_writes_nothing`，`..._still_answers_ok` → `..._answers_404`），`ruff check src tests` 干净，`mypy src` 仍是 **34** 条基线错误。四个文件的换行实测都还是纯 CRLF（`src/api/videos.py` 302、`src/services/video_service.py` 649、两份测试 517 / 921，lone LF 全 0）。
 ### 补上封面删不掉、重复检测的读取预算、报给一条已经不存在的影片——这三段尾巴只有顺利那一路从外面进来过（#177）
 
 - **症状**：`src/services/video_service.py` 停在 **98%**（260 句缺 6：`114-115, 382, 402, 406, 634`）。缺的六句分属三个真行为，共同形状不是"哪条分支忘了测"，而是**磁盘配合、预算够花、影片还在**这三个前提从来没被同时打破过：`114-115` 是封面被别的句柄攥住时那句兜底，`402`/`406` 是重复检测的读取预算装不下某一整组时那句 `continue` 加它换来的空返回，`634` 是给一条已经删掉的影片报进度时那句早退。

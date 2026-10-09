@@ -628,10 +628,14 @@ class VideoService:
         how much was really watched, so it appends a watch event for the seconds
         gained. Reports that move backwards — a seek, a replay — add nothing
         rather than subtracting, which keeps the totals a sum of watching done.
+
+        A video that is gone is an error, not a silent ok: the player reports every
+        few seconds and again on leaving the page, so a deletion that lands in
+        between has to be able to hear that there is nothing left to report to.
         """
         video = await self.get_video_by_id(video_id, user_id)
         if not video:
-            return
+            raise ValueError(f"Video with id {video_id} not found")
 
         history = await self._get_or_create_history(user_id, video_id)
         gained = max(0, progress - (history.progress or 0))

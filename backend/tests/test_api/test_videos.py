@@ -505,14 +505,13 @@ async def test_duplicates_endpoint_is_empty_without_a_library(client):
 
 
 @pytest.mark.asyncio
-async def test_a_progress_report_for_a_video_that_is_gone_still_answers_ok(client):
-    """现状：影片在播放途中被删，进度这一路照样回 ok，隔壁 /play 同样情况回 404。
+async def test_a_progress_report_for_a_video_that_is_gone_answers_404(client):
+    """影片在播放途中被删：进度这一路回 404，和隔壁 /play 同形（2026-10-09 定的甲）。
 
-    钉的是**现状**，不是认可——播放器每几秒和离开页面时各报一次，删片就发生在这中间。
+    播放器每几秒报一次、离开页面再报一次，删片恰好发生在中间——404 是它停下来的唯一信号。
     """
     response = await client.post("/api/videos/999999/progress", json={"progress": 60})
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.status_code == 404
     assert (await client.get("/api/history")).json()["total"] == 0
     assert (await client.get("/api/videos/999999")).status_code == 404

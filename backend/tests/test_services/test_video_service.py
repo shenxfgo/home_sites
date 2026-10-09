@@ -903,11 +903,17 @@ async def test_a_cover_that_was_never_written_leaves_no_word(db_session, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_a_progress_report_for_a_video_that_is_gone_writes_nothing(db_session, user_id):
-    """片子在播放途中被人删了：这趟上报既不该建历史行，也不该记一条观看事件。"""
+async def test_a_progress_report_for_a_video_that_is_gone_raises_and_writes_nothing(
+    db_session, user_id
+):
+    """片子在播放途中被人删了：这一趟上报是错的，既不建历史行也不记一条观看事件。
+
+    2026-10-09 定的甲——服务层抛 ValueError，由路由映射成 404，与隔壁 record_play 同形。
+    """
     from src.models.watch_event import WatchEvent
 
-    await VideoService(db_session).update_progress(user_id, 999_999, 60)
+    with pytest.raises(ValueError):
+        await VideoService(db_session).update_progress(user_id, 999_999, 60)
 
     history_rows = await db_session.execute(select(func.count()).select_from(PlayHistory))
     event_rows = await db_session.execute(select(func.count()).select_from(WatchEvent))

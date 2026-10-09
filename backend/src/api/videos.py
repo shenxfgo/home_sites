@@ -295,5 +295,8 @@ async def report_progress(
     service: VideoService = Depends(get_video_service),
 ) -> dict:
     """Report this account's playback progress."""
-    await service.update_progress(user_id, video_id, data.progress)
+    try:
+        await service.update_progress(user_id, video_id, data.progress)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return {"status": "ok"}
