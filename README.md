@@ -103,7 +103,7 @@ uv run python -m src.cli list-users                                 # 查看已�
 home_sites/
 ├── backend/                 # 后端服务
 │   ├── src/
-│   │   ├── api/            # API 路由（65 条路径 / 84 个操作）
+│   │   ├── api/            # API 路由（66 条路径 / 85 个操作）
 │   │   ├── models/         # 数据模型（18 张表）
 │   │   ├── services/       # 业务逻辑
 │   │   ├── storage/        # 取文件的接缝：本地/NAS 一份实现，S3/MinIO 一份实现

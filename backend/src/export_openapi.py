@@ -7,8 +7,8 @@ e2e 里恰好被界面点到的那条才会撞出 404。这份文件就是缺的
 逐条核对 URL 与方法。
 
 导出不需要起着服务：``app.openapi()`` 只是遍历已注册的 ``APIRoute``，不建连接——实测把
-``DATABASE_URL`` 指到一个不存在的端口照样能出全 65 条路径。所以 ``python -m
-src.export_openapi`` 在任何机器上都能重跑。改完接口如果忘了跑，
+``DATABASE_URL`` 指到一个不存在的端口照样能出全表（2026-10-08 复量：66 条路径 / 85 个操作）。
+所以 ``python -m src.export_openapi`` 在任何机器上都能重跑。改完接口如果忘了跑，
 ``tests/test_openapi_snapshot.py`` 会红——那颗钉子防止这份契约悄悄腐烂。
 """
 
