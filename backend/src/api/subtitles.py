@@ -12,6 +12,7 @@ from src.models.video import Video
 from src.services.subtitle_service import SubtitleService
 from src.storage import UnsupportedStorageError, storage_for_locator
 from src.utils.media_streams import (
+    ProbeFailedError,
     StreamNotFoundError,
     extract_subtitle_webvtt,
     probe_streams,
@@ -148,6 +149,10 @@ async def stream_embedded_subtitle(
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="视频文件不存在")
+    # 探针跑不起来（ffprobe 没装 / 不在 PATH / 超时 / 输出坏了）说的是"这次没能去查"，
+    # 和"这部片子没有这条轨"是两回事，所以各回各的状态码（#184：④甲）。
+    except ProbeFailedError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except StreamNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except SubtitleConversionError as e:

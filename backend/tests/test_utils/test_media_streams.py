@@ -7,9 +7,9 @@
 原先 10 条把 `subprocess.run` 换成替身演的是"一切顺利"那一路，代价和 #174 同形：发出去的
 **超时、编码参数**本身没有一格签字，两处异常元组里 `OSError` 那一支也从来没真的坏过。
 
-顺带量到一处现状（见文件末尾两条）：`extract_subtitle_webvtt` 在 ffprobe 自己跑不起来时，
-会说成"文件里没有编号为 N 的字幕轨"——原因被换成了一个关于这部片子的假话。用例钉的是现状，
-不是认可；怎么改属于产品决定，待用户定夺。
+顺带量到的一处现状已经在 #184 改掉：`extract_subtitle_webvtt` 从前在 ffprobe 自己跑不起来时
+说"文件里没有编号为 N 的字幕轨"——原因被换成了一个关于这部片子的假话。现在这一步发自己的
+异常（`ProbeFailedError`），接口把它回成 503，`StreamNotFoundError` 只在真读到过清单时才发。
 """
 import json
 import subprocess
@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from src.utils.media_streams import (
+    ProbeFailedError,
     StreamNotFoundError,
     extract_subtitle_webvtt,
     probe_streams,
@@ -448,28 +449,40 @@ def _extract_after_a_useless_probe(tmp_path, first):
     video.write_bytes(b"matroska")
     fake = FakeRun(first)
     with patch("src.utils.media_streams.subprocess.run", fake):
-        with pytest.raises(StreamNotFoundError, match="没有编号为 0 的字幕轨") as caught:
+        with pytest.raises(ProbeFailedError) as caught:
             extract_subtitle_webvtt(str(video), 0)
     return fake, caught.value
 
 
-def test_a_probe_that_could_not_run_is_blamed_on_the_file(tmp_path):
-    """本单量出的那个洞（钉的是现状，不是认可）：探不到 ≠ 没有这条轨。
+def test_a_probe_that_could_not_run_says_so_instead_of_denying_the_track(tmp_path):
+    """④甲（#184）：探不到 ≠ 没有这条轨——两句现在分得开了。
 
-    ffprobe 跑不起来（没装、不在服务账号的 PATH 上、30 秒没回）时 `_run_ffprobe` 回 `{}`，
-    于是 `wanted` 是空集，接口说的是「文件里没有编号为 0 的字幕轨」并回 404（`api/subtitles.py`
-    把 `StreamNotFoundError` 映射成 404）——那句是**关于这部片子的假话**，而真原因（工具没跑成）
-    是用户听得见也修得了的一句话。对照 #142：外挂那一路后来把 ffmpeg 的原因带上了，这一路今天
-    仍然把原因换成一个错误的否定。要不要分开、分开成 404 还是 503/415，属于产品决定，待用户定夺。
+    ffprobe 跑不起来（没装、不在服务账号的 PATH 上、30 秒没回）时从前 `_run_ffprobe` 回 `{}`，
+    于是 `wanted` 是空集，接口说的是「文件里没有编号为 0 的字幕轨」并回 404——那句是**关于这部
+    片子的假话**。现在探测这一步自己说话（`ProbeFailedError`），接口把它映射成 503，而
+    `StreamNotFoundError` 只在真读到过清单、里面确实没这一条时才发（那半圈另有用例钉着）。
     """
     absent = FileNotFoundError(2, "ffprobe not found")
     fake, error = _extract_after_a_useless_probe(tmp_path, absent)
 
-    assert str(error) == "文件里没有编号为 0 的字幕轨"
-    # 连一次 ffmpeg 都没起——那句"没有这条轨"是在探测失败之后立刻说的。
+    assert "ffprobe" in str(error) and "编号" not in str(error), str(error)
+    # 连一次 ffmpeg 都没起——那句失败是在探测这一步就说的。
     assert [call[0] for call in fake.calls] == ["ffprobe"]
 
 
-def test_a_probe_that_exits_non_zero_is_blamed_on_the_file_too(tmp_path):
-    """同一个洞的第二种坏法：ffprobe 起来了但非零退出（文件坏、share 掉线），话还是一句假话。"""
+def test_a_probe_that_exits_non_zero_says_the_probe_failed_too(tmp_path):
+    """同一个洞的第二种坏法：ffprobe 起来了但非零退出（文件坏 / share 掉线）。
+
+    从前这一支也回 `{}`，于是话同样改成了"没这条轨"；现在它走 `ffmpeg_stderr_reason`，
+    把 ffprobe 自己那句带出来。
+    """
     _extract_after_a_useless_probe(tmp_path, _child("", returncode=1, stderr="Invalid data"))
+
+
+def test_a_probe_whose_output_cannot_be_parsed_says_that_too(tmp_path):
+    """第三种坏法：ffprobe 零退出却回了一段半截 JSON（被中途杀掉 / 磁盘写满）。
+
+    `57-58` 那一格在 `probe_streams` 那头由 #175 钉成"读不出来"（`probed: False`），这里是同一
+    支异常在提取这条路上的出口：以前 `{}` 走到 `wanted` 是空集，话就变成"没这条轨"。
+    """
+    _extract_after_a_useless_probe(tmp_path, _stdout('{"streams": [{"index": 0, "co'))

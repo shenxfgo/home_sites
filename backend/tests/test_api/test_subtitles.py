@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from src.models.source import VideoSource
 from src.models.video import Video
-from src.utils.media_streams import StreamNotFoundError
+from src.utils.media_streams import ProbeFailedError, StreamNotFoundError
 from src.utils.subtitles import SubtitleConversionError
 
 
@@ -340,6 +340,30 @@ async def test_embedded_stream_returns_404_for_a_track_that_is_not_there(
 
     assert response.status_code == 404
     assert "编号为 9" in response.json()["detail"]
+
+
+async def test_embedded_stream_returns_503_when_the_probe_itself_did_not_run(
+    client, db_session, tmp_path
+):
+    """④甲（#184）：探针跑不起来要说成"这次没能去查"，不许说成"这部片子没这条轨"。
+
+    从前 `ProbeFailedError` 不存在，ffprobe 的三种坏法都被 `_run_ffprobe` 咽成 `{}`，接口于是回
+    404 + 「文件里没有编号为 1 的字幕轨」——一句关于这部片子的假话，而且玩家会以为轨道选错了。
+    404 那两条（未知影片 / 真读到清单里没这条）原样保留，见上面两条。
+    """
+    video, _ = await _video_with_subtitle(db_session, tmp_path)
+
+    with patch(
+        "src.api.subtitles.extract_subtitle_webvtt",
+        side_effect=ProbeFailedError("ffprobe 未能运行：[Errno 2] ffprobe not found"),
+    ):
+        response = await client.get(
+            f"/api/videos/{video.id}/subtitles/embedded/1/stream"
+        )
+
+    assert response.status_code == 503
+    assert "ffprobe 未能运行" in response.json()["detail"]
+    assert "编号" not in response.json()["detail"]
 
 
 async def test_embedded_stream_reports_unconvertible_track_as_415(

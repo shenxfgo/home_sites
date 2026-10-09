@@ -25,8 +25,21 @@ class StreamNotFoundError(Exception):
     """Raised when a requested stream index is not in the file."""
 
 
+class ProbeFailedError(Exception):
+    """Raised when ffprobe could not read the file at all.
+
+    Kept apart from :class:`StreamNotFoundError` on purpose (#184): "I couldn't look" and
+    "I looked and it isn't there" are different answers, and collapsing them makes the API
+    tell the player a lie about the film.
+    """
+
+
 def _run_ffprobe(filepath: str) -> dict:
-    """Return ffprobe's JSON for a media file, or ``{}`` when it cannot be read."""
+    """Return ffprobe's JSON for a media file, or raise :class:`ProbeFailedError`.
+
+    Callers that have a "couldn't look" shape of their own (``probe_streams`` answering
+    ``probed: False``) catch it; callers whose next step is a message must let it through.
+    """
     try:
         result = subprocess.run(
             [
@@ -45,17 +58,18 @@ def _run_ffprobe(filepath: str) -> dict:
             errors="replace",
             timeout=30,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return {}
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        raise ProbeFailedError(f"ffprobe 未能运行: {exc}") from exc
 
     if result.returncode != 0 or not result.stdout:
-        return {}
+        reason = ffmpeg_stderr_reason(result.stderr, "ffprobe 没有读出任何流信息")
+        raise ProbeFailedError(f"ffprobe 未能读出这个文件: {reason}")
     try:
         # ffprobe 带 -print_format json 时总是回一个对象；json.loads 的声明只到
         # Any，所以在这里断言一次，而不是把返回类型一路放宽成 Any。
         return cast(dict[str, Any], json.loads(result.stdout))
-    except ValueError:
-        return {}
+    except ValueError as exc:
+        raise ProbeFailedError("ffprobe 的输出不是预期的 JSON") from exc
 
 
 def _language_of(stream: dict) -> str | None:
@@ -91,7 +105,12 @@ def probe_streams(filepath: str) -> dict:
     unmounted looks the same to the player as a file with no tracks, but the UI
     can say something different about it.
     """
-    info = _run_ffprobe(filepath)
+    try:
+        info = _run_ffprobe(filepath)
+    except ProbeFailedError:
+        # 这一头不吃原因：详情页本来就有一个"探不到"的形状（probed=False）要回，
+        # 端点也照样是 200。提取那一路没处可藏，只能把异常送到接口上（#184）。
+        info = {}
     streams = info.get("streams") or []
 
     subtitles: list[dict] = []
@@ -137,6 +156,10 @@ def extract_subtitle_webvtt(filepath: str, stream_index: int) -> str:
     """Pull one embedded subtitle track out of the file as WebVTT text.
 
     The muxer writes to stdout, so the video file is only ever read.
+
+    ``StreamNotFoundError`` here means ffprobe did answer and the answer had no such
+    subtitle stream; a probe that never answered travels as ``ProbeFailedError``
+    instead, so the API can't claim the film has no such track (#184).
     """
     if not os.path.isfile(filepath):
         raise FileNotFoundError(filepath)

@@ -1,7 +1,14 @@
 # 更新日志
 
 ## 2026-10-09
-### 一部老片的字幕注册失败，从此只是跳过它——不再把整轮扫描带走（#183）
+### 探针自己跑不起来时，接口说"这次没能去查"——不再说"这部片子没这条轨"（#184）
+
+- **这一单修的是 #175 量出来那个洞**：`extract_subtitle_webvtt` 要先用 ffprobe 读一遍轨清单，而 `_run_ffprobe` 把**三种坏法**（工具起不来 / 非零退出或空输出 / 输出不是预期的 JSON）一律咽成 `{}`。空清单走到 `stream_index not in wanted`，于是接口回 **404 + 「文件里没有编号为 N 的字幕轨」**——**真原因（探针没跑成）被换成了一句关于这部片子的假话**，而那句恰是玩家听得见、也最容易照着做错事的（他会以为该换个轨道）。用户在第二块选项板上选**甲：分开说**，状态码由第二块小板定为 **503**（否掉的是 415 和"仍 404 只改文案"）；对照 #142 是同一条理由——外挂那一路后来把 ffmpeg 的原因带上了，内嵌这一路没有。
+- **形状**：新增 `ProbeFailedError`，`_run_ffprobe` 三条出口各 raise 一句（非零那一支走 `ffmpeg_stderr_reason`，把 ffprobe 自己的最后一行带上）；`extract_subtitle_webvtt` 让它穿到自己外面，路由在 `StreamNotFoundError` 之前 `except ProbeFailedError → 503`。`StreamNotFoundError` **从此只在真读到过清单时才发**，`extract_subtitle_webvtt` 开头那句 `os.path.isfile` → 404「视频文件不存在」仍然是真话。
+- **一处刻意的不同**：`probe_streams` 仍然自己吃掉这个异常、回 `probed: False`。片源详情页本来就有"探不到"那个形状要渲染，端点也照样是 200；提取那一路没有地方藏原因，只能把异常送到接口上。两头分开是有意的，别把它们读成同一个闸门。
+- **红是先看过的**：两条工具层用例和那条 503 接口用例在未改的 `src/` 上先以 `ImportError: cannot import name 'ProbeFailedError'` 挡住收集（这一符号此前不存在）。落地后的电池逐枝量：**Z1/Z2/Z5 各红 1 条**（三条 raise 一枝一格、互不通用）、**Z3 红 4 条**（拆掉 `probe_streams` 那个 `except`，四种"探不到"全穿出）、**Z4 红 1 条**（503 换成 404 只红那条接口用例）。五格都是 md5 验过还原的字节级改法。
+- **没动的**：404 那两条既有语义（未知影片、真读到清单里没这条轨）与 415 那条一字未改；`probe_streams` 的 `probed` 语义、argv/timeout/encoding 那三条 #175 的钉子、以及前端——`frontend/src/api/subtitles.ts:41` 只拼 URL，从不读这个状态码，所以 Vitest、e2e 和四条静态守卫都不用改。openapi 快照同样不动（`HTTPException` 的状态码不进 spec）。
+- **基线**：后端 PG 全量 **935 passed**（933 + 净增 2 条：#175 那两条钉现状的用例改名翻成新行为，另加"输出不是预期的 JSON"和接口 503 各一条），SQLite 分支被改动的两个文件 **42 passed**，`ruff check src tests` 干净，`mypy src` 仍是 **34** 条基线错误。`src/utils/media_streams.py` 现在 **205 CRLF / 0 lone LF**，md5 `c01498826b252e6e612c733265a387ae`；同单落点 `src/api/subtitles.py` 是**纯 LF**（219 lone LF / 0 CRLF，md5 `fb771a7cacbb9fa661a5e1037e3bdd80`）——一次改动跨了两种换行，锚点归一要按各自文件判断。
 
 - **这一单修的是 #176 量出来那个洞二**：`scan_source` 里「单个文件失败只跳过，不中断整个视频源的扫描」这道闸门从前**只护着新片那半圈**。老片走的是 `known is not None` 那一条，它调的是同一个 `_register_subtitles`，但那一句在 `try` 外面。于是同一份清单里一部新片出同样的毛病只是跳过，一部老片出毛病却把整轮带走：`last_scan_at` 不写、通知不发、清单里剩下的文件一个也没扫，而**手动按钮那一路是一个 500**（`api/scan.py` 只把 `ValueError` 映射成 404），定时那一路只剩 `scheduler/tasks.py` 的 `scan_error` 通知兜着。用户在第二块选项板上选**甲：把那半圈并进同一个 try**，否掉的是"保留这个不对称并在文档里承认"和"只说清是哪半圈坏了"。
 - **闸门是成对的，别拆开读**：`except Exception` 只是接住，真正不留脏写的是它里面那层 `begin_nested()`。量过的形状是——只加前半句时那条坏字幕行跟着这一轮最后的 `commit` 进了库，再被同一轮的 `prune_missing` 当场判成「字幕文件已不存在」，通知因此多出这一段（这条断言就是那一步的红）。
