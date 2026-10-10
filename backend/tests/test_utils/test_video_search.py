@@ -1,8 +1,9 @@
 """搜索框解析的用例：一个文本框就是这个产品全部的筛选面。
 
-#178 补的是这个文件最后五条没执行过的语句（`129-130, 170, 187, 212`），现在 126 条语句
-全覆盖。三条的形状从地址栏真敲得出来：光杆一个引号、`标签:` 后面只剩一个引号、比较式跨过
-一段不像数字的尾巴。第四条（`212`）从 `parse_video_search` 走不到——`require_key=True` 只在
+#178 补的是这个文件最后五条没执行过的语句（`129-130, 170, 187, 212`），现在 127 条语句
+（#204 改完源码之后的读数）全覆盖。三条的形状从地址栏真敲得出来：光杆一个引号、`标签:` 后面只剩
+一个引号、比较式跨过一段不像数字的尾巴。第四条（`212`）从 `parse_video_search` 走不到——
+`require_key=True` 只在
 `_consume_comparison` 里出现，而能进那个函数的 token 必然整颗匹配过
 `_STANDALONE_COMPARISON`，也就是它本身就是一颗比较键，`buffer` 又从它开头只往后续，所以匹配
 到的键永远在 `COMPARISON_KEYS` 里。这一行按 #165 / #172 的先例处理：用例直接敲那一层，钉住
@@ -16,6 +17,21 @@
   运算符就不许再吞"那半句（改成永远放行，20 条全绿），以及尾巴"认小数点开头"那半句（只认
   数字开头，也全绿）——理由同上一条，被拒绝的比较式从不留下 `position`，这两颗闸门在结果上
   看不见。
+
+#204（2026-10-10，用户定夺①甲）把上面那段"空格位置不对就整条筛选静默失效"的洞修掉了，源码
+随之改了**三处**，所以本文件的头两段要按下面的读法重算：
+- `评分 >= 4` / `评分 >=4` / `评分>= 4` / `rating >= 4` 现在都解成 `('>=', 4)`，`时长 >= 90` 解成
+  5400 秒——从前这四颗输入解出来 rating/duration 全是 None，而且**残留的三个 token 会变成三个
+  关键词求交集**，界面上看到的不是"筛选没生效"而是"一部片子都没有"。反过来钉住它的两条负对照
+  （`评分 4`、`评分 >= >= 4`）钉的是"没写运算符就不许凭空造出一条筛选"。
+- 这一单自己的电池 **8 格：5 红、3 格等价**。三格等价的都值一句：把运算符表改成短的先排
+  （`_OPERATOR_SOURCE` 的次序）**全绿**——说明"先试最长"从来不是那道保险，真正的保险是值那一支
+  不认运算符打头；运算符与值之间那段允许空白删掉**全绿**——空格在拼接 token 时就被消掉，不进正则；
+  "缓冲区已有运算符就不许再吞"改成永远放行也**全绿**（理由与上面那段相同：被拒绝的比较式不留
+  痕迹），它今天只是把语义写明白，别当守卫信任。
+- 上面 #178 那条「去掉 187 的 break → 只有 `评分 >=4` 红」**已经不再成立**：那一格红的是
+  `test_a_space_before_the_operator_still_drops_the_filter`，它钉的是当时的实测行为，随这一单
+  翻成了 `test_spaces_on_either_side_of_an_operator_keep_the_filter`。
 """
 from src.utils import video_search as search_module
 from src.utils.video_search import parse_video_search
@@ -147,11 +163,34 @@ def test_a_keyless_comparison_is_refused_even_when_the_value_is_a_duration():
     assert fields_with_key == {"duration": (">=", 5400)}
 
 
-def test_a_space_before_the_operator_still_drops_the_filter():
-    # 187 的 break 只有这颗输入钉得住：尾巴本身不像数字，但拼上去恰好是一条合法比较式。
-    # 这条用例钉的是**今天量出来的行为**，不是它应有的行为——`评分 >=4` 是真敲得出来的写法，
-    # 今天的答案是整个筛选静默失效。它属于本轮记下的「空格位置」那一族缺陷（见
-    # backend/CLAUDE.md），哪天真要认这个写法，这条要连着源码一起翻，别只改源码留着它绿。
-    query = parse_video_search("评分 >=4")
-    assert query.terms == ("评分", ">=4")
+def test_spaces_on_either_side_of_an_operator_keep_the_filter():
+    # #178 量到的洞，#204 依用户定夺①甲修掉：运算符两侧的空格一律忽略，docstring 那句
+    # 「``评分 >= 4`` 按预期解析」从这一单起是真话。从前四种写法整条筛选静默失效——
+    # 「一次被拒绝的比较式会把 buffer 整个丢掉、外层循环重新吐出原 token」，所以界面上
+    # 看到的是「按三个关键词求交集」，而不是「按评分筛」。今天钉的是四个形状各走同一条路：
+    # 两侧都空、只空左边、只空右边、英文键。
+    for text in ("评分 >= 4", "评分 >=4", "评分>= 4", "rating >= 4"):
+        query = parse_video_search(text)
+        assert query.rating == (">=", 4), text
+        assert query.terms == (), text
+
+    query = parse_video_search("时长 >= 90")
+    assert query.duration == (">=", 5400)
+    assert query.terms == ()
+
+
+def test_a_key_and_a_bare_number_do_not_become_a_comparison():
+    # 放宽「吞尾巴」的判据（运算符打头的片段也算尾巴）之后，这条负对照守着另一半：
+    # 没有运算符就不许登记比较式，否则「评分 4」会悄悄变成一条用户从没写下的筛选。
+    query = parse_video_search("评分 4")
     assert query.rating is None
+    assert query.terms == ("评分", "4")
+
+
+def test_a_second_operator_is_not_swallowed():
+    # 同一条负对照的另一半：缓冲区里已经有运算符，第二颗运算符就只是关键词——
+    # 「评分 >= >= 4」这种手滑的输入不许被拼成一条比较式（它今天四个 token 全留作关键词）。
+    query = parse_video_search("评分 >= >= 4")
+    assert query.rating is None
+    assert query.duration is None
+    assert query.terms == ("评分", ">=", ">=", "4")

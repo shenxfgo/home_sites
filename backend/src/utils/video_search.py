@@ -55,6 +55,10 @@ DURATION_UNITS = {
 
 OPERATORS = {">=": ">=", "≥": ">=", "<=": "<=", "≤": "<=", ">": ">", "<": "<", "=": "="}
 
+#: 运算符用到的字面字符。「值」不许从这些字符开头，否则 ``评分>=`` 这种没有值的片段会
+#: 被正则回溯解释成「运算符 ``>`` 配上值 ``=``」，登记被拒之后整条筛选静默失效（#178）。
+OPERATOR_CHARS = "<>=≥≤"
+
 _OPERATOR_SOURCE = "|".join(re.escape(op) for op in (">=", "<=", "≥", "≤", ">", "<", "="))
 _NAME_KEY_SOURCE = "|".join(NAME_KEYS)
 _COMPARISON_KEY_SOURCE = "|".join(COMPARISON_KEYS)
@@ -63,11 +67,14 @@ _TOKEN = re.compile(r'"([^"]+)"|(\S+)')
 _NAME_INLINE = re.compile(rf"^(?P<key>{_NAME_KEY_SOURCE})[:：](?P<value>\S.*)$", re.IGNORECASE)
 _NAME_BARE = re.compile(rf"^(?P<key>{_NAME_KEY_SOURCE})[:：]$", re.IGNORECASE)
 _COMPARISON = re.compile(
-    rf"^(?:(?P<key>{_COMPARISON_KEY_SOURCE})\s*)?(?P<op>{_OPERATOR_SOURCE})\s*(?P<value>\S+)$",
+    rf"^(?:(?P<key>{_COMPARISON_KEY_SOURCE})\s*)?(?P<op>{_OPERATOR_SOURCE})"
+    rf"\s*(?P<value>[^\s{OPERATOR_CHARS}]\S*)$",
     re.IGNORECASE,
 )
+#: 「这颗 token 是一段还没写完的比较式」：光杆键、光杆运算符，或键已经带上运算符只差值。
+#: 第三形状必须算数，否则 ``评分>= 4`` 里前一半就成了关键词，后面那颗 ``4`` 再也拼不回去。
 _STANDALONE_COMPARISON = re.compile(
-    rf"^(?:(?P<key>{_COMPARISON_KEY_SOURCE})|(?P<op>{_OPERATOR_SOURCE}))$",
+    rf"^(?:(?P<key>{_COMPARISON_KEY_SOURCE})\s*(?:(?:{_OPERATOR_SOURCE}))?|(?P<op>{_OPERATOR_SOURCE}))$",
     re.IGNORECASE,
 )
 _DURATION_VALUE = re.compile(r"^(?P<number>\d+(?:\.\d+)?)(?P<unit>[^\d\s.]+)$")
@@ -195,8 +202,10 @@ def _consume_comparison(
 
 
 def _looks_like_comparison_tail(buffer: str, following: str) -> bool:
-    if following in OPERATORS:
-        return following not in buffer
+    # 尾巴可以是整颗运算符，也可以是运算符打头的片段（``>=4``）——用户爱把空格打在哪儿说不准。
+    # 两种都只允许出现一次：缓冲里已经有运算符的字面字符，就不许再吞第二颗。
+    if following and following[0] in OPERATOR_CHARS:
+        return not any(ch in buffer for ch in OPERATOR_CHARS)
     return bool(following) and (following[0].isdigit() or following[0] == ".")
 
 
