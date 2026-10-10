@@ -615,6 +615,11 @@ SQLite 不存时区：写进去的是 UTC，裸 `DATETIME` 读回来的 `datetim
 
 下面那份薄位置清单是**修正后**重测的（SQLite 全量 717 passed + 1 skipped，TOTAL 92%，2026-10-05 复量；清单里个别条目另标了自己更晚的重量时间）：
 
+- `src/utils/subtitles.py` **98% → 100%**（#196，2026-10-10 PG 全量 982 passed 时重量，TOTAL 96.71%；这一族**不打库**——用例只看文件名与字节头，SQLite 分支同日重测 36 passed）——缺的三句 `82, 211, 213` 是两处「一个元组里两颗常数各管一种字节序」和一个目录：`if not entry.is_file(): continue` 那道闸门、`startswith((b"\xff\xfe", b"\xfe\xff"))` 那对字节顺序记号、记事本另存为 UTF-8 那个必须吃掉的记号。现在由 `tests/test_utils/test_subtitles.py`（32 → 36 条，函数 32 → 35、其中一条 parametrize 两格）钉住，电池 **5 格全红、无一等价**。改这一族前值得知道三件事：
+  - **「一颗常数签不了两种字节序」**——#194/#195 那条设计的第三次兑现：LE 与 BE 各一颗常数、parametrize 各一格。拿掉 LE 那颗只红 `bom-le`，拿掉 BE 那颗只红 `bom-be`。
+  - **这一族的签字是等号，不是「读得出来」**：删掉 211 那一支之后，BOM-less 那半圈的 NUL 率猜拳照样能猜中同一种字节序，只是把 BOM 那两个字节本身解成开头一个 U+FEFF（LE/BE 两格实测都是这一个字符）。断「文本里有那句中文」在这一格上是**绿**的，只有 `read_subtitle_text(...) == body` 会红。
+  - **82 那句 `continue` 是目录名唯一的出路**：叫 `movie.zh.srt` 的目录照样被 `os.scandir` 列出来、后缀照样合格。两种改法的宽度差七条——`continue` 换成 `pass`（闸门不跳过）恰好红 1 条，把 81 那道闸门整个反过来红 **8 条**（七条发现用例加这条新的）。
+
 - `src/storage/s3.py` **95% → 100%**（#195，2026-10-10 PG 全量 978 passed 时重量，TOTAL 96.64%；这一族**不打库**——moto 在进程内截 botocore，SQLite 分支同日重测 40 passed）——缺的五句 `95-96, 180, 214-216` 是三道方向相同却互相顶的闸门：它们都在说「读不到」，可「读不到」分别是**没装依赖**、**权限不够**、**读到一半断了**。现在由 `tests/test_storage/test_s3_storage.py`（10 → 14 条）钉住，电池 **7 格全红、无一等价**。改这一族前值得知道四件事：
   - **moto 造不出这三格**：它按 S3 契约好好回答问题，而这三条要的是「包不存在」「权限被拒」「读一半断开」。于是用例走两条替身缝——`sys.modules["boto3"] = None` 让 `import boto3` 抛 `ImportError`（在一台**装了** boto3 的机器上，这是够到那一格的唯一办法），以及把 `_client` 换成 `SimpleNamespace(head_object=…, get_object=…)`。**签名的是闸门说什么，不是闸门会不会被撞到**：真机上 MinIO/RustFS 究竟回 `AccessDenied` 还是别的码，仍然没被证过——这一族的边界和整个 moto 用例集的边界是同一条。
   - **`size()` 那句 `raise` 是 `exists()` 的靠山**（`exists` 就是 `size(locator) is not None`）：把 180 换成 `return None`，或者往 178 那份「没找到」名单里多收一个 `AccessDenied`，红的都是同一条用例的两个断言。反过来 170-173（凭证没配好 → `None`）和 178-179（对象真没有 → `None`）**必须**继续是 `None`，否则每部挂在对象存储上的影片都要抛 500。这一族里「什么时候不许说没这个文件」是唯一的主轴，读代码时别把两处 `return None` 当成同一个意思。

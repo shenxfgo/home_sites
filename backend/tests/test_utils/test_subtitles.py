@@ -1,4 +1,19 @@
-"""Tests for subtitle discovery and WebVTT conversion helpers."""
+"""字幕发现与 WebVTT 转换的用例：这一族只看文件名与字节头，从不碰真容器。
+
+#196 补的是这个文件最后三条没执行过的语句（`82, 211, 213`），现在 150 条语句全覆盖。三条
+各钉一件事：目录名长得像 sidecar 时不能挂上去；带字节顺序记号的 UTF-16 要由那个记号定字节序，
+LE 与 BE 各一颗常数、各有一格签字；记事本存的 UTF-8 开头那个记号必须被吃掉，不能留在文本里。
+
+变异电池量过的结果写在这里，免得下一轮再猜（每一格只动一个变量，锚点先断言恰好命中一次）：
+- 把 82 那句 `continue` 换成 `pass`（整句删掉是语法错误，换成 pass 才是「闸门不跳过」）→
+  红一条：菜单会挂出一条点不开的轨。
+- 把 LE 那颗常数从 `startswith` 的元组里拿掉 → 只红 LE 那一格；拿掉 BE 那颗 → 只红 BE 那一格。
+  #194 那条「一颗异常签不了两种宽窄」在这里的形状是「一颗常数签不了两种字节序」。
+- 把 213 那句 `utf-8-sig` 改成普通 `utf-8` → 红一条，而且红得直观：文本开头多出 U+FEFF，
+  第一行时间轴从此不认识。
+- 顺手量了一格爆炸半径：把 81 那道闸门整个反过来（`if entry.is_file()` 才跳过）红 **8 条**——
+  七条发现用例加这条新的。记下来只为别让下一格「恰好红一条」被当成默认预期。
+"""
 import os
 import subprocess
 from unittest.mock import patch
@@ -150,6 +165,14 @@ def test_find_subtitle_files_on_missing_directory_returns_empty():
     assert find_subtitle_files(os.path.join("Z:", "nope", "movie.mp4")) == []
 
 
+def test_a_directory_named_like_a_sidecar_is_not_offered(tmp_path):
+    """`movie.zh.srt` 是个目录也得跳过：菜单挂一条点不开的轨，比少一条更糟。"""
+    video = _touch(str(tmp_path), "movie.mp4")
+    (tmp_path / "movie.zh.srt").mkdir()
+
+    assert find_subtitle_files(video) == []
+
+
 def test_srt_to_webvtt_rewrites_timestamps_and_drops_indices():
     srt = (
         "1\r\n"
@@ -175,6 +198,38 @@ def test_read_subtitle_text_falls_back_to_gb18030(tmp_path):
     path.write_bytes("00:00:01,000 --> 00:00:02,000\n中文测试\n".encode("gb18030"))
 
     assert "中文测试" in read_subtitle_text(str(path))
+
+
+@pytest.mark.parametrize(
+    ("bom", "codec"),
+    [
+        (bytes([0xFF, 0xFE]), "utf-16-le"),
+        (bytes([0xFE, 0xFF]), "utf-16-be"),
+    ],
+    ids=["bom-le", "bom-be"],
+)
+def test_a_bom_marks_the_byte_order_it_is_decoded_with(tmp_path, bom, codec):
+    """那句 startswith 里的两颗常数各管一种字节序——各一格签字，去掉哪颗红哪一格。
+
+    正文故意不带换行：这一单只验字节序，带换行要把转义写进 UTF-16 的字节串里，那是另一
+    个陷阱。没有 211 那一支时这条用例仍然是红的——NUL 率那道猜拳照样会猜中同一种字节序，
+    只是 BOM 那两个字节本身会被解成开头一个 U+FEFF（两格实测都是这一个字符），等号当场不
+    成立。所以这一族只许断等号，断「读得出来」在这一格上是绿的。
+    """
+    body = "00:00:01,000 --> 00:00:02,000 中文测试"
+    path = tmp_path / "utf16.srt"
+    path.write_bytes(bom + body.encode(codec))
+
+    assert read_subtitle_text(str(path)) == body
+
+
+def test_a_utf8_bom_is_eaten_not_left_in_the_text(tmp_path):
+    """记事本另存为 UTF-8 的文件开头有 3 个记号字节：留给播放器就是第一条 cue 读不进。"""
+    body = "00:00:01,000 --> 00:00:02,000 中文"
+    path = tmp_path / "bom.srt"
+    path.write_bytes(bytes([0xEF, 0xBB, 0xBF]) + body.encode("utf-8"))
+
+    assert read_subtitle_text(str(path)) == body
 
 
 def test_convert_to_webvtt_passes_vtt_through(tmp_path):
