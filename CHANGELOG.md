@@ -1,6 +1,17 @@
 # 更新日志
 
 ## 2026-10-10
+### 服务层那五句没人从接口走进过的落点补满了——四种绿法里最难看见的那一种（#198）
+
+- **这一单是纯 coverage，五个源文件一行没动**：`src/services/favorite_service.py` 缺的 `66`、`src/services/notification_service.py` 缺的 `131`、`src/services/watchlist_service.py` 缺的 `129`、`src/api/watchlists.py` 缺的 `125`、`src/api/sources.py` 缺的 `90` 现在各自 **100%**（37/37、51/51、73/73、78/78、80/80 条语句）。新用例 7 条：`tests/test_api/test_favorites.py` 新建 2 条、`test_notifications.py` 5 → 6、`test_watchlists.py` 7 → 10、`test_sources.py` 17 → 18。变异电池 7 格：**全红，每格恰好红 1 条，无一等价**。
+- **五句话是五种互不相同的「没走到」**：收藏那道重复闸门今天被问过、却从没答出「已经有了」（那句 `if` 走过、`raise` 从没走到）；「全部已读」那个循环**一次也没迭代过**（此前所有用例只从空库存过）；片单改名那句「说明单独给不给」的闸门从没被带说明的请求敲过——现有用例只 PUT 过名字；`api/watchlists.py` 里两个 `except` 的**次序**——子类 `DuplicateWatchlistNameError` 排在父类 `ValueError` 前面才有 409，颠倒过来那条 409 会读到 404；最后一句最特别：`get_source_service` 的**函数体本身**。
+- **被替身演掉是这一单里最难看见的一种绿**：那份测试文件的夹具一直把 `get_source_service` 挂在 `dependency_overrides` 上，文件报 99%、缺口正好是那句 `return SourceService(session)`。补上的用例先把覆盖项摘掉、走真依赖，再断响应里真的是库里那条片源——只断状态码的话替身照样绿。
+- **M1 的失败形状量出来不是 201 而是 500**：把那道重复闸门改成永远不成立，第二次 POST 撞的是 `favorites.user_id, favorites.video_id` 上的唯一索引，`IntegrityError` 不在路由 `except ValueError` 的射程里。这条闸门因此同时钉着「回 400」和「它挡在那次写之前」两件事。
+- **一格一还原**：电池第一版把还原放在整批之后的 `finally`，M2 于是报「红 2」——它继承的是 M1 的红。改成每格跑完立刻按 md5 还原并校验之后，七格各自恰好 1 条；这是流程约束，记下来只为别让下一个人重复踩。
+- **薄位置清单合上了**：这一单之后 `src/` 剩下的 144 句未覆盖全部有名有姓——17 句是模型 `__repr__`，120 句是 `db_audit.py` / `db_transfer.py` / `e2e_seed.py` 三份迁移与播种脚本里要真库真数据才走到的分支，7 句是四种已记明理由的「补不了」（`api/users.py:155-156` 可推导地到不了、`middleware/auth.py:156/190` 是纵深防御的保险、`video_service.py:404` 上面的 SQL 已排除 `file_size IS NULL`、`tag_service.py:71-74` 的 `list_all` 全仓零调用方——删还是接进接口是产品形状，**留给面板**）。
+- **读数**：993 passed / TOTAL 96.90%（4648 条语句 / 144 未覆盖），`ruff check src tests` 干净，`mypy src` 基线 **34** 不变；这一族打库（七条新用例全走 HTTP），SQLite 分支同日重测这四个文件 **36 passed**。
+- **红在前**：这一单是「只加用例」的 coverage 单，没有预备 fix 可跑；给出的对照是同一份用例集打在坏源码上——7 格逐条跑过（M1 动 `favorite_service.py`，M2 动 `notification_service.py`，M3/M4 动 `watchlist_service.py`，M5 动 `api/watchlists.py`，M6 动 `api/sources.py`，M7 再动一次 `watchlist_service.py`；每格只动一个变量、锚点先断言恰好命中一次），每格跑完立刻按 md5 逐字节还原（五个文件 `3b8b025359b6865863593cd9d57c8fc8`、`104adad68cfd4794c941bf16d2078460`、`952682e383435a47d67126cfe375804f`、`d4ec2ebfb055d6d190de9e3778cc80ab`、`c8f4ba6e24a997bcc82e930a1bfc5580` 还原后全部一致，基线与收尾复跑均全绿），而且电池在测试文本定稿（中文 docstring 写完）之后**又整跑了一遍**，七格结果一字未变。
+
 ### 字幕那条读路径上三个「给不出」的分支补满了——一道闸门、一条生成器、一个 null（#197）
 
 - **这一单是纯 coverage，三个源文件一行没动**：`src/services/subtitle_service.py` 缺的 `169-171`、`src/storage/local.py` 缺的 `57`、`src/api/subtitles.py` 缺的 `58` 现在各自 **100%**（68/68、32/32、113/113 条语句），新用例 4 条分落三份测试文件。变异电池 6 格：**5 红 + 1 格实测等价**。

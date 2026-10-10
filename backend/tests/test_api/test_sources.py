@@ -2,7 +2,9 @@
 import pytest
 
 from src.api.sources import get_source_service
+from src.main import app
 from src.services.source_service import SourceService
+from tests.support import ensure_source
 
 
 @pytest.fixture
@@ -253,3 +255,25 @@ async def test_list_sources_after_create_delete(client):
 
     response = await client.get("/api/sources")
     assert len(response.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_request_session_reaches_the_service_through_the_real_dependency(
+    client, db_session
+):
+    """这个文件的夹具一直替 ``get_source_service`` 站着，所以函数体一次也没被执行过。
+
+    撤掉替身，让真依赖自己接一次请求：它得把这条请求的 session 交出去，否则读不到
+    同一个库里那行片源——替身演得再像，也不替接线负责。
+
+    电池 M6（#198）：把那句改成 `SourceService(None)`，红的就是这一条（请求 500）。
+    本文件其余用例一条也不红：它们走的还是替身，这一格恰好说明「被替身演掉」是覆盖
+    率上最难看见的一种绿。
+    """
+    app.dependency_overrides.pop(get_source_service, None)
+    await ensure_source(db_session, source_id=7)
+
+    response = await client.get("/api/sources")
+
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()] == ["source-7"]

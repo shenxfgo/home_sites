@@ -82,3 +82,45 @@ async def test_delete_drops_the_unread_count(client, db_session):
 
     after = await client.get("/api/notifications/unread")
     assert after.json()["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_mark_all_read_writes_one_row_per_unread_notification(
+    client, db_session, signed_in_user, make_user
+):
+    """read-all 那个循环体一次也没走过：接口只被空库存过。
+
+    三条通知里两条我自己没读、一条别人读过了——通知是全户广播的，别人读过不等于
+    我读过，所以三条都要给我写一行；反过来，这次请求不许往别人那一列里多写一行。
+
+    电池 M2（#198）：把那个循环的迭代源换成空列表，红的就是这一条——它先红在
+    「我这边该有三行」上，而不是红在 unread 计数上，因为计数走的是同一句 SQL。
+    """
+    from sqlalchemy import func, select
+
+    from src.models.read_state import NotificationRead
+
+    mine_a = await _create(db_session, "扫描完成 A")
+    mine_b = await _create(db_session, "扫描完成 B")
+    someone = await make_user("someone-else")
+    shared = await _create(db_session, "扫描完成 C", reader_id=someone.id)
+
+    response = await client.post("/api/notifications/read-all")
+
+    assert response.status_code == 204
+
+    rows = await db_session.scalars(
+        select(NotificationRead.notification_id).where(
+            NotificationRead.user_id == signed_in_user.id
+        )
+    )
+    assert sorted(rows.all()) == sorted([mine_a.id, mine_b.id, shared.id])
+    assert (await client.get("/api/notifications/unread")).json()["count"] == 0
+
+    other_rows = await db_session.scalar(
+        select(func.count())
+        .select_from(NotificationRead)
+        .where(NotificationRead.user_id == someone.id)
+    )
+    assert other_rows == 1
+
