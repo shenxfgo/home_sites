@@ -7,7 +7,7 @@ from sqlalchemy import select
 from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
 from src.models.video import Video
-from src.services.subtitle_service import SubtitleService
+from src.services.subtitle_service import SubtitleService, _within
 from src.utils.subtitles import SubtitleConversionError
 
 # `add` 从 #187 起会把这个文件真读一遍，所以这一族夹具里"能挂上"的那几份必须真的写着一条 cue。
@@ -193,3 +193,32 @@ async def test_register_skips_known_paths_and_adds_the_rest(db_session, tmp_path
 
     assert [s.filepath for s in stored] == [os.path.normpath(second)]
     assert known == {os.path.normpath(first), os.path.normpath(second)}
+
+
+def test_the_gate_says_no_when_the_common_prefix_cannot_be_computed(tmp_path):
+    """`commonpath` 一抛 ValueError，这道闸门必须回答「不在里面」，不能把异常递出去。
+
+    混着写（一边绝对、一边相对）是两种方言都会抛的形状，所以这条在任何机器上都跑；调用点
+    把两边都 abspath 之后才进来，生产里真正撞到的形状是下面那条跨盘符的。两条各钉一格，
+    而且**两头都签**：同一句里再断一次「真在里面」是 True，否则把闸门整个改口成永远说
+    False 也照样绿。电池量过：这一支换成 `return True` 红这两条，`except ValueError` 改窄
+    成永远等不到的异常也红这两条，而把 `== root` 反过来是 **14 条**——这道闸门站着多少人。
+    """
+    root = os.path.abspath(str(tmp_path / "media"))
+
+    assert _within(root, "movie.zh.srt") is False
+    assert _within(root, os.path.join(root, "movie.zh.srt")) is True
+
+
+def test_a_path_on_another_drive_is_not_inside_the_video_directory():
+    """那句注释亲口点名的形状：两个盘符没有公共前缀，commonpath 直接抛 ValueError。
+
+    只在 Windows 上跑——换到别的系统这一格不存在，同一支由上面那条混着写的用例继续钉着。
+    """
+    if os.name != "nt":
+        pytest.skip("盘符只有 Windows 有，这一支的形状换到别的系统上不存在")
+
+    root = os.path.join("C:", os.sep, "media")
+    elsewhere = os.path.join("D:", os.sep, "shows", "movie.zh.srt")
+
+    assert _within(root, elsewhere) is False

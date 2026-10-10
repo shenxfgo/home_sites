@@ -66,6 +66,23 @@ def test_iter_range_covers_both_bounds(tmp_path):
     assert streamed == payload[10:20]
 
 
+def test_a_window_longer_than_the_file_stops_where_the_bytes_run_out(tmp_path):
+    """文件比要的窗口短（被截断了，或客户端报了个越界的 Range）：读到空就收。
+
+    两头都签——既不许补出没存在的字节，也不许把一次短读当成异常往上抛，因为这条调用挂在
+    播放的那条流式响应上，抛出中途就是断流。窗口整个落在文件末尾之后那一路也一起钉住。
+
+    电池里如实记一格等价：把这个 `break` 换成 `return` 全绿——在这条生成器里两种写法都是
+    「就此结束」，谁也没多说什么，所以这一格不是漏测，别当成钉子。
+    """
+    path = tmp_path / "short.bin"
+    path.write_bytes(b"a" * 7)
+    storage = storage_for_source("local")
+
+    assert b"".join(storage.iter_range(str(path), 0, 100)) == b"a" * 7
+    assert list(storage.iter_range(str(path), 50, 60)) == []
+
+
 def test_file_opens_only_when_the_first_chunk_is_asked_for(tmp_path):
     """响应头先提交，第一次取字节才准打开文件。"""
     generator = storage_for_source("local").iter_range(

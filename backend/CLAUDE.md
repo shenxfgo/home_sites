@@ -615,6 +615,11 @@ SQLite 不存时区：写进去的是 UTC，裸 `DATETIME` 读回来的 `datetim
 
 下面那份薄位置清单是**修正后**重测的（SQLite 全量 717 passed + 1 skipped，TOTAL 92%，2026-10-05 复量；清单里个别条目另标了自己更晚的重量时间）：
 
+- `src/services/subtitle_service.py` **97% → 100%**、`src/storage/local.py` **97% → 100%**、`src/api/subtitles.py` **99% → 100%**（#197，2026-10-10 PG 全量 986 passed 时重量，TOTAL 96.79%；新加的四条自己一条库也不碰——只算路径、读字节、喂 None——但它们所在的三份测试文件是打库的，所以 SQLite 分支同日重测 47 passed）——缺的三处是一句话的三个面：`_within` 那道「字幕必须在影片旁边」的闸门在 `commonpath` 回答不了的时候要说「不在里面」（`169-171`），本地读的那条生成器在字节跑完时要收住（`57`），序列化器在没有创建时刻时要照实回 null（`58`）。现在由三份用例钉住（`tests/test_services/test_subtitle_service.py` +2、`tests/test_storage/test_local_storage.py` +1、`tests/test_api/test_subtitles.py` +1），电池 **6 格 = 5 红 + 1 格实测等价**。改这一族前值得知道三件事：
+  - **同一支要两种形状**：`commonpath` 抛 ValueError 在生产里靠的是跨盘符（`C:\media` 对 `D:\shows`），而那一种只有 Windows 有；所以还配了一条在任何系统都抛的形状（一边绝对、一边相对混着写）。**边界说清楚**：混着写那条钉的是这一支的行为，不是那句注释点名的形状——一台只有一个盘或 POSIX 的机器上，盘符那一格只会 skip，注释里那句话就没人重新证过。
+  - **M6 的爆炸半径是这一族最大的一格**：把 `== root` 反过来红 **14 条**（add/register/stream 一大家子都从这道闸门过），而把同一支换成 `return True` 只红新加的那两条——因为其余用例从没把字幕放到别的盘上。「一道闸门站着多少人」和「这一支有没有人签」是两回事，量出来才知道差 12 条。
+  - **一格如实记为等价**：把 `break` 换成 `return` 全绿——在这条生成器里两种写法都是「就此结束」。这不是漏测，记下来只为别让下一个人以为那一格上有钉子。
+
 - `src/utils/subtitles.py` **98% → 100%**（#196，2026-10-10 PG 全量 982 passed 时重量，TOTAL 96.71%；这一族**不打库**——用例只看文件名与字节头，SQLite 分支同日重测 36 passed）——缺的三句 `82, 211, 213` 是两处「一个元组里两颗常数各管一种字节序」和一个目录：`if not entry.is_file(): continue` 那道闸门、`startswith((b"\xff\xfe", b"\xfe\xff"))` 那对字节顺序记号、记事本另存为 UTF-8 那个必须吃掉的记号。现在由 `tests/test_utils/test_subtitles.py`（32 → 36 条，函数 32 → 35、其中一条 parametrize 两格）钉住，电池 **5 格全红、无一等价**。改这一族前值得知道三件事：
   - **「一颗常数签不了两种字节序」**——#194/#195 那条设计的第三次兑现：LE 与 BE 各一颗常数、parametrize 各一格。拿掉 LE 那颗只红 `bom-le`，拿掉 BE 那颗只红 `bom-be`。
   - **这一族的签字是等号，不是「读得出来」**：删掉 211 那一支之后，BOM-less 那半圈的 NUL 率猜拳照样能猜中同一种字节序，只是把 BOM 那两个字节本身解成开头一个 U+FEFF（LE/BE 两格实测都是这一个字符）。断「文本里有那句中文」在这一格上是**绿**的，只有 `read_subtitle_text(...) == body` 会红。

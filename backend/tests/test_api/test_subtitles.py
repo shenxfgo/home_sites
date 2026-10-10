@@ -1,6 +1,8 @@
 """Tests for subtitle API endpoints."""
+from datetime import datetime
 from unittest.mock import patch
 
+from src.api.subtitles import SubtitleResponse
 from src.models.source import VideoSource
 from src.models.video import Video
 from src.utils.media_streams import ProbeFailedError, StreamNotFoundError
@@ -404,3 +406,16 @@ async def test_embedded_stream_reports_unconvertible_track_as_415(
 
     assert response.status_code == 415
     assert "Unsupported codec" in response.json()["detail"]
+
+
+def test_a_subtitle_without_a_creation_time_serializes_to_null():
+    """`created_at` 缺着就照实回 null，而不是让整条响应炸在 isoformat 上。
+
+    这一支进不了完整的响应：响应模型把 `created_at` 标成非空的 `datetime`，所以带着 None
+    的行在校验那一层就停了，只有序列化器自己这一层够得着那句 `if value is None`。两头都签
+    ——None 回 None、时刻回 ISO 串，否则「顺手把这行改成无条件 isoformat」也能绿。
+    """
+    assert SubtitleResponse.serialize_datetime(None) is None
+    assert SubtitleResponse.serialize_datetime(datetime(2026, 10, 10, 9, 30)) == (
+        "2026-10-10T09:30:00"
+    )
