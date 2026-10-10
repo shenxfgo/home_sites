@@ -1,6 +1,17 @@
 # 更新日志
 
 ## 2026-10-10
+### 模型层那 17 处没人敲过的 __repr__ 第一次逐条钉住——为什么不给它标 pragma（#200）
+
+- **这一单是纯 coverage，源文件一个字节没动**：`src/models/` 里 17 个 `__repr__` 的 return 此前是剩余未覆盖清单里最大的一块，现在 16 份模型文件（含 `models/__init__.py`）全部 **100%**。新用例 19 条全部落在新建的 `tests/test_models/test_model_reprs.py`。变异电池 19 格：**全红、无一等价**——定稿文本后整跑两遍，逐格结果一字未变。
+- **给这一行标 `# pragma: no cover` 是要说「没有测试够得着」，而这里它是假话**：`repr(Favorite(id=11, user_id=12, video_id=13))` 内存里一句就够得着，不要库、不要夹具。仓里唯一那处 repr 上的 pragma（`auth_service.py:426` 的 `LoginRateLimiter`）是另一种形状——它内插 `len(self._failures)`，值随测试推进漂，等式钉不住，那一句 pragma 是真话。同仓还为「口令不许出现在 repr 里」真调过 `repr()`（`test_backup.py:262`）：repr 是出问题时人唯一读得到的东西。
+- **17 个值取成互不相同（11/12/13 那样），17 条签名就是 17 个独立把手**：没有一条 repr 靠别人代签，任何一格串字段（把 `id` 写成 `user_id`）当场红 1 条。另两格钉的是「看不出来错」的形状：五个多行 f-string 的**接缝空格**（少一个空格就是 `user_id=7video_id=8`），和 `TranscodeOutput` 那个**字段叫 `target_format`、标签写 `format`** 的名字错位。
+- **一格红 2 条，第二签正是崩溃那条**：`sorted(self.prefs)` → `self.prefs` 同时红掉 `UserPreference` 的等式和那条 `TypeError` 用例——让未落库实例炸掉的正是 `sorted` 那一手。「顺手去掉 sorted」看着像修了个 bug，实际是排序契约和崩溃记录一起抹掉。
+- **钉的是今天量到的行为，不是想要的行为**：`UserPreference.prefs` 的 `default=dict` 只在 INSERT 时生效，刚 new 出来的实例上它是 `None`，那行为调试而生的 repr 在调试现场 `TypeError`。全仓唯一构造点（`preference_service.py:38`）永远显式传 `prefs`，线上走不到，所以源码原样不动，作为本轮待选清单第 8 项交回面板（三个选项写在 `backend/CLAUDE.md` 的 #200 段）。
+- **盘点**：18 个映射类里 17 个写了 repr，唯一没写的是 `Setting`——默认实现含地址、钉不了内容，所以那条用例钉的是「它确实没有自己的 repr」这个事实，将来谁补上这条会红。
+- **读数**：1017 passed / TOTAL **97.31%**（4648 条语句 / **125** 未覆盖），`ruff check src tests` 干净，`mypy src` 基线 **34** 不变；这一族**不打库**，SQLite 分支同日重测 `tests/test_models` **30 passed**。未覆盖 142 → 125，此后只剩两个名字：三份迁移与播种脚本 120 句（`db_audit.py` 38、`db_transfer.py` 24、`e2e_seed.py` 58）+ 5 句三处（`api/users.py:155-156`、`video_service.py:404`、`tag_service.py:73-74` 零调用方仍等产品面板）。
+- **红在前**：这一单是「只加用例」的 coverage 单，没有预备 fix 可跑；给出的对照是同一份用例集打在坏源码上——19 格逐格跑（每格只动一个变量，锚点先断言恰好命中一次），每格跑完立刻按原字节还原并校验，收尾复跑 19 passed，14 份被摸过的模型文件字节全对。
+
 ### 认证依赖里那两道从 HTTP 走不到的保险——中间件先答了，不等于下面那道不必有人敲（#199）
 
 - **这一单是纯 coverage，源文件一个字节没动**：`src/middleware/auth.py` 缺的 `156`（行没了或已被停用）与 `190`（角色不对）现在 **100%**（76/76 条语句）。新用例 5 条全部落在新建的 `tests/test_middleware/test_dependency_belts.py`。变异电池 9 格：**全红**，逐条红 1、1、2、2、2、1、1、22、1。
