@@ -68,11 +68,6 @@ class TagService:
         )
         return result.scalar_one_or_none()
 
-    async def list_all(self) -> list[Tag]:
-        """List all tags."""
-        result = await self.session.execute(select(Tag))
-        return list(result.scalars().all())
-
     async def list_all_with_counts(self) -> list[tuple[Tag, int]]:
         """List all tags with their associated video counts."""
         result = await self.session.execute(
