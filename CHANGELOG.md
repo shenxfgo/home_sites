@@ -1,6 +1,16 @@
 # 更新日志
 
 ## 2026-10-10
+### 对象存储那三道都在说「读不到」的闸门补满了——它们方向一致，却互相顶（#195）
+
+- **这一单是纯 coverage，源码一行没动**：`src/storage/s3.py` 缺的五句 `95-96, 180, 214-216` 现在 **104 条语句 / 0 条未覆盖**，`tests/test_storage/test_s3_storage.py` 10 → 14 条用例。变异电池 7 格：**全红，无一等价**。
+- **三道闸门都在说「读不到」，可「读不到」分别是：没装依赖、权限不够、读到一半断了。** 前两条不许把别的东西说成「没有这个文件」（`size()` 只把 404/NoSuchKey/NoSuchBucket 翻译成 `None`，其余照原样抛；`exists()` 就是 `size() is not None`，所以那句 `raise` 也是它的靠山），第三条不许把一次断流说成「不是重复」（`edge_fingerprint` 吞掉一切，回 `None` 交给调用方按「判断不了」处理）。
+- **moto 造不出这三格**：它按 S3 契约好好回答问题。所以两条替身缝——`sys.modules["boto3"] = None` 让 `import boto3` 抛 `ImportError`（在一台装了 boto3 的机器上够到那一格的唯一办法），`_client` 换成 `SimpleNamespace(head_object=…, get_object=…)`。**钉的是闸门说什么，不是闸门会不会被撞到**：真机上 MinIO 到底回 `AccessDenied` 还是别的码，这一单仍然没证。
+- **#194 那条设计在这里兑现**：`edge_fingerprint` 一颗 `ClientError`、一颗 `RuntimeError`（parametrize 两格）。把 `except Exception` 改窄成只接 `ClientError`（M7）只红 `anything-else` 那一格，改成一个永远等不到的异常（M6）两格都红——一颗异常签不了两种宽窄。
+- **差点又吃一次假绿**：那条指纹用例第一版只断「回 `None`」，而凭证没配好时 `size()` 自己就回 `None`、整块对象压根没被读过——补上的那句 `calls == ["head", "get"]` 才是「真读到第二次才断下来」的签字。另外如实记下一格爆炸半径：拆掉 `reachable` 里那句 `return False`（M3）红的是 **3 条**（新加的那条加两条早就在的），那一格今天就有两个人签字。
+- **读数**：978 passed / TOTAL 96.64%（4648 条语句 / 156 未覆盖），`ruff check src tests` 干净，`mypy src` 基线 **34** 不变；这一族不打库（moto 在进程内截 botocore），SQLite 分支同日重测 **40 passed**。
+- **红在前**：这一单是「只加用例」的 coverage 单，没有预备 fix 可跑；给出的对照是同一份用例集打在坏源码上——7 格逐条红过（M1—M7 每格只动一个变量，M6 红 2 条、M3 红 3 条、其余各红 1 条），跑完按 md5 逐字节还原（源文件 md5 `00c24dadfd4b21ecf106b178c140f6cd` 还原后一致，还原后 111 条复跑全绿）。
+
 ### 定时扫描那两道「通知自己也写不出去」的闸门补满了，顺带量掉一句传了很久的假话（#194）
 
 - **这一单是纯 coverage，源码一行没动**：`src/scheduler/tasks.py` 缺的四句 `44-45, 69-70` 现在 **55 条语句 / 0 条未覆盖**，用例 2 → 4 条。电池 7 格：**6 红 + 1 实测等价**。缺的是同一道闸门抄了两份——`scan_source_task` 与 `scan_all_active_task` 各有一份「失败通知自己也写不出去」时的 `except Exception` + `logger.exception`；备份那一族早有同形状的一条用例，扫描这两路从来没有。
