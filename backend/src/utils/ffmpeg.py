@@ -1,12 +1,10 @@
 """FFmpeg utilities for video transcoding."""
 import asyncio
 import contextlib
-import json
 import re
-import subprocess
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Callable, cast
 
 SUPPORTED_FORMATS = {
     "mp4": {"codec": "libx264", "acodec": "aac", "ext": ".mp4"},
@@ -28,32 +26,6 @@ def _parse_ffmpeg_time(stamp: str) -> float | None:
         return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
     except (ValueError, AttributeError):
         return None
-
-
-def get_video_info(filepath: str) -> dict:
-    """Get video information using ffprobe."""
-    try:
-        cmd = [
-            "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams",
-            filepath,
-        ]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-        if result.returncode == 0 and result.stdout:
-            return cast(dict[str, Any], json.loads(result.stdout))
-        return {}
-    except Exception:
-        return {}
 
 
 async def transcode_video(
