@@ -55,9 +55,28 @@ async def stream_video(
                 filename=os.path.basename(filepath),
             )
 
-        # 对象存储没有本地文件可交给 FileResponse，整文件就是"从头读到尾的那一段"
+        # 零字节的对象存储在这一层不是"没配凭证"那种读不到：head 答得出长度，长度是 0。
+        # 而**空对象没有第 0 个字节**，所以下面那一行不管把区间算成 bytes=0-0 还是
+        # bytes=0--1，都是在问一个桶答不出的问题（前者 moto 与真桶一致地拒，后者只有 moto
+        # 含糊地回一个空 200）。更糟的是异常在响应头提交之后才从生成器里抛出来，界面上
+        # 拿到的是一个断流的 200。本地那一路由 FileResponse 自己 stat，从来不出门要字节，
+        # 所以两种地址现在给的是同一个答案：空的 200。区间那一路不在这儿，它照旧按 RFC
+        # 7233 收敛成 416。
+        if file_size == 0:
+            return Response(
+                status_code=200,
+                headers={
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": "0",
+                    "Content-Type": content_type,
+                },
+            )
+
+        # 对象存储没有本地文件可交给 FileResponse，整文件就是"从头读到尾的那一段"。
+        # 走到这儿 file_size 至少是 1（0 在上一支就答掉了），所以区间算术不需要 max(0, ...)
+        # 那道钳——留着它，"有人把上面的闸门拆掉"就成了一次只有 moto 才看得见的沉默。
         return StreamingResponse(
-            storage.iter_range(filepath, 0, max(0, file_size - 1)),
+            storage.iter_range(filepath, 0, file_size - 1),
             status_code=200,
             headers={
                 "Accept-Ranges": "bytes",

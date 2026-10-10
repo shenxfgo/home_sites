@@ -12,6 +12,12 @@ pytest 这套里是**整体盲区**，不是某条分支漏了：`tests/test_api
 **接线正确**（地址决定读法、区间原样交给存储层、读不到不等于空库），不证明真 MinIO
 对同一个请求回一模一样的头——那一层仍是手工核对，同 `tests/test_storage/
 test_s3_storage.py` 的说明。
+
+#190 量到一个具体的分歧，记在这儿是因为它没法从代码里重新推出来：同一个空对象，
+`bytes=0-0` moto 照 `InvalidRange` 拒（和真桶一致），`bytes=0--1` 它却回一个空 200
+（真桶**不保证**）。所以"零字节不能去请求第 0 个字节"这一格，钉的必须是**有没有出门
+请求**（`test_the_empty_object_answer_never_asks_the_bucket_for_a_byte`），而不是响应
+长什么样——只验响应的话，把闸门拆掉换成越界区间也照样绿。
 """
 
 import pytest
@@ -27,6 +33,7 @@ from moto import mock_aws  # noqa: E402
 from src.config import settings  # noqa: E402
 from src.models.source import VideoSource  # noqa: E402
 from src.models.video import Video  # noqa: E402
+from src.storage import storage_for_locator  # noqa: E402
 
 BUCKET = "media"
 OBJ_KEY = "shows/01.mkv"
@@ -62,11 +69,25 @@ def bucket_credentials(monkeypatch):
     monkeypatch.setattr(settings, "s3_addressing_style", "auto")
 
 
-def _seed(keys: tuple[str, ...]) -> None:
+def _seed(keys: tuple[str, ...], body: bytes = BODY) -> None:
     client = boto3.client("s3", region_name=settings.s3_region)
     client.create_bucket(Bucket=BUCKET)
     for key in keys:
-        client.put_object(Bucket=BUCKET, Key=key, Body=BODY)
+        client.put_object(Bucket=BUCKET, Key=key, Body=body)
+
+
+async def _bucket_video(db_session) -> Video:
+    """一条 filepath 指着桶里的行：源、地址和标题三样在这一节里从不各自变。"""
+    return await _video(
+        db_session,
+        source_name="桶",
+        source_path=f"s3://{BUCKET}/shows",
+        source_type="minio",
+        filepath=LOCATOR,
+        title="01",
+        format="mkv",
+        file_size=len(BODY),
+    )
 
 
 async def test_a_local_video_is_handed_to_a_file_response(client, db_session, tmp_path):
@@ -226,6 +247,98 @@ async def test_an_object_gone_from_the_bucket_falls_back_without_500(
 
     assert response.status_code == 200
     assert "note" in response.json()
+
+
+async def test_a_zero_byte_object_answers_an_empty_whole_file(
+    client, db_session, bucket_credentials
+):
+    """零字节的对象不能走到"请求第 0 到第 0 个字节"那一步。
+
+    `size()` 对空对象回 **0 而不是 None**，所以它进的是"读得到"那一条分支；而那条
+    分支从前把区间算成 `max(0, 0 - 1)` = `bytes=0-0`——**对象存储答不出一个空对象的第一
+    个字节**（moto 抛 `InvalidRange`，真桶同样），且异常是在响应头已经提交之后才从生成器
+    里抛出来的。界面上拿到的因此不是错误码，是**一个断流的 200**：播放器等不到 body，
+    服务端日志里多一条 ClientError。
+    """
+    video = await _bucket_video(db_session)
+
+    with mock_aws():
+        _seed((OBJ_KEY,), body=b"")
+        response = await client.get(f"/api/videos/{video.id}/stream")
+
+    assert response.status_code == 200
+    assert response.content == b""
+    assert response.headers["content-length"] == "0"
+    assert response.headers["content-type"] == "video/x-matroska"
+    assert response.headers["accept-ranges"] == "bytes"
+
+
+async def test_the_empty_object_answer_never_asks_the_bucket_for_a_byte(
+    client, db_session, bucket_credentials, monkeypatch
+):
+    """这道闸门真正钉住的是"一次也不去要字节"，不是那个 200。
+
+    为什么单独开这一格：把闸门拆掉、只把算术留成"从头读到 `file_size - 1`"（也就是
+    请求 `bytes=0--1`），上面那条用例**照样是绿的**——moto 对这种区间回的是一个空 200，
+    而真桶对越界区间的答复并不相同（`bytes=0-0` 那一条它是照 `InvalidRange` 拒的，隔壁
+    那条 416 用例签的就是这个）。**看响应钉不住"先判零"，得看有没有出门。** 这一格把请
+    求侧钉死：空对象的整文件答案必须由路由自己组装，一次 `iter_range` 都不许发生。
+    """
+    s3 = storage_for_locator(LOCATOR)
+    asked: list[tuple[int, int]] = []
+    real_iter_range = s3.iter_range
+
+    def spy(locator: str, start: int, end: int):
+        asked.append((start, end))
+        yield from real_iter_range(locator, start, end)
+
+    monkeypatch.setattr(s3, "iter_range", spy)
+    video = await _bucket_video(db_session)
+
+    with mock_aws():
+        _seed((OBJ_KEY,), body=b"")
+        response = await client.get(f"/api/videos/{video.id}/stream")
+
+    assert asked == []
+    assert response.status_code == 200
+    assert response.content == b""
+
+
+async def test_a_zero_byte_local_file_answers_the_same_as_the_object(
+    client, db_session, tmp_path
+):
+    """两种地址必须给同一个答案，这条是那一格的对照。
+
+    本地空文件走的是 `FileResponse`，它自己算长度、从来不会去请求第 0 个字节——所以这一
+    格在改动前后都是绿的。它留在这里是因为 #190 那道闸门选的"干净答案"正是**照这一格抄**：
+    空文件就是空的 200，不是 404、也不是 500。哪天有人把对象那一支改成别的码，红的是隔壁
+    那条，而这两条必须一起翻。
+    """
+    path = tmp_path / "empty.mkv"
+    path.write_bytes(b"")
+    video = await _video(
+        db_session, filepath=str(path), title="空", format="mkv", file_size=0
+    )
+
+    response = await client.get(f"/api/videos/{video.id}/stream")
+
+    assert response.status_code == 200
+    assert response.content == b""
+
+
+async def test_a_zero_byte_object_still_refuses_a_range(
+    client, db_session, bucket_credentials
+):
+    """区间那一路一个字也没改：空对象上的 Range 仍然是 416，两种地址本来就走同一段算术。"""
+    video = await _bucket_video(db_session)
+
+    with mock_aws():
+        _seed((OBJ_KEY,), body=b"")
+        response = await client.get(
+            f"/api/videos/{video.id}/stream", headers={"Range": "bytes=0-1023"}
+        )
+
+    assert response.status_code == 416
 
 
 async def test_a_cover_on_disk_is_served_as_a_jpeg(client, db_session, tmp_path):
