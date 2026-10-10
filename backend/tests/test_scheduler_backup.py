@@ -63,7 +63,13 @@ async def test_a_healthy_backup_says_nothing(db_session, monkeypatch):
 async def test_a_notification_that_cannot_be_written_does_not_kill_the_job(
     db_session, monkeypatch
 ):
-    """写通知这一步也炸的时候异常不能冒回调度器——任务被永久移除比丢一条通知严重。"""
+    """写通知这一步也炸的时候异常也不能冒回调用方——这个任务的契约是「从不抛」，日志里得
+    有那句 `Failed to create the backup error notification` 说明是通知没写出去。
+
+    「否则任务被永久移除」是假的：实测 APScheduler 3.11.3，一条每秒触发的 cron job 里的函数
+    每次都抛，3.2 秒里照样跑了 3 次、任务还在、`next_run_time` 也留着。这句假设原先写在
+    这里，#194 量过之后才改的口。
+    """
     task_module_shared(monkeypatch, db_session)
     monkeypatch.setattr(backup, "run_backup", _explode)
 
