@@ -55,7 +55,7 @@ class FavoriteService:
             await self.session.execute(select(Video).where(Video.id == video_id))
         ).scalar_one_or_none()
         if not video:
-            raise ValueError(f"Video with id {video_id} not found")
+            raise ValueError(f"视频 #{video_id} 不存在")
 
         existing = await self.session.execute(
             select(Favorite).where(
@@ -63,7 +63,7 @@ class FavoriteService:
             )
         )
         if existing.scalar_one_or_none():
-            raise ValueError("Video already in favorites")
+            raise ValueError("这部视频已在收藏里")
 
         favorite = Favorite(user_id=user_id, video_id=video_id)
         self.session.add(favorite)
@@ -80,7 +80,7 @@ class FavoriteService:
         )
         favorite = result.scalar_one_or_none()
         if not favorite:
-            raise ValueError("Video not in favorites")
+            raise ValueError("这部视频不在收藏里")
 
         await self.session.delete(favorite)
         await self.session.commit()

@@ -212,7 +212,7 @@ async def stream_subtitle(
     """Serve a subtitle as WebVTT, the only format browsers render in a <track>."""
     subtitle = await service.get_subtitle(video_id, subtitle_id)
     if not subtitle:
-        raise HTTPException(status_code=404, detail="Subtitle not found")
+        raise HTTPException(status_code=404, detail="字幕不存在")
 
     try:
         payload = convert_to_webvtt(subtitle.filepath)

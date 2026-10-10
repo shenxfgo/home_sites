@@ -125,7 +125,7 @@ async def get_source(
     """Get a specific video source."""
     source = await service.get_by_id(source_id)
     if not source:
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise HTTPException(status_code=404, detail="视频源不存在")
     return source
 
 
@@ -138,7 +138,7 @@ async def update_source(
     """Update a video source."""
     update_data = data.model_dump(exclude_unset=True)
     if not update_data:
-        raise HTTPException(status_code=400, detail="No fields to update")
+        raise HTTPException(status_code=400, detail="没有需要更新的字段")
 
     # Half an edit is enough to break the pairing, so validate the values the
     # source would end up with, not just the ones the request happens to carry.

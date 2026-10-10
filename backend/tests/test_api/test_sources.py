@@ -145,7 +145,7 @@ async def test_get_nonexistent_source(client):
     response = await client.get("/api/sources/99999")
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "Source not found"
+    assert response.json()["detail"] == "视频源不存在"
 
 
 @pytest.mark.asyncio
@@ -186,7 +186,7 @@ async def test_update_source_empty_body(client):
     response = await client.put(f"/api/sources/{source_id}", json={})
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "No fields to update"
+    assert response.json()["detail"] == "没有需要更新的字段"
 
 
 @pytest.mark.asyncio

@@ -43,7 +43,7 @@ async def test_delete_missing_notification_is_not_found(client):
     response = await client.delete("/api/notifications/99999")
 
     assert response.status_code == 404
-    assert "not found" in response.json()["detail"]
+    assert "不存在" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

@@ -87,7 +87,7 @@ class TagService:
         """Update a tag."""
         tag = await self.get_by_id(tag_id)
         if not tag:
-            raise ValueError(f"Tag with id {tag_id} not found")
+            raise ValueError(f"标签 #{tag_id} 不存在")
 
         new_name = kwargs.get("name")
         if isinstance(new_name, str):
@@ -109,7 +109,7 @@ class TagService:
         """Delete a tag."""
         tag = await self.get_by_id(tag_id)
         if not tag:
-            raise ValueError(f"Tag with id {tag_id} not found")
+            raise ValueError(f"标签 #{tag_id} 不存在")
 
         await self.session.delete(tag)
         await self.session.commit()
@@ -118,7 +118,7 @@ class TagService:
         """Get all videos with a specific tag."""
         tag = await self.get_by_id(tag_id)
         if not tag:
-            raise ValueError(f"Tag with id {tag_id} not found")
+            raise ValueError(f"标签 #{tag_id} 不存在")
 
         result = await self.session.execute(
             select(Tag)
@@ -140,7 +140,7 @@ class TagService:
         )
         video = result.scalar_one_or_none()
         if not video:
-            raise ValueError(f"Video with id {video_id} not found")
+            raise ValueError(f"视频 #{video_id} 不存在")
 
         for tag_id in tag_ids:
             tag = await self.get_by_id(tag_id)
@@ -156,7 +156,7 @@ class TagService:
         )
         video = result.scalar_one_or_none()
         if not video:
-            raise ValueError(f"Video with id {video_id} not found")
+            raise ValueError(f"视频 #{video_id} 不存在")
 
         tag = await self.get_by_id(tag_id)
         if tag and tag in video.tags:

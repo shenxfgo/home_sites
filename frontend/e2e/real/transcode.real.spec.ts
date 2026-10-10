@@ -179,7 +179,7 @@ test('转码：真 FFmpeg 写出真文件，通知由后台任务写进真库，
   await chooseFormat(page, 'mp4 (.mp4)')
   await page.getByRole('button', { name: '开始转码' }).click()
   await confirmMessageBox(page)
-  await expect(page.locator('.el-message--error')).toContainText('same filename as the original')
+  await expect(page.locator('.el-message--error')).toContainText('产物会和源文件同名')
 
   // 被拒绝的任务不留痕迹：上一条 completed 记录还在、没有新通知、源文件一个字节没动
   expect(await readStatus(page)).toEqual(done)
@@ -194,7 +194,7 @@ test('转码：真 FFmpeg 写出真文件，通知由后台任务写进真库，
   })
   expect([rejected.status, rejected.text]).toEqual([
     400,
-    expect.stringContaining('Unsupported format: exe'),
+    expect.stringContaining('不支持的格式：exe'),
   ])
   expect((await readStatus(page)).status).toBe('completed')
   expect((await readNotifications(page)).total).toBe(announced.total)
@@ -252,7 +252,7 @@ test('转码：真 FFmpeg 写出真文件，通知由后台任务写进真库，
   })
   expect([cancel.status, cancel.text]).toEqual([
     404,
-    expect.stringContaining('No active transcoding'),
+    expect.stringContaining('没有正在进行的转码任务'),
   ])
   // 拒绝不能顺手把记录改掉
   expect(await readStatus(page)).toEqual(mkv)
@@ -519,7 +519,7 @@ test('转码取消：子进程真被杀掉、半截产物从磁盘上消失，�
     await expect(page.getByRole('button', { name: '开始转码' })).toBeEnabled()
 
     // 换 mkv（libx264）而不是再等一次 vp9：这一步要的是"取消没有把 `_jobs` 里那一行留在
-    // running"——留着的话 `transcode()` 会当场抛「already being transcoded」，而一个假任务
+    // running"——留着的话 `transcode()` 会当场抛「这部视频正在转码中」，而一个假任务
     // 挂在事件上永远不返回的写法，正是靠这一句才和真作业表区分得开。
     await chooseFormat(page, 'mkv (.mkv)')
     await page.getByRole('button', { name: '开始转码' }).click()

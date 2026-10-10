@@ -54,7 +54,7 @@ async def test_scan_source_not_found(client):
     """Test scanning a source that doesn't exist."""
     response = await client.post("/api/sources/99999/scan")
     assert response.status_code == 404
-    assert "not found" in response.json()["detail"].lower()
+    assert "不存在" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

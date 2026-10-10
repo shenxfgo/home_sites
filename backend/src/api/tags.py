@@ -83,7 +83,7 @@ async def get_tag(
     """Get a specific tag."""
     tag = await service.get_by_id(tag_id)
     if not tag:
-        raise HTTPException(status_code=404, detail="Tag not found")
+        raise HTTPException(status_code=404, detail="标签不存在")
     return tag
 
 
@@ -96,7 +96,7 @@ async def update_tag(
     """Update a tag."""
     update_data = data.model_dump(exclude_unset=True)
     if not update_data:
-        raise HTTPException(status_code=400, detail="No fields to update")
+        raise HTTPException(status_code=400, detail="没有需要更新的字段")
 
     try:
         return await service.update(tag_id, **update_data)

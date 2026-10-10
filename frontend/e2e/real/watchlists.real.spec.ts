@@ -6,9 +6,9 @@
  * 手抄本（`e2e/fixtures.ts:1043` 的 PUT、:1096 的移出、:1103 的删单），而那份手抄本
  * (a) 没有 409——桩世界里「改成同一账号另一条片单的名字」是一次绿色 toast，
  * (b) 没有归属——它按 id 直接找，谁点都改得动，
- * (c) 连 404 的措辞都是自己编的：桩里那三处一律回「片单不存在」，真后端读那一路是
- *    `Watchlist not found`、三条写那一路是服务层那句带着 id 的 `Watchlist with id 7 not found`。
- * 前端不知道自己抄的是谁的规则，抄歪了不会红。
+ * (c) 连 404 的措辞都是自己编的：桩里那三处一律回「片单不存在」，而真后端是两套——读那一路
+ *    是路由那句「片单不存在」（#188 之后正好和桩撞同），三条写那一路是服务层带着 id 的
+ *    「片单 #7 不存在」。前端不知道自己抄的是谁的规则，抄歪了不会红。
  *
  * 顺带量出来的两行：`watchlist_service.py:129`（`watchlist.description = description`）和
  * `api/watchlists.py:125`（改名撞名那句 `raise HTTPException(409)`）在后端测试套里**一次也没
@@ -244,15 +244,15 @@ test('片单那三条写路径打真库：改名撞本人重名是 409、移出�
 
     // ---- 6. 改成**本人**另一条的名字：界面那一路看到的是服务端的原话
     await renameThroughUi(page, LIST_A3, LIST_B)
-    // 前缀「保存失败：」是界面的，后面那半句是后端 detail 的英文原话——现状如此，断言照它写
-    await expect(failure(page)).toContainText(`保存失败：Watchlist '${LIST_B}' already exists`)
+    // 前缀「保存失败：」是界面的，后面那半句是后端 detail 的原话（#188 之后这句是中文）
+    await expect(failure(page)).toContainText(`保存失败：片单「${LIST_B}」已存在`)
     // 保存失败时弹窗不关，名字还停在输入框里：那句 `formVisible.value = false` 只在成功那一路
     await expect(renameDialog(page)).toBeVisible()
     await renameDialog(page).getByRole('button', { name: '取消' }).click()
 
     const blocked = await putWatchlist(page, listA, { name: LIST_B })
     expect(blocked.status).toBe(409)
-    expect(blocked.detail).toBe(`Watchlist '${LIST_B}' already exists`)
+    expect(blocked.detail).toBe(`片单「${LIST_B}」已存在`)
     // 409 之后那一行一个字没动。这里没有回声可看，只有真读回算证据
     const untouched = await listOf(page, listA)
     expect([untouched.name, untouched.description, untouched.created_at]).toEqual([
@@ -286,12 +286,12 @@ test('片单那三条写路径打真库：改名撞本人重名是 409、移出�
     // `delete` / `remove_video` 三处 raise，路由只把 `str(e)` 塞进 detail）。成员拿 owner 的
     // id 去写、和任何人去写一个不存在的 id，得到的是同一句话——越权和不存在在这条路上分不出来。
     const denials: [string, string, string, string | undefined][] = [
-      ['PUT', `/api/watchlists/${listA}`, `Watchlist with id ${listA} not found`, JSON.stringify({ name: '归我' })],
-      ['DELETE', `/api/watchlists/${listB}`, `Watchlist with id ${listB} not found`, undefined],
+      ['PUT', `/api/watchlists/${listA}`, `片单 #${listA} 不存在`, JSON.stringify({ name: '归我' })],
+      ['DELETE', `/api/watchlists/${listB}`, `片单 #${listB} 不存在`, undefined],
       [
         'DELETE',
         `/api/watchlists/${listA}/videos/${VIDEO_ID}`,
-        `Watchlist with id ${listA} not found`,
+        `片单 #${listA} 不存在`,
         undefined,
       ],
     ]

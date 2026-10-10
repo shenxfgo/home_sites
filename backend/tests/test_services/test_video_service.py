@@ -240,7 +240,7 @@ async def test_update_video_not_found(db_session, user_id):
     """Test updating a video that doesn't exist."""
     service = VideoService(db_session)
 
-    with pytest.raises(ValueError, match="Video with id 99999 not found"):
+    with pytest.raises(ValueError, match="视频 #99999 不存在"):
         await service.update_video(99999, user_id, title="test")
 
 
@@ -261,7 +261,7 @@ async def test_delete_video_not_found(db_session, user_id):
     """Test deleting a video that doesn't exist."""
     service = VideoService(db_session)
 
-    with pytest.raises(ValueError, match="Video with id 99999 not found"):
+    with pytest.raises(ValueError, match="视频 #99999 不存在"):
         await service.delete_video(99999)
 
 
@@ -347,7 +347,7 @@ async def test_record_play_not_found(db_session, user_id):
     """Test recording play for non-existent video."""
     service = VideoService(db_session)
 
-    with pytest.raises(ValueError, match="Video with id 99999 not found"):
+    with pytest.raises(ValueError, match="视频 #99999 不存在"):
         await service.record_play(user_id, 99999)
 
 

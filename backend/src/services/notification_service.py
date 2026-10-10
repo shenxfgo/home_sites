@@ -101,7 +101,7 @@ class NotificationService:
         """Record that the caller has read a notification."""
         notification = await self.session.get(Notification, notification_id)
         if not notification:
-            raise ValueError(f"Notification with id {notification_id} not found")
+            raise ValueError(f"通知 #{notification_id} 不存在")
 
         already = await self.session.scalar(
             select(NotificationRead).where(
@@ -140,7 +140,7 @@ class NotificationService:
         )
         notification = result.scalar_one_or_none()
         if not notification:
-            raise ValueError(f"Notification with id {notification_id} not found")
+            raise ValueError(f"通知 #{notification_id} 不存在")
 
         await self.session.delete(notification)
         await self.session.commit()

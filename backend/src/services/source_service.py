@@ -70,7 +70,7 @@ class SourceService:
         """
         source = await self.get_by_id(source_id)
         if not source:
-            raise ValueError(f"Source with id {source_id} not found")
+            raise ValueError(f"视频源 #{source_id} 不存在")
 
         for key, value in kwargs.items():
             if hasattr(source, key):
@@ -92,7 +92,7 @@ class SourceService:
         """Delete a video source and everything discovered from it."""
         source = await self.get_by_id(source_id)
         if not source:
-            raise ValueError(f"Source with id {source_id} not found")
+            raise ValueError(f"视频源 #{source_id} 不存在")
 
         # videos.source_id is NOT NULL, so the source cannot be removed while
         # its videos still point at it.

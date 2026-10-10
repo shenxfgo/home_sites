@@ -194,7 +194,7 @@ class ScanService:
         )
         source = source_result.scalar_one_or_none()
         if not source:
-            raise ValueError(f"Source with id {source_id} not found")
+            raise ValueError(f"视频源 #{source_id} 不存在")
 
         storage = storage_for_source(source.type)
 

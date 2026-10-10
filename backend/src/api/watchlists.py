@@ -106,7 +106,7 @@ async def get_watchlist(
     """Get one watchlist with its queue."""
     watchlist = await service.get_watchlist(user_id, watchlist_id)
     if not watchlist:
-        raise HTTPException(status_code=404, detail="Watchlist not found")
+        raise HTTPException(status_code=404, detail="片单不存在")
     return await _respond(session, watchlist, user_id)
 
 

@@ -120,7 +120,7 @@ async def test_update_source_not_found(db_session):
 
     service = SourceService(db_session)
 
-    with pytest.raises(ValueError, match="Source with id 99999 not found"):
+    with pytest.raises(ValueError, match="视频源 #99999 不存在"):
         await service.update(99999, name="test")
 
 
@@ -145,7 +145,7 @@ async def test_delete_source_not_found(db_session):
 
     service = SourceService(db_session)
 
-    with pytest.raises(ValueError, match="Source with id 99999 not found"):
+    with pytest.raises(ValueError, match="视频源 #99999 不存在"):
         await service.delete(99999)
 
 

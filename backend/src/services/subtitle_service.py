@@ -45,7 +45,7 @@ class SubtitleService:
         """Register an existing subtitle file as a track of a video."""
         video = await self.session.get(Video, video_id)
         if not video:
-            raise ValueError(f"Video with id {video_id} not found")
+            raise ValueError(f"视频 #{video_id} 不存在")
 
         # 外挂字幕的前提是"视频旁边有个目录可以挂文件"，对象存储没有目录；而且
         # 下面那道目录包含检查用的是本地路径词法，套在 s3:// 地址上会得出错误的
@@ -83,7 +83,7 @@ class SubtitleService:
         """Remove a subtitle track record."""
         subtitle = await self.get_subtitle(video_id, subtitle_id)
         if not subtitle:
-            raise ValueError(f"Subtitle with id {subtitle_id} not found")
+            raise ValueError(f"字幕 #{subtitle_id} 不存在")
 
         await self.session.delete(subtitle)
         await self.session.commit()

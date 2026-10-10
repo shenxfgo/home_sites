@@ -135,7 +135,7 @@ test('删掉一部影片：库里那行没了，它名下那张真封面也从�
 
     // ---- 4. 库里那一行和它的收藏都没了
     const gone = await fetchInPage(page, `/api/videos/${extraId}`)
-    expect([gone.status, gone.text]).toEqual([404, expect.stringContaining('Video not found')])
+    expect([gone.status, gone.text]).toEqual([404, expect.stringContaining('视频不存在')])
     // 删除那条路自己也要能重走一遍：`delete_video` 抛的是 ValueError，它和"读不到"两句
     // 原话不一样，各自 mapped 到 404。第二脚若漏了 except，浏览器看到的是一片 500。
     const again = await fetchInPage(page, `/api/videos/${extraId}`, {
@@ -144,11 +144,11 @@ test('删掉一部影片：库里那行没了，它名下那张真封面也从�
     })
     expect([again.status, again.text]).toEqual([
       404,
-      expect.stringContaining(`Video with id ${extraId} not found`),
+      expect.stringContaining(`视频 #${extraId} 不存在`),
     ])
     // 封面接口读的是同一行，行没了它也只能说没有这部片子（不是"没有封面"）
     const thumb = await fetchInPage(page, `/api/videos/${extraId}/thumbnail`)
-    expect([thumb.status, thumb.text]).toEqual([404, expect.stringContaining('Video not found')])
+    expect([thumb.status, thumb.text]).toEqual([404, expect.stringContaining('视频不存在')])
     const afterDelete = await readVideos(page)
     expect(afterDelete.rows.map((row) => row.id)).toEqual(before.rows.map((row) => row.id))
     expect(afterDelete.total).toBe(before.total)

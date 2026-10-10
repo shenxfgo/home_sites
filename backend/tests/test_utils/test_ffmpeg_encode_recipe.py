@@ -242,7 +242,7 @@ def test_a_failure_that_said_nothing_says_only_the_exit_code():
     """没有诊断行时不许编造原因，但也不能空着回一句"失败了"。"""
     result, _, _ = _transcode([b"out_time=00:00:02.000000\n"], returncode=134)
 
-    assert result == (False, "ffmpeg exited with code 134"), result
+    assert result == (False, "ffmpeg 以退出码 134 结束"), result
 
 
 def test_an_unsupported_format_never_starts_a_process():
@@ -252,7 +252,7 @@ def test_an_unsupported_format_never_starts_a_process():
         success, error = asyncio.run(transcode_video(INPUT, OUTPUT, "flv", 30.0))
 
     assert success is False
-    assert error == "Unsupported format: flv", error
+    assert error == "不支持的格式：flv", error
     assert spawn.calls == [], spawn.calls
 
 
@@ -263,7 +263,7 @@ def test_ffmpeg_not_being_installed_is_said_in_words():
         success, error = asyncio.run(transcode_video(INPUT, OUTPUT, "mkv", 30.0))
 
     assert success is False
-    assert error is not None and error.startswith("Failed to start ffmpeg: "), error
+    assert error is not None and error.startswith("无法启动 ffmpeg："), error
     assert "ffmpeg" in error, error
 
 

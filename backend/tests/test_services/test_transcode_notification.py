@@ -123,13 +123,13 @@ async def test_a_failed_job_passes_ffmpeg_words_into_the_notification(
     video = await _video(db_session, tmp_path)
 
     await _finish_job(
-        db_session, monkeypatch, video, (False, "ffmpeg exited with code 1")
+        db_session, monkeypatch, video, (False, "ffmpeg 以退出码 1 结束")
     )
 
     rows = await _notes(db_session)
     assert [(r.type, r.title) for r in rows] == [("transcode_error", "转码失败")]
     assert "转码为 mkv 格式失败" in rows[0].message, rows[0].message
-    assert rows[0].message.endswith("ffmpeg exited with code 1"), rows[0].message
+    assert rows[0].message.endswith("ffmpeg 以退出码 1 结束"), rows[0].message
     assert rows[0].data == {"video_id": video.id, "format": "mkv"}, rows[0].data
 
 

@@ -81,7 +81,7 @@ async def test_add_rejects_unknown_video(db_session, tmp_path):
     subtitle_path = directory / "movie.srt"
     subtitle_path.write_text("1\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ValueError, match="不存在"):
         await SubtitleService(db_session).add(9999, str(subtitle_path))
 
 
@@ -158,7 +158,7 @@ async def test_delete_removes_the_record(db_session, tmp_path):
 async def test_delete_unknown_subtitle_raises(db_session, tmp_path):
     _, video, _ = await _video_with_dir(db_session, tmp_path)
 
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ValueError, match="不存在"):
         await SubtitleService(db_session).delete(video.id, 1234)
 
 

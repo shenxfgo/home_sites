@@ -52,7 +52,7 @@ async def add_job(
     )
     source = result.scalar_one_or_none()
     if not source:
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise HTTPException(status_code=404, detail="视频源不存在")
 
     scheduler.add_source_job(data.source_id, data.interval)
     return {"message": f"Job added for source {data.source_id}"}

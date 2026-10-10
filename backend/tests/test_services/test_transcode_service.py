@@ -93,7 +93,7 @@ async def test_get_status_idle(db_session):
 async def test_cancel_rejects_job_that_is_not_running(db_session):
     service = TranscodeService(db_session)
 
-    with pytest.raises(ValueError, match="No active transcoding"):
+    with pytest.raises(ValueError, match="没有正在进行的转码任务"):
         await service.cancel(4242)
 
 
@@ -102,7 +102,7 @@ async def test_transcode_rejects_unsupported_format(db_session, tmp_path):
     video = await _create_video(db_session, tmp_path)
     service = TranscodeService(db_session)
 
-    with pytest.raises(ValueError, match="Unsupported format"):
+    with pytest.raises(ValueError, match="不支持的格式"):
         await service.transcode(video.id, "exe")
 
 
@@ -110,7 +110,7 @@ async def test_transcode_rejects_unsupported_format(db_session, tmp_path):
 async def test_transcode_rejects_unknown_video(db_session):
     service = TranscodeService(db_session)
 
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ValueError, match="不存在"):
         await service.transcode(4242, "mkv")
 
 
@@ -120,7 +120,7 @@ async def test_transcode_rejects_missing_file(db_session, tmp_path):
     video = await _create_video(db_session, tmp_path)
     (tmp_path / "movie.mp4").unlink()
 
-    with pytest.raises(ValueError, match="Video file not found"):
+    with pytest.raises(ValueError, match="视频文件不存在"):
         await service.transcode(video.id, "mkv")
 
 
@@ -134,7 +134,7 @@ async def test_transcode_rejects_the_product_having_the_source_name(db_session, 
     video = await _create_video(db_session, tmp_path, filename="movie.mp4")
     service = TranscodeService(db_session)
 
-    with pytest.raises(ValueError, match="same filename as the original"):
+    with pytest.raises(ValueError, match="产物会和源文件同名"):
         await service.transcode(video.id, "mp4")
 
 
@@ -198,7 +198,7 @@ async def test_status_and_progress_shared_across_service_instances(
     assert seen["target_format"] == "mkv", seen
 
     duplicate = TranscodeService(db_session)
-    with pytest.raises(ValueError, match="already being transcoded"):
+    with pytest.raises(ValueError, match="这部视频正在转码中"):
         await duplicate.transcode(video.id, "webm")
 
     await TranscodeService(db_session).cancel(video.id)
@@ -265,7 +265,7 @@ async def test_failed_job_keeps_the_error_message(
     video = await _create_video(db_session, tmp_path)
 
     async def failing(*args, **kwargs):
-        return False, "ffmpeg exited with code 1"
+        return False, "ffmpeg 以退出码 1 结束"
 
     monkeypatch.setattr(tc_module, "transcode_video", failing)
 
@@ -274,7 +274,7 @@ async def test_failed_job_keeps_the_error_message(
 
     status = await TranscodeService(db_session).get_status(video.id)
     assert status["status"] == "failed", status
-    assert status["error"] == "ffmpeg exited with code 1", status
+    assert status["error"] == "ffmpeg 以退出码 1 结束", status
     assert status["is_transcoding"] is False, status
 
 
@@ -369,7 +369,7 @@ async def test_a_failed_job_records_no_product(db_session, tmp_path, monkeypatch
     video = await _create_video(db_session, tmp_path)
 
     async def failing(*args, **kwargs):
-        return False, "ffmpeg exited with code 1"
+        return False, "ffmpeg 以退出码 1 结束"
 
     monkeypatch.setattr(tc_module, "transcode_video", failing)
 

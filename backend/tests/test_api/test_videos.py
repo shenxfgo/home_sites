@@ -141,7 +141,7 @@ async def test_get_video_not_found(client):
     """Test getting a video that doesn't exist."""
     response = await client.get("/api/videos/99999")
     assert response.status_code == 404
-    assert response.json()["detail"] == "Video not found"
+    assert response.json()["detail"] == "视频不存在"
 
 
 @pytest.mark.asyncio
@@ -175,7 +175,7 @@ async def test_update_video_empty_body(client, db_session):
 
     response = await client.put(f"/api/videos/{video.id}", json={})
     assert response.status_code == 400
-    assert response.json()["detail"] == "No fields to update"
+    assert response.json()["detail"] == "没有需要更新的字段"
 
 
 @pytest.mark.asyncio

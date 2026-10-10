@@ -205,7 +205,7 @@ async def get_video(
     """Get a specific video."""
     video = await service.get_video_by_id(video_id, user_id)
     if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+        raise HTTPException(status_code=404, detail="视频不存在")
     return video
 
 
@@ -224,7 +224,7 @@ async def update_video(
     tag_ids = update_data.pop("tag_ids", None)
 
     if not update_data and tag_ids is None:
-        raise HTTPException(status_code=400, detail="No fields to update")
+        raise HTTPException(status_code=400, detail="没有需要更新的字段")
 
     # Resolve the tag list first: a request that names a tag which no longer exists is
     # refused as a whole, before any half of it has been written. The assignment below
@@ -238,7 +238,7 @@ async def update_video(
         if missing:
             raise HTTPException(
                 status_code=404,
-                detail=f"Tag not found: {', '.join(str(tag_id) for tag_id in missing)}",
+                detail=f"标签不存在：{', '.join(str(tag_id) for tag_id in missing)}",
             )
 
     # Update basic fields
@@ -250,7 +250,7 @@ async def update_video(
     else:
         video = await service.get_video_by_id(video_id, user_id)
         if not video:
-            raise HTTPException(status_code=404, detail="Video not found")
+            raise HTTPException(status_code=404, detail="视频不存在")
 
     # Handle tag assignment
     if new_tags is not None:

@@ -197,14 +197,14 @@ test('编辑影片：写进真库、扫描不覆盖手改的名字，评分留�
       body: {},
       expectStatus: 400,
     })).detail,
-  ).toBe('No fields to update')
+  ).toBe('没有需要更新的字段')
   expect(
     (await requestJson<{ detail: string }>(page, '/api/videos/99999', {
       method: 'PUT',
       body: { title: '没人认领' },
       expectStatus: 404,
     })).detail,
-  ).toBe('Video with id 99999 not found')
+  ).toBe('视频 #99999 不存在')
 
   // ---- 7. 成员这一头：界面上没有那个入口，接口也不放行，两层说的是同一件事
   await signIn(page, E2E_MEMBER_USERNAME)

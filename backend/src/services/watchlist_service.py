@@ -107,7 +107,7 @@ class WatchlistService:
             )
         )
         if result.scalar_one_or_none() is not None:
-            raise DuplicateWatchlistNameError(f"Watchlist '{name}' already exists")
+            raise DuplicateWatchlistNameError(f"片单「{name}」已存在")
 
     async def update(
         self,
@@ -119,7 +119,7 @@ class WatchlistService:
         """Rename a watchlist or change what it says about itself."""
         watchlist = await self.get_watchlist(user_id, watchlist_id)
         if not watchlist:
-            raise ValueError(f"Watchlist with id {watchlist_id} not found")
+            raise ValueError(f"片单 #{watchlist_id} 不存在")
 
         if name is not None:
             if name != watchlist.name:
@@ -134,7 +134,7 @@ class WatchlistService:
         """Delete a watchlist and, with it, only its own rows in ``watchlist_items``."""
         watchlist = await self.get_watchlist(user_id, watchlist_id)
         if not watchlist:
-            raise ValueError(f"Watchlist with id {watchlist_id} not found")
+            raise ValueError(f"片单 #{watchlist_id} 不存在")
 
         await self.session.delete(watchlist)
         await self.session.commit()
@@ -143,13 +143,13 @@ class WatchlistService:
         """Put a title at the end of the queue; being in it already changes nothing."""
         watchlist = await self.get_watchlist(user_id, watchlist_id)
         if not watchlist:
-            raise ValueError(f"Watchlist with id {watchlist_id} not found")
+            raise ValueError(f"片单 #{watchlist_id} 不存在")
 
         video = (
             await self.session.execute(select(Video).where(Video.id == video_id))
         ).scalar_one_or_none()
         if not video:
-            raise ValueError(f"Video with id {video_id} not found")
+            raise ValueError(f"视频 #{video_id} 不存在")
 
         already = (
             await self.session.execute(
@@ -170,7 +170,7 @@ class WatchlistService:
         """Take one title out of the queue, leaving the video itself in the library."""
         watchlist = await self.get_watchlist(user_id, watchlist_id)
         if not watchlist:
-            raise ValueError(f"Watchlist with id {watchlist_id} not found")
+            raise ValueError(f"片单 #{watchlist_id} 不存在")
 
         for item in list(watchlist.items):
             if item.video_id == video_id:

@@ -546,7 +546,7 @@ class VideoService:
         edits the same row."""
         video = await self.get_video_by_id(video_id, user_id)
         if not video:
-            raise ValueError(f"Video with id {video_id} not found")
+            raise ValueError(f"视频 #{video_id} 不存在")
 
         for key, value in kwargs.items():
             if hasattr(video, key):
@@ -560,7 +560,7 @@ class VideoService:
         """Delete a video, its rows in every account, and the files we generated for it."""
         video = await self.session.get(Video, video_id)
         if not video:
-            raise ValueError(f"Video with id {video_id} not found")
+            raise ValueError(f"视频 #{video_id} 不存在")
 
         generated = await delete_videos_cascade(self.session, Video.id == video_id)
         await self.session.commit()
@@ -613,7 +613,7 @@ class VideoService:
         """
         video = await self.get_video_by_id(video_id, user_id)
         if not video:
-            raise ValueError(f"Video with id {video_id} not found")
+            raise ValueError(f"视频 #{video_id} 不存在")
 
         now = datetime.now(timezone.utc)
         video.view_count += 1
@@ -657,7 +657,7 @@ class VideoService:
         """
         video = await self.get_video_by_id(video_id, user_id)
         if not video:
-            raise ValueError(f"Video with id {video_id} not found")
+            raise ValueError(f"视频 #{video_id} 不存在")
 
         history = await self._get_or_create_history(user_id, video_id)
         gained = max(0, progress - (history.progress or 0))

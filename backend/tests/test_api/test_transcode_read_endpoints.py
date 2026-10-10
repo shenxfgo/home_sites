@@ -179,8 +179,8 @@ async def test_cancelling_a_video_that_is_not_transcoding_says_why(
 ):
     """取消一个没在跑的片子：404，而且原因得跟着过来。
 
-    ``detail`` 是服务层那句英文（``No active transcoding for video …``），#153 还等着把它
-    换成中文，所以这里不钉措辞，只钉「非空 + 带着那个影片 id」——用户看得懂是哪一部。
+    ``detail`` 是服务层那句中文原话（``视频 #7 没有正在进行的转码任务``）——#153 等的就是
+    这一句，措辞从此钉得住：整句相等，顺带也就带着那个影片 id，用户看得懂是哪一部。
     """
     video = await _video(db_session, tmp_path)
 
@@ -188,8 +188,7 @@ async def test_cancelling_a_video_that_is_not_transcoding_says_why(
 
     assert response.status_code == 404, response.json()
     detail = response.json()["detail"]
-    assert detail, "404 却没人说出原因"
-    assert str(video.id) in detail, detail
+    assert detail == f"视频 #{video.id} 没有正在进行的转码任务", detail
 
 
 @pytest.mark.asyncio

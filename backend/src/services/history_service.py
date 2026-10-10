@@ -172,7 +172,7 @@ class HistoryService:
         )
         history = result.scalar_one_or_none()
         if not history:
-            raise ValueError(f"History with id {history_id} not found")
+            raise ValueError(f"播放记录 #{history_id} 不存在")
 
         await self.session.delete(history)
         await self.session.commit()

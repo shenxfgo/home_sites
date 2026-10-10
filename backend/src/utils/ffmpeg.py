@@ -71,7 +71,7 @@ async def transcode_video(
     """
     format_info = SUPPORTED_FORMATS.get(target_format)
     if not format_info:
-        return False, f"Unsupported format: {target_format}"
+        return False, f"不支持的格式：{target_format}"
 
     # -progress writes machine readable key=value lines to stdout; folding
     # stderr into the same pipe keeps a single stream to drain, so ffmpeg can
@@ -95,7 +95,7 @@ async def transcode_video(
             stderr=asyncio.subprocess.STDOUT,
         )
     except (FileNotFoundError, OSError) as exc:
-        return False, f"Failed to start ffmpeg: {exc}"
+        return False, f"无法启动 ffmpeg：{exc}"
 
     # Keeps the tail of any non-progress output so failures can be reported.
     other_output: deque[str] = deque(maxlen=20)
@@ -137,7 +137,7 @@ async def transcode_video(
         return False, str(exc)
 
     if returncode != 0:
-        return False, " ".join(other_output) or f"ffmpeg exited with code {returncode}"
+        return False, " ".join(other_output) or f"ffmpeg 以退出码 {returncode} 结束"
     return True, None
 
 

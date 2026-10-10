@@ -34,7 +34,7 @@ async def stream_video(
     # needs the path, and the service call would add a per-person history lookup.
     video = await session.get(Video, video_id)
     if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+        raise HTTPException(status_code=404, detail="视频不存在")
 
     filepath = video.filepath
     storage = storage_for_locator(filepath)
@@ -89,7 +89,7 @@ async def get_thumbnail(
     """
     video = await session.get(Video, video_id)
     if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+        raise HTTPException(status_code=404, detail="视频不存在")
 
     if video.thumbnail_path and os.path.isfile(video.thumbnail_path):
         return FileResponse(
@@ -140,12 +140,12 @@ def _handle_range_request(
             start = max(0, file_size - suffix)
             end = last_byte
     except (ValueError, IndexError):
-        raise HTTPException(status_code=416, detail="Invalid Range header")
+        raise HTTPException(status_code=416, detail="Range 请求头无法解析")
 
     # 越界按 RFC 7233 收敛到文件末尾，而不是回 416，否则播放器会从头重载
     end = min(end, last_byte)
     if start > end or start < 0:
-        raise HTTPException(status_code=416, detail="Range not satisfiable")
+        raise HTTPException(status_code=416, detail="Range 超出文件范围")
 
     content_length = end - start + 1
 

@@ -4,7 +4,7 @@
  * 前二十四条把 webm、avi、mkv 三行配方都查过了，唯独 mp4 那一行没查——不是漏了，是在播种那部
  * 片子上**测不出来**：闸门比的是源文件的扩展名和目标格式（`transcode_service.py` 里那句
  * `Path(input_path).suffix`），源是 .mp4、目标也是 mp4 时它回
- * `Target format matches the source format`（第 15 条第 3 步签的就是这一句），ffmpeg 因此
+ * 「目标格式与源文件相同（…），产物会和源文件同名」（第 15 条第 3 步签的就是这一句），ffmpeg 因此
  * 从没为那一行启动过。`SUPPORTED_FORMATS['mp4']` 那两个编码器字面值——`-c:v libx264` 和
  * `-c:a aac`——不进任何 API 响应（`get_supported_formats` 只回 `codec` 和 `extension`，
  * `acodec` 从来不回），所以改错 `acodec` 在此前那二十四条真用例和 754 条后端用例里都是一格

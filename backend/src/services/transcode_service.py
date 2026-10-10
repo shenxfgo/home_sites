@@ -74,7 +74,7 @@ class TranscodeService:
 
         # Validate format
         if not check_format_support(target_format):
-            raise ValueError(f"Unsupported format: {target_format}")
+            raise ValueError(f"不支持的格式：{target_format}")
 
         # Get video
         result = await self.session.execute(
@@ -82,11 +82,11 @@ class TranscodeService:
         )
         video = result.scalar_one_or_none()
         if not video:
-            raise ValueError(f"Video with id {video_id} not found")
+            raise ValueError(f"视频 #{video_id} 不存在")
 
         running = _jobs.get(video_id)
         if running and running.status == "running":
-            raise ValueError("Video is already being transcoded")
+            raise ValueError("这部视频正在转码中")
 
         # FFmpeg 只认本地路径。把对象存储的 locator 直接丢给它，得到的是一句
         # "文件不存在"——那是假话，所以先向存储层要路径，要不到就说明是这类源
@@ -98,15 +98,15 @@ class TranscodeService:
         except UnsupportedStorageError as exc:
             raise ValueError(str(exc)) from exc
         if not Path(input_path).is_file():
-            raise ValueError(f"Video file not found: {input_path}")
+            raise ValueError(f"视频文件不存在：{input_path}")
 
         # 输出目录独立之后，同格式不再会**覆盖**源文件，但它仍然会让产物和源同名：
         # 库里的 `movie.mkv` 和产物表里的 `movie.mkv` 在人眼里是同一行，而这一单买的就是
         # "产物看得见"。闸门因此留着，挡的理由换了一个。
         if Path(input_path).suffix.lower().lstrip(".") == target_format:
             raise ValueError(
-                f"Target format matches the source format ({target_format}); "
-                "the product would have the same filename as the original"
+                f"目标格式与源文件相同（{target_format}），"
+                "产物会和源文件同名"
             )
 
         output = product_path(input_path, target_format, video_id)
@@ -276,7 +276,7 @@ class TranscodeService:
         """Cancel an active transcoding task."""
         job = _jobs.get(video_id)
         if not job or job.status != "running":
-            raise ValueError(f"No active transcoding for video {video_id}")
+            raise ValueError(f"视频 #{video_id} 没有正在进行的转码任务")
 
         if job.task:
             job.task.cancel()
