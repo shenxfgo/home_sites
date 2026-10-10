@@ -93,5 +93,4 @@ export interface VideoUpdate {
   title?: string | null
   description?: string | null
   rating?: number | null
-  tag_ids?: number[] | null
 }

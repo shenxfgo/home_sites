@@ -83,7 +83,7 @@ async function videoIds(page: Page): Promise<number[]> {
  * 把刚建出来的那一行拍成"解析器出现之前写进去的样子"：三个坐标列清空。
  *
  * 为什么只能走 SQL：库里没有任何接口能把 `series` 写回 null（`VideoUpdate` 只有
- * title / description / rating / tag_ids，手工建档的接口压根不存在），而这种形状正是
+ * title / description / rating，手工建档的接口压根不存在），而这种形状正是
  * `db_transfer.py` 搬过来的那批行的形状。被验的是**扫描**怎么处理标签，不是这一列怎么变空的。
  * 连接的口令只进子进程的环境变量（`backendEnv` 里就是那串 TEST_DATABASE_URL），不进 argv。
  *

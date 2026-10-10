@@ -1,6 +1,15 @@
 # 更新日志
 
 ## 2026-10-10
+### 前端那份"能改哪些字段"的清单里，划掉了后端确实支持、前端从来不填的一格（#191，⑫）
+
+- **这一单是 ⑫**：用户选**删掉 `frontend/src/types/video.ts` 上的 `VideoUpdate.tag_ids`**，否掉的是"留着当后端 schema 的镜子"。判断依据是这一份类型描述的是**前端自己发出的请求**，不是接口能接受的全部——挂标签的真实去路是 `POST /tags/video/{id}`（`src/api/tags.ts:36`），`PUT /api/videos/{id}` 上那个字段在前端**没有一个填写者**。
+- **删之前把"没有填写者"数了一遍**（它是整单的唯一依据）：全仓构造 `VideoUpdate` 的地方只有 `views/VideoDetail.vue:234` 那一处，装的是 title / description / rating 三样；`api/videos.ts:44` 只是消费这个类型。**两条真后端 e2e 确实往 PUT 发过 `tag_ids`**（`e2e/real/library.real.spec.ts:371` 和 `:691`），但它们走的是裸 `JSON.stringify`，根本不经过这份类型——所以那两条用例（以及 #173 / #180 在后端那一头对 `tag_ids` 的钉子）一行都不用改：**删的是前端的一张假地图，不是后端的一条能力**。同理，替身夹具 `e2e/fixtures.ts:1017` 那句 `body.tag_ids ?? []` 留在原地：夹具演的是服务器的合同，不是前端的习惯。
+- **这一单写不出红，是它的形状不是欠账**（与 #189 同一族）：删的是一个零赋值方的类型字段，改前改后没有任何一条断言能走到它，为"它不在了"补钉子等于给一个负事实建档。见证是**三个读数**：① 上面的零填写者普查；② `npm run typecheck:test`（`vue-tsc -p tsconfig.vitest.json`）干净——它把 `src/`、`tests/`、`e2e/` 一起算，所以"还有人在填这个字段"这种事只能在这里红；③ Vitest **350 passed**，一条不多一条不少。
+- **`e2e/real/video-tags.real.spec.ts:85-86` 那句注释跟着改口**：它列举 `VideoUpdate` 有哪几个字段（原文是 title / description / rating / tag_ids），删掉之后这句话描述的是一个已经不存在的形状。
+- **两处关于这句话的文档跟着改口**（它们写的是"前端类型上挂着这个字段"这个今天的形状，删完不改就是假话）：`backend/CLAUDE.md` §5 里 `src/api/videos.py` 那条从"`types/video.ts:96` 那个 `tag_ids?` 从来没被发出去过"改成"……**#191 依⑫把它从前端类型里删了**，所以这一路今天的调用方只剩后端自己那 9 条用例 + 真后端 e2e 那两条裸请求"；`tests/test_api/test_video_tag_put_endpoint.py` 的模块 docstring 同一段同改。**没动的**：后端那份 `VideoUpdate`（`src/api/videos.py:66`）仍然收 `tag_ids`、仍然由 `tests/test_api/test_video_tag_put_endpoint.py`（9 条）钉着——这一单只在前端这一侧翻篇；`CHANGELOG.md:229` 那一条是 #173 那天的记录，不改历史。
+- **基线**：`typecheck:test` 干净、Vitest **350 passed**（与 #190 同数）；后端只动了上面那两处**文字**（`backend/CLAUDE.md` 一条 bullet、`test_video_tag_put_endpoint.py` 的模块 docstring），该文件重跑 **11 passed**（#173 那天是 9 条，⑥/#180 加了 2 条——这一处计数也顺手在 CLAUDE.md 里翻正了），`ruff check src tests` 干净，PG 全量读数仍是 #190 记的那一份（962 passed / 96.23%）。`frontend/src/types/video.ts` 现在纯 **CRLF**、96 行，md5 `61cca10098439f953d26759985b410bf`（删之前 97 行 / `3d28606b7d1818e99ea32dedc3fd9592`）；`frontend/e2e/real/video-tags.real.spec.ts` 纯 **LF**、245 行，md5 `600215201f867f245e79c447d89a0b75`（前 `d5ab9b220a86d2dbe6ef1c65bebdc5cf`）；`backend/CLAUDE.md` 纯 **LF**、744 行，md5 `53edb5ee1e64c41f6cbb2319ab09382e`（#190 之后是 `885760b1305f105eff88365933bc7faa`）；`backend/tests/test_api/test_video_tag_put_endpoint.py` 纯 **LF**、289 行，md5 `8729fa5bf134fdb58bb08b0b7c0ec21c`。
+
 ### 零字节的对象不再去问桶要第 0 个字节——顺手把"绿"和"钉得住"分成两件事（#190，⑪）
 
 - **这一单是 ⑪**：用户选**甲 先判零再干净答**，否掉的是"重写区间算术"和"丙 只加日志"。症状在 #159 就量过并挂在文档里：`size()` 对空对象回的是 **`0`，不是 `None`**，所以它进的是"读得到"那一条分支，而那一支把区间算成 `max(0, 0 - 1)` = `bytes=0-0`——**空对象没有第 0 个字节**。moto 抛 `InvalidRange`，异常又是在响应头已经提交之后才从 `StreamingResponse` 的生成器里冒出来，所以真机形状不是 404、也不是干净的 500，是**播放器拿到一个断流的 200 + 服务端日志里一条异常**。
