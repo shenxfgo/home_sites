@@ -7,23 +7,48 @@
 设了 ``TEST_DATABASE_URL`` 还会多跑一条：新库换成真的 PostgreSQL，专门盯时间戳——
 SQLite 还回来的是不带 tzinfo 的 UTC 文本，asyncpg 见到不带 tzinfo 的值按会话时区理解，
 所以搬运过程中必须把时刻标清楚，否则整库时间一起偏移，而且一句错都不报。
+
+后面这一批钉的是它的**边界**：主键是文本的表没有序列可拨、父表压根不在这次搬运范围时
+外键检查为什么不比、新库那一列的类型把值悄悄改了形状时整笔退回原样、老库少一列时那句
+「先启动再来」，以及那个命令行出口——每张表一行、报告走 stdout、失败走 stderr 并退 1，
+还有「不带 --to 就搬进应用自己配的那张库」这条必须写在纸面上的默认值。
+
+其中给 SQLite 拨序列那一句是**量出来够不着**的：本仓两种新库形状的 DDL 都不写
+AUTOINCREMENT 关键字（纯 INTEGER PRIMARY KEY 自动 max+1），而 SQLite 反射默认把
+``sqlite_`` 打头的内部表滤掉了，所以那句「库里有 sqlite_sequence 才拨」永远不成立。
+下面钉的是两个实测事实——反射看不见它，以及不靠它也不会撞 id——不是那句代码。
 """
 
+import sqlite3
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import sessionmaker
 
+from src import db_transfer
 from src.config import settings
 from src.database.base import Base
 from src.database.migrations import business_tables, upgrade_head
 from src.db_audit import audit
-from src.db_transfer import TransferError, _read, transfer
+from src.db_transfer import (
+    TableMove,
+    TransferError,
+    TransferReport,
+    _model_tables,
+    _orphans,
+    _read,
+    _table_names,
+    main,
+    transfer,
+)
 from src.models.favorite import Favorite
 from src.models.new_video import NewVideo
 from src.models.notification import Notification
 from src.models.read_state import NewVideoRead
+from src.models.setting import Setting
 from src.models.source import VideoSource
 from src.models.user import ROLE_OWNER, User, UserSession
 from src.models.video import Video
@@ -351,3 +376,378 @@ async def test_the_instant_survives_a_postgresql_target(tmp_path):
     # == 比的是时刻本身，所以 PG 按会话时区还回来的 +08 值照样等于写入的那个瞬间
     assert [row["created_at"] for row in sorted(moved, key=lambda r: r["id"])] == [NOW, NOW]
     assert [row["id"] for row in sorted(moved, key=lambda r: r["id"])] == [1, 2]
+
+
+# ---------------------------------------------------------------- 边界：老库少一列
+
+
+async def _seed_kv_source(tmp_path) -> str:
+    """只有系统配置两行、其余表全空的老库：表齐列齐，是「先启动过」的形状。"""
+    path = tmp_path / "kv.db"
+    url = _url(path)
+    engine = create_async_engine(url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        session.add_all(
+            [Setting(key="auto_scan", value="true"), Setting(key="theme", value="dark")]
+        )
+        await session.commit()
+    await engine.dispose()
+    return url
+
+
+async def test_a_source_library_that_lost_one_declared_column_is_refused(tmp_path):
+    """``_check_source`` 那第二个 raise：表在、列不齐。
+
+    上面那条「缺表」的用例已经挡过一种没启动过的老库，这一种更难看见——表名字一个不少，
+    只有补齐 SQL 没跑完。报出来的那份列名清单是唯一能让人知道该去跑什么的东西，
+    所以它必须点名 updated_at，而不是只说一句「缺列」。
+    """
+    source = await _seed_kv_source(tmp_path)
+    engine = create_async_engine(source)
+    async with engine.begin() as conn:
+        await conn.execute(text("DROP TABLE settings"))
+        await conn.execute(
+            text("CREATE TABLE settings (key VARCHAR(100) NOT NULL PRIMARY KEY, value TEXT)")
+        )
+    await engine.dispose()
+    target = _target_shape(tmp_path)
+
+    with pytest.raises(TransferError, match="缺列") as caught:
+        await transfer(source, target)
+
+    assert "updated_at" in str(caught.value)
+    assert sum((await _counts(target)).values()) == 0  # 一列都没写进去
+
+
+# ---------------------------------------------------------------- 边界：文本主键
+
+
+async def test_a_table_whose_primary_key_is_text_moves_without_a_sequence(tmp_path):
+    """主键是文本的表（settings.key）走到「不是整数主键，拨什么」那句 return。
+
+    这一族只有这一张表，而它平时是空的——空表在更早一步就返回了，所以「有行 + 文本主键」
+    这个组合一直没被敲过。搬进老库里有配置行的库是真换库时的正常形状，搬完必须逐字节相同。
+    """
+    source = await _seed_kv_source(tmp_path)
+    target = _target_shape(tmp_path)
+
+    report = await transfer(source, target)
+
+    move = report.by_name("settings")
+    assert move.rows == 2
+    assert move.matches
+    landed = await _rows(target, Setting.__table__)
+    assert {row["key"] for row in landed} == {"auto_scan", "theme"}
+
+
+# ---------------------------------------------------------------- 边界：父表不在范围内
+
+
+def test_an_orphan_pointing_at_a_table_that_is_not_being_moved_is_not_reported():
+    """``_orphans`` 的 continue：父表压根不在这次 data 里，就没有可比的那一侧。
+
+    今天没有任何模型指向 sessions，所以这一格从接口和真库两条路都够不着，只能直接敲这个
+    纯函数（#199 的先例：够不着不是不钉的理由）。同一段里放正反两个对照，是为了让它红得
+    清楚——把 continue 改成往下走会当场 KeyError，而把父表取值那一步整个跳过，则会让
+    一条真孤儿行安静地搬过去，那才是新库当场拒收的现场。
+    """
+    table = Favorite.__table__
+    orphan = [{"id": 1, "user_id": 1, "video_id": 999}]
+
+    assert _orphans(table, orphan, {}) == []
+
+    moved = {"users": [{"id": 1}], "videos": [{"id": 1}]}
+    problems = _orphans(table, orphan, moved)
+    assert [p for p in problems if p.startswith("favorites.video_id")] == [
+        "favorites.video_id: 1 行在 videos 里找不到父行（id: 1）"
+    ]
+    assert _orphans(table, [{"id": 2, "user_id": 1, "video_id": 1}], moved) == []
+
+
+async def test_asking_the_report_about_a_table_that_was_never_moved_raises(tmp_path):
+    """``by_name`` 的 raise：被跳过的那张表不在报告里，问它就 KeyError。
+
+    会话表是唯一一个「模型里有、报告里没有」的名字，所以这一句在真实报告上敲得动。
+    宁可不回答也不要回答成一个空表——调用方据此判断的下一步是「这张表没搬」。
+    """
+    source = await _seed_legacy(tmp_path)
+    target = _target_shape(tmp_path)
+
+    report = await transfer(source, target)
+
+    assert report.by_name("videos").rows == 3
+    with pytest.raises(KeyError, match="sessions"):
+        report.by_name("sessions")
+
+
+# ---------------------------------------------------------------- 边界：新库改了值的形状
+
+
+async def _seed_tag_source(tmp_path) -> str:
+    """老库里只有标签一张表有行，其中一条名字长得像数字。"""
+    path = tmp_path / "tags.db"
+    url = _url(path)
+    engine = create_async_engine(url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(
+            text(
+                "INSERT INTO tags (id, name, color, created_at) "
+                "VALUES (1, '007', '#409eff', '2026-01-05 12:00:00')"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO tags (id, name, color, created_at) "
+                "VALUES (2, '纪录片', '#409eff', '2026-01-05 12:00:00')"
+            )
+        )
+    await engine.dispose()
+    return url
+
+
+def _target_that_rewrites_numbers(tmp_path) -> str:
+    """新库按模型建齐，只把 tags.name 那一列声明成 INTEGER——SQLite 会照列亲和改写值。"""
+    path = tmp_path / "drifted.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE tags"))
+        conn.execute(
+            text(
+                "CREATE TABLE tags (id INTEGER NOT NULL PRIMARY KEY, name INTEGER,"
+                " color VARCHAR(20), created_at DATETIME)"
+            )
+        )
+    engine.dispose()
+    return _url(path)
+
+
+async def test_a_new_library_that_rewrites_a_value_rolls_the_whole_thing_back(tmp_path):
+    """对账那句存在的全部理由：新库的列亲和把 007 存成 7，一句错都不报。
+
+    这是 #201 那条「列亲和决定值以什么形状存活」的反向应用——老库的 VARCHAR 列把数字变成
+    文本，新库的 INTEGER 列把长得像数字的文本变成整数，SQLite 两头都悄悄地做。行数是空的
+    闸门看不出来，两边各自读回来算的摘要才看得出来；不一致的那张表被点名，事务整体退回。
+    """
+    source = await _seed_tag_source(tmp_path)
+    target = _target_that_rewrites_numbers(tmp_path)
+
+    with pytest.raises(TransferError, match="不一致") as caught:
+        await transfer(source, target)
+
+    assert caught.value.args[0].endswith("tags")
+    assert set((await _counts(target)).values()) == {0}
+    # 老库里那一行仍是文本：改值的是新库的列声明，不是搬运本身
+    engine = create_async_engine(source)
+    async with engine.connect() as conn:
+        held = (
+            await conn.execute(text("SELECT typeof(name), name FROM tags WHERE id = 1"))
+        ).first()
+    await engine.dispose()
+    assert held == ("text", "007")
+
+
+# ---------------------------------------------------------------- 边界：那句拨序列的保险
+
+
+def test_the_reflection_this_script_uses_cannot_see_the_sequence_table(tmp_path):
+    """``sqlite_sequence`` 在 sqlite_master 里，但反射的默认过滤把它藏了。
+
+    ``get_table_names()`` 的 SQL 里写着「name NOT LIKE sqlite 打头」（方言参数
+    ``sqlite_include_internal`` 默认 False），而 ``_reset_sequences`` 的 SQLite 分支正是
+    拿 ``_table_names`` 判「库里有没有这张表」。所以那句 INSERT OR REPLACE 一次也执行不到。
+    两份清单同时摆出来：将来谁把反射换成裸 sqlite_master 查询，这一条会当场红，
+    那时才轮到重新决定那格要不要活过来。
+    """
+    path = tmp_path / "internal.db"
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT)"))
+        conn.execute(text("INSERT INTO t (id, label) VALUES (7, '搬过来的那一行')"))
+    with engine.connect() as conn:
+        raw = {
+            row[0]
+            for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        }
+        reflected = _table_names(conn)
+    engine.dispose()
+
+    assert "sqlite_sequence" in raw
+    assert "sqlite_sequence" not in reflected
+    assert "t" in reflected
+
+
+def test_sqlite_keeps_its_own_counter_when_rows_arrive_with_explicit_ids(tmp_path):
+    """那句保险不跑也不会撞 id：显式 rowid 插进去，SQLite 自己把计数器顶上去。
+
+    这一条是「所以那格可以留着不管」的实测依据，不是顺带：如果这里新写的行拿到的是 1
+    而不是 8，那句够不着的 INSERT OR REPLACE 就是真缺了一道闸门，处理方式完全不同。
+    故意按最坏的 AUTOINCREMENT 形状造，因为纯 INTEGER PRIMARY KEY 连计数器都没有。
+    """
+    conn = sqlite3.connect(tmp_path / "autoinc.db")
+    try:
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT)")
+        conn.execute("INSERT INTO t (id, label) VALUES (7, '搬过来的那一行')")
+        conn.commit()
+        assert list(conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 't'")) == [(7,)]
+        conn.execute("INSERT INTO t (label) VALUES ('搬完之后新写的一条')")
+        conn.commit()
+        assert [row[0] for row in conn.execute("SELECT id FROM t ORDER BY id")] == [7, 8]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------- 那个命令行出口
+
+
+def _seed_cli_source(tmp_path) -> str:
+    """命令行那三条用例的老库：用同步引擎造，因为 ``main()`` 自己开事件循环。
+
+    故意留一个只存在于库里的老列（``new_videos.viewed``）并让它存着值——那样 stdout 才会
+    同时出现中文警告行和 ASCII 表格行，两者的边界才是被断言过的而不是被假设的。
+    """
+    path = tmp_path / "cli_legacy.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE new_videos ADD COLUMN viewed BOOLEAN"))
+    maker = sessionmaker(engine)
+    with maker() as session:
+        session.add_all(
+            [
+                VideoSource(id=1, name="客厅盘", path="D:/media", type="local"),
+                Video(id=1, source_id=1, filepath="/m/a.mp4", title="第一部"),
+                Video(id=2, source_id=1, filepath="/m/b.mp4", title="第二部"),
+                NewVideo(id=1, video_id=1, source_id=1, discovered_at=NOW),
+            ]
+        )
+        session.commit()
+        session.execute(text("UPDATE new_videos SET viewed = 1 WHERE id = 1"))
+        session.commit()
+    engine.dispose()
+    return _url(path)
+
+
+def _sqlite_counts(path) -> dict[str, int]:
+    """事件循环外面数一遍每张表的行数（不含 SQLite 内部表）。"""
+    conn = sqlite3.connect(path)
+    try:
+        names = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                " AND name NOT LIKE 'sqlite~_%' ESCAPE '~'"
+            )
+        ]
+        return {n: conn.execute(f'SELECT COUNT(*) FROM "{n}"').fetchone()[0] for n in names}
+    finally:
+        conn.close()
+
+
+def _business_rows(counts: dict[str, int]) -> int:
+    return sum(n for name, n in counts.items() if name != "alembic_version")
+
+
+def test_the_command_line_prints_one_row_per_table_and_reports_committed(tmp_path, capsys):
+    code = main(["--from", _seed_cli_source(tmp_path), "--to", _target_shape(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    table_lines = [line for line in captured.out.splitlines() if "digest=" in line]
+    assert len(table_lines) == len(_model_tables())  # 每张被搬的表一行，一张不落
+    assert all(line.endswith("digest=OK") for line in table_lines)
+    assert any(line.startswith("videos ") and " rows=2" in line for line in table_lines)
+    assert "total rows: 4" in captured.out
+    assert captured.out.splitlines()[-1] == "committed"
+    assert captured.err == ""
+
+    warn = [line for line in captured.out.splitlines() if line.startswith("WARN")]
+    # 警告行永远至少两条：会话表压根不在搬运范围（所以每次搬都「留在原库」），
+    # 外加那个只活在老库里的列。两条都在 stdout 上，不是 stderr。
+    assert len(warn) == 2
+    assert any("new_videos.viewed" in line and "1 行" in line for line in warn)
+    assert any("sessions" in line for line in warn)
+    # 模块开头写着「命令行输出保持 ASCII」——表格行确实全 ASCII，警告行不是。
+    assert all(ord(ch) < 128 for line in table_lines for ch in line)
+    assert all(any(ord(ch) > 127 for ch in line) for line in warn)
+
+    counts = _sqlite_counts(tmp_path / "target.db")
+    assert counts["videos"] == 2 and counts["new_videos"] == 1
+    assert counts["sessions"] == 0  # 会话不搬，从命令行进来也一样
+
+
+def test_the_command_line_dry_run_reports_the_same_and_writes_nothing(tmp_path, capsys):
+    source = _seed_cli_source(tmp_path)
+    target = _target_shape(tmp_path)
+
+    code = main(["--from", source, "--to", target, "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.splitlines()[-1] == "dry-run: rolled back, nothing written"
+    assert "committed" not in captured.out
+    assert any("digest=OK" in line for line in captured.out.splitlines())
+    assert _business_rows(_sqlite_counts(tmp_path / "target.db")) == 0
+
+
+def test_the_command_line_abort_path_says_why_on_stderr_and_exits_one(tmp_path, capsys):
+    """闸门拒收时：原因在 stderr、退出码 1、stdout 一个字也没有。
+
+    「退回 1」和「把原因说清楚」是同一件事的两半——搬库是在没人盯着的机器上跑的，
+    一句 ABORTED 后面不跟着原因，就得去猜是哪张库不对。
+    """
+    path = tmp_path / "ancient.db"
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as conn:
+        conn.execute(
+            text("CREATE TABLE videos (id INTEGER NOT NULL PRIMARY KEY, filepath VARCHAR(1024))")
+        )
+    engine.dispose()
+    target = _target_shape(tmp_path)
+
+    code = main(["--from", _url(path), "--to", target])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.startswith("ABORTED:")
+    assert "缺表" in captured.err
+    assert captured.out == ""
+    assert _business_rows(_sqlite_counts(tmp_path / "target.db")) == 0
+
+
+def test_the_command_line_defaults_the_new_library_to_the_app_own_database(
+    capsys, monkeypatch
+):
+    """不带 --to 时，默认目标就是应用自己配的那张库——这条接线必须在纸面上钉住。
+
+    真按默认值搬一次就是往开发库里写数据，所以这一条把 ``transfer`` 换成记录用的替身，
+    钉的是「argv 里没给地址时那个字符串是从 settings.database_url 取的」这一步，以及
+    --from / --to 没有接反（替身收到的是这一对精确的值）。顺手断言连接串一个字也没被打出去：
+    那里面带着口令。表格行照跑，因为替身返回的是真表形状的一份报告。
+    """
+    sentinel = "postgresql+asyncpg://sentinel-only:never-connected@localhost/never"
+    seen: list[tuple[str, str, bool]] = []
+
+    async def record(source: str, target: str, *, dry_run: bool) -> TransferReport:
+        seen.append((source, target, dry_run))
+        return TransferReport(
+            moves=[TableMove(name="videos", rows=1, source_digest="d", target_digest="d")]
+        )
+
+    monkeypatch.setattr(db_transfer, "settings", SimpleNamespace(database_url=sentinel))
+    monkeypatch.setattr(db_transfer, "transfer", record)
+
+    assert main(["--from", "sqlite+aiosqlite:///cli-from.db"]) == 0
+    assert main(["--from", "sqlite+aiosqlite:///cli-from.db", "--dry-run"]) == 0
+
+    assert seen == [
+        ("sqlite+aiosqlite:///cli-from.db", sentinel, False),
+        ("sqlite+aiosqlite:///cli-from.db", sentinel, True),
+    ]
+    captured = capsys.readouterr()
+    assert sentinel not in captured.out and sentinel not in captured.err
+    assert "videos" in captured.out
