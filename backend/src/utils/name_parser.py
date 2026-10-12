@@ -41,6 +41,21 @@ _EXTENSION = re.compile(r"(?i)\.(mp4|mkv|avi|mov|wmv|flv|webm|m4v|mpg|mpeg|ts)$"
 _DECIMAL = re.compile(r"(?<=\d)\.(?=\d)")
 
 
+def episode_label_for(season: int | None, episode: int | None) -> str | None:
+    """The one way a series coordinate becomes the badge the UI shows.
+
+    Two callers ask it and must not drift (`#209`, 面板⑤甲): the parser right below, and
+    ``api.videos.VideoResponse.episode_label``, which is what the interface serves so the
+    frontend never formats a coordinate itself. ``None`` means "this file has no
+    coordinates", and the badge is simply absent — the caller must not invent one.
+    """
+    if episode is None:
+        return None
+    if season is not None:
+        return f"S{season:02d}E{episode:02d}"
+    return f"第{episode}集"
+
+
 @dataclass(frozen=True)
 class ParsedName:
     """What a filename yields: a display title plus the series coordinates."""
@@ -53,12 +68,13 @@ class ParsedName:
 
     @property
     def episode_label(self) -> str | None:
-        """The short badge the UI shows, e.g. ``S01E02`` or ``第12集``."""
-        if self.episode is None:
-            return None
-        if self.season is not None:
-            return f"S{self.season:02d}E{self.episode:02d}"
-        return f"第{self.episode}集"
+        """The short badge the UI shows, e.g. ``S01E02`` or ``第12集``.
+
+        Kept as the parser's own spelling of #209's shared function: a filename and a
+        library row are two ways to reach the same coordinates, and they answer with one
+        sentence or the two halves start to disagree.
+        """
+        return episode_label_for(self.season, self.episode)
 
 
 def parse_video_filename(filename: str) -> ParsedName:

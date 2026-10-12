@@ -515,3 +515,61 @@ async def test_a_progress_report_for_a_video_that_is_gone_answers_404(client):
     assert response.status_code == 404
     assert (await client.get("/api/history")).json()["total"] == 0
     assert (await client.get("/api/videos/999999")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_the_interface_serves_the_badge_so_the_browser_never_formats_one(client, db_session):
+    """角标这句话由接口算好交出去（#209，面板⑤甲）——前端拿到 season/episode 再拼一遍的那两处，
+    从这一单起没有存在的理由了。
+
+    三种形状分开钉：有季有集、没有季、两个都没有。最后那一种是反面用例，判据不许把普通影片
+    也拼出一个角标来。
+    """
+    source = await _create_source(db_session)
+    paired = await _create_video(
+        db_session, source_id=source.id, title="paired", filepath="/p.mp4", season=1, episode=2
+    )
+    seasonless = await _create_video(
+        db_session, source_id=source.id, title="seasonless", filepath="/s.mp4", episode=12
+    )
+    plain = await _create_video(db_session, source_id=source.id, title="plain", filepath="/m.mp4")
+
+    items = {row["id"]: row for row in (await client.get("/api/videos")).json()["items"]}
+    assert items[paired.id]["episode_label"] == "S01E02"
+    assert items[seasonless.id]["episode_label"] == "第12集"
+    assert items[plain.id]["episode_label"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_series_rail_serves_the_badge_of_the_next_episode(client, db_session):
+    """首页那条剧集进度写的「看到 S01E02」也是接口给的字，不是界面算的（#209）。
+
+    这一路走的是 `SeriesProgressResponse.next`，那张卡片和网格里的不是同一个对象，所以角标要
+    在这儿单独签一次——不然「只算一遍」只在一条路上成立。
+    """
+    source = await _create_source(db_session)
+    await _create_video(
+        db_session, source_id=source.id, title="EP1", filepath="/1.mp4",
+        duration=100, series="暗涌", season=2, episode=4,
+    )
+
+    entry = (await client.get("/api/videos/series")).json()[0]
+    assert entry["next"]["episode_label"] == "S02E04"
+
+
+@pytest.mark.asyncio
+async def test_the_served_badge_asks_the_parsers_own_formatting(client, db_session, monkeypatch):
+    """接口那句角标必须问的是解析器本体，不是照着抄一遍（#209 的「同一个口径」）。
+
+    把 `src/api/videos` 里那个名字换成一句假话，接口交出来的角标要跟着变。哪天有人把 f-string
+    抄回 `VideoResponse`，这一条当场红——电池量不到「两处各抄一遍」，因为两处的输出还是一样。
+    """
+    monkeypatch.setattr("src.api.videos.episode_label_for", lambda season, episode: "换了口径")
+    source = await _create_source(db_session)
+    await _create_video(
+        db_session, source_id=source.id, title="X", filepath="/x.mp4", season=1, episode=2
+    )
+
+    item = (await client.get("/api/videos")).json()["items"][0]
+    assert item["episode_label"] == "换了口径"
+    assert (item["season"], item["episode"]) == (1, 2)

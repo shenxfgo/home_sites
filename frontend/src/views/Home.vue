@@ -86,17 +86,10 @@ function openVideo(video: Video) {
   router.push({ name: 'video-detail', params: { id: video.id } })
 }
 
-/** Coordinates the scan parsed out of the filename, e.g. S01E02 or 第12集. */
-function episodeLabelOf(video: Video): string | null {
-  if (video.episode == null) return null
-  if (video.season == null) return `第${video.episode}集`
-  return `S${String(video.season).padStart(2, '0')}E${String(video.episode).padStart(2, '0')}`
-}
-
-/** '看到第几集' for a series: the next unfinished episode's coordinates. */
+/** '看到第几集' for a series: the badge the API put on the next unfinished episode. */
 function seriesStateOf(entry: SeriesProgress): string {
-  const label = entry.next ? episodeLabelOf(entry.next) : null
   if (entry.next == null) return '已看完'
+  const label = entry.next.episode_label
   return label ? `看到 ${label}` : `继续 ${titleOf(entry.next)}`
 }
 

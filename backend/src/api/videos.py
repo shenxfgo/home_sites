@@ -2,7 +2,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_serializer, field_validator
+from pydantic import BaseModel, Field, computed_field, field_serializer, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +10,7 @@ from src.database import get_session
 from src.middleware.auth import get_current_user_id
 from src.models.tag import Tag
 from src.services.video_service import VideoService
+from src.utils.name_parser import episode_label_for
 
 router = APIRouter(prefix="/api/videos", tags=["videos"])
 
@@ -53,6 +54,18 @@ class VideoResponse(BaseModel):
     tags: list[TagResponse] = []
 
     model_config = {"from_attributes": True}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def episode_label(self) -> str | None:
+        """这集在界面上的角标，由库里那一双坐标算出（S01E02 或 第12集）。
+
+        #209（面板⑤甲）之前这句话是前端自己算的，而且算了两遍——首页卡片一处、剧集进度
+        那一行一处。界面拿到的 season/episode 是解析文件名得来的，格式化的口径也该只有
+        一个：它住在 `utils.name_parser.episode_label_for`，解析器和这里各问一次同一个函数。
+        改格式的人动那个函数，两处一起跟着走；在这儿再写一句 f-string 就是回到两遍。
+        """
+        return episode_label_for(self.season, self.episode)
 
     @field_serializer("last_played_at", "created_at", "updated_at")
     @staticmethod

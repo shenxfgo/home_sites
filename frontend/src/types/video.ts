@@ -34,6 +34,11 @@ export interface Video {
   series: string | null
   season: number | null
   episode: number | null
+  /**
+   * The badge for those coordinates (`S01E02` / `第12集`), formatted by the backend.
+   * Never rebuild it here — #209 collapsed the two places that used to.
+   */
+  episode_label: string | null
   /** The last scan could not find the file on disk. */
   is_missing: boolean
   rating: number

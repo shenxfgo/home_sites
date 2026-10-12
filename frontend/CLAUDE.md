@@ -615,6 +615,9 @@ export const videosApi = {
 }
 ```
 
+- **接口已经算好的字段，界面上只许显示、不许重算**（#209 立的规矩，第一个落点是影片角标）。`Video.episode_label`（`src/types/video.ts:41`）由后端 `VideoResponse` 的 `@computed_field` 现算，格式化那句住在 `backend/src/utils/name_parser.py::episode_label_for`——`VideoCard.vue` 与 `Home.vue` 各自那份三分支 f-string 已在 #209 删掉。为什么要收：库里的 `(season, episode)` 是真相，一句规则写三遍就意味着它能有三个版本，而 #193 普查量到的正是「同一个口径没有口径」。今天的显示形状是：`video.episode_label` 有就渲染、`null` 就不渲染角标（**不许界面自己补一枚**），首页系列进度条读 `entry.next.episode_label`，那句为空时才退回 `继续 {标题}`。**别在 `src/` 任何一处再写 `S{season:02d}E{episode:02d}` 这类拼装。**
+- **这一族的签字分两半，边界要说清**：三层 api 钉子（`paths.spec.ts` / `openapi-contract.spec.ts` / `stub-coverage.spec.ts`）钉的是地址、方法、路径参数类型和 query 键名，**不钉响应字段**——「`episode_label` 真在后端响应 schema 里」只由后端 `backend/tests/test_openapi_snapshot.py` 签。界面这一侧的签字是 `tests/components/VideoCard.spec.ts` 与 `tests/views/Home.spec.ts` 里「喂一句后端独有的原话」那两条：夹具给的是 `第2集 · 终章` / `第7集 · 终章` 这种本地格式化永远拼不出来的串，谁把角标改回自己算，这两条当场红（同一理由也适用于替身 e2e 的 `e2e/fixtures.ts`——那两个 `StubVideo` 现在带 `episode_label`，`e2e/home.spec.ts` 那两条角标断言读的就是它）。
+
 ### 视频源类型
 
 - 类型只有 `local` / `nas` / `minio` 三个值，文案集中在 `src/types/source.ts` 的 `SOURCE_TYPE_LABELS`（`SourceCard` 的角标与 `SourceForm` 的下拉都读它）。`minio` 显示成 `S3 / MinIO`：后端那份实现讲通用 S3 协议，MinIO/RustFS 只是端点不同，不用为它单开类型。加一种类型要连后端 `src/storage/__init__.py` 的分发表一起改

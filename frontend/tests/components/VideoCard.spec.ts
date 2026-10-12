@@ -84,19 +84,23 @@ describe('VideoCard', () => {
     expect(mountCard(makeVideo({ duration: null, progress: 50 })).find('.resume-bar').exists()).toBe(false)
   })
 
-  it('badges the parsed episode position, with and without a season', () => {
-    const twoDigit = mountCard(makeVideo({ season: 1, episode: 2 }))
-    expect(twoDigit.find('.episode-badge').text()).toBe('S01E02')
+  it('badges the episode with the label the interface serves, not one it computes', () => {
+    // #209（面板⑤甲）：这句话由后端算好交出来。给的字面故意和 season/episode 对不上——
+    // 卡片要是还在自己拼，这里出来的就是 S01E02，这一格因此能红。
+    const served = mountCard(makeVideo({ season: 1, episode: 2, episode_label: '第2集 · 终章' }))
+    expect(served.find('.episode-badge').text()).toBe('第2集 · 终章')
 
-    const tenth = mountCard(makeVideo({ season: 10, episode: 3 }))
-    expect(tenth.find('.episode-badge').text()).toBe('S10E03')
-
-    const noSeason = mountCard(makeVideo({ season: null, episode: 12 }))
-    expect(noSeason.find('.episode-badge').text()).toBe('第12集')
+    const standard = mountCard(makeVideo({ season: 10, episode: 3, episode_label: 'S10E03' }))
+    expect(standard.find('.episode-badge').text()).toBe('S10E03')
   })
 
-  it('leaves the episode badge off for a file with no coordinates', () => {
-    expect(mountCard(makeVideo({ season: 1, episode: null })).find('.episode-badge').exists()).toBe(false)
+  it('leaves the episode badge off when the interface serves no label', () => {
+    // 角标的有无现在只看接口给没给：坐标还在、字面为 null 的那一行也不许界面自己补一个。
+    expect(
+      mountCard(makeVideo({ season: 1, episode: 2, episode_label: null }))
+        .find('.episode-badge')
+        .exists(),
+    ).toBe(false)
     expect(mountCard(makeVideo()).find('.episode-badge').exists()).toBe(false)
   })
 

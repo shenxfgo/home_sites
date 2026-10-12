@@ -260,7 +260,7 @@ describe('Home series rail', () => {
         series: '暗涌',
         total: 4,
         finished: 3,
-        next: makeVideo({ id: 11, series: '暗涌', season: 1, episode: 4 }),
+        next: makeVideo({ id: 11, series: '暗涌', season: 1, episode: 4, episode_label: 'S01E04' }),
       }),
     ])
     const { wrapper, router } = await mountHome()
@@ -279,13 +279,30 @@ describe('Home series rail', () => {
     wrapper.unmount()
   })
 
-  it('reads a season-less episode as 第N集', async () => {
+  it('puts on the rail exactly the badge the interface served', async () => {
+    // #209（面板⑤甲）：这句话从前是本页自己算的，算完和视频卡片上那份是两遍。
+    // 现在给的字面故意和 season/episode 对不上——本页要是还在自己算，这里出的就是 S01E07。
     vi.mocked(listSeriesProgress).mockResolvedValue([
-      makeSeriesProgress({ next: makeVideo({ id: 12, season: null, episode: 7 }) }),
+      makeSeriesProgress({
+        next: makeVideo({ id: 12, season: 1, episode: 7, episode_label: '第7集 · 终章' }),
+      }),
     ])
     const { wrapper } = await mountHome()
 
-    expect(wrapper.get('.rail-state').text()).toBe('看到 第7集')
+    expect(wrapper.get('.rail-state').text()).toBe('看到 第7集 · 终章')
+    wrapper.unmount()
+  })
+
+  it('falls back to the title when the served next episode carries no badge', async () => {
+    // 一组里那集没被解析出集数时，接口给的就是 null，本页不许拿坐标凑一个角标出来。
+    vi.mocked(listSeriesProgress).mockResolvedValue([
+      makeSeriesProgress({
+        next: makeVideo({ id: 13, title: '暗涌 未编号', season: null, episode: null, episode_label: null }),
+      }),
+    ])
+    const { wrapper } = await mountHome()
+
+    expect(wrapper.get('.rail-state').text()).toBe('继续 暗涌 未编号')
     wrapper.unmount()
   })
 

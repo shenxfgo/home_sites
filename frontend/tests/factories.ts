@@ -47,6 +47,7 @@ export function makeVideo(overrides: Partial<Video> = {}): Video {
     series: null,
     season: null,
     episode: null,
+    episode_label: null,
     is_missing: false,
     rating: 3,
     view_count: 7,
@@ -82,7 +83,7 @@ export function makeSeriesProgress(overrides: Partial<SeriesProgress> = {}): Ser
     total: 3,
     finished: 1,
     watched: 2,
-    next: makeVideo({ id: 11, series: '暗涌', season: 1, episode: 2 }),
+    next: makeVideo({ id: 11, series: '暗涌', season: 1, episode: 2, episode_label: 'S01E02' }),
     ...overrides,
   }
 }

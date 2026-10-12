@@ -187,3 +187,26 @@ def test_the_number_helper_says_none_for_a_group_the_pattern_does_not_have():
     )
     assert parser_module._number(match, "episode") == 12
     assert parser_module._number(match, "season") is None
+
+
+def test_one_function_holds_the_badge_for_a_stored_coordinate():
+    # 面板⑤甲（#209）：格式化的那句话只许住在一处。这一条钉本体本身的三种形状——
+    # 有季补零成 S02E04、没季写成「第12集」、没有集数就什么都没有（含「有季没集」那一格，
+    # 它是判据的反面：不许凭空拼出一个角标）。
+    assert parser_module.episode_label_for(1, 2) == "S01E02"
+    assert parser_module.episode_label_for(10, 3) == "S10E03"
+    assert parser_module.episode_label_for(None, 12) == "第12集"
+    assert parser_module.episode_label_for(None, None) is None
+    assert parser_module.episode_label_for(3, None) is None
+    # 0 季是解析器给得出的真值（实测「暗涌 S0E5.mp4」「暗涌 s00e05.mp4」都回 season=0），
+    # 和「没解析出季」的 None 不是一回事：闸门只认 None，不认真值。
+    # 电池 A4 格（`if season is not None` 换成 `if season`）在没有这一句时是绿的。
+    assert parser_module.episode_label_for(0, 5) == "S00E05"
+
+
+def test_the_parsed_name_asks_that_same_function(monkeypatch):
+    # 「同一个口径」的机器版本：把本体换成一句假话，解析器给出的角标必须跟着变。
+    # 哪天有人把那句 f-string 抄回属性里，这一条红——两条调用者各写各的，正是 #209 否掉的形状。
+    monkeypatch.setattr(parser_module, "episode_label_for", lambda season, episode: "换了口径")
+    parsed = parser_module.ParsedName(title="暗涌", season=1, episode=2)
+    assert parsed.episode_label == "换了口径"

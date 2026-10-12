@@ -46,14 +46,6 @@ const resumeRatio = computed(() => {
   return ratio >= 0.995 ? null : Math.min(1, ratio)
 })
 
-/** Coordinates the scan parsed out of the filename, e.g. S01E02 or 第12集. */
-const episodeLabel = computed(() => {
-  const { season, episode } = props.video
-  if (episode == null) return null
-  if (season == null) return `第${episode}集`
-  return `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
-})
-
 function goToDetail() {
   router.push({ name: 'video-detail', params: { id: props.video.id } })
 }
@@ -80,8 +72,8 @@ function goToDetail() {
         {{ formatDuration(video.duration) }}
       </span>
 
-      <!-- Which episode of its series this file is -->
-      <span v-if="episodeLabel" class="episode-badge">{{ episodeLabel }}</span>
+      <!-- Which episode of its series this file is; the badge text comes from the API -->
+      <span v-if="video.episode_label" class="episode-badge">{{ video.episode_label }}</span>
 
       <!-- Where the last playback stopped -->
       <span

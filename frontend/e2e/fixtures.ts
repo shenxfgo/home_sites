@@ -31,6 +31,8 @@ export interface StubVideo {
   series: string | null
   season: number | null
   episode: number | null
+  /** The badge text the interface computed from those coordinates (#209). */
+  episode_label: string | null
   /** The last scan could not find the file on disk. */
   is_missing: boolean
   rating: number
@@ -61,6 +63,7 @@ export const videos: StubVideo[] = [
     series: '深夜客车',
     season: 1,
     episode: 2,
+    episode_label: 'S01E02',
     is_missing: false,
     rating: 4,
     view_count: 3,
@@ -85,6 +88,7 @@ export const videos: StubVideo[] = [
     series: null,
     season: null,
     episode: null,
+    episode_label: null,
     // The NAS share was not mounted at the last scan, so the row is still in
     // the library but its file could not be found.
     is_missing: true,
