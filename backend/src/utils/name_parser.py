@@ -6,6 +6,7 @@ back as a cleaned title rather than a guess: a wrong title costs more than a
 verbose one.
 """
 import re
+import unicodedata
 from dataclasses import dataclass
 
 _JUNK = re.compile(
@@ -100,6 +101,11 @@ def auto_tags(parsed: ParsedName) -> tuple[str, ...]:
     return tuple(name for name in (parsed.series, parsed.group) if name)
 
 
+def _display_width(text: str) -> int:
+    """Columns a monospaced renderer would hand this string: wide forms count two."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
 def _find_group(stem: str) -> str | None:
     """The publisher or 字幕组 a release carries in its first real bracket."""
     for content in _BRACKET.findall(stem):
@@ -108,7 +114,9 @@ def _find_group(stem: str) -> str | None:
             continue
         if _JUNK.fullmatch(candidate):
             continue
-        if len(candidate) > 30:
+        # 上限是显示列宽，不是字符数：一个汉字在界面上占两格，27 个汉字的名字
+        # 已经长过 30 格了（#193 面板 ⑥ 甲）。
+        if _display_width(candidate) > 30:
             continue
         # A two letter bracket is a region marker — (US), (JP) — not a group.
         if re.fullmatch(r"(?i)[a-z]{2}", candidate):
