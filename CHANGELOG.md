@@ -1,5 +1,20 @@
 # 更新日志
 
+## 2026-10-12
+### 两处「已经量出够不着」的死分支删掉了，顺带就地更正一句当时就是假话的记录（#206）
+
+- **这一单是第三块面板 ⑨ + ⑩**：`db_audit._audit_table` 里 JSON 那半 `if isinstance(value, (dict, list)): pass`，和 `db_transfer._reset_sequences` 里「库里得有 `sqlite_sequence` 才拨」那一格。用户选**甲**（两处死码都删），否掉的是「照现状留着并说明」和「把它修活」。#201 与 #202 已各自把它们钉成「死」，这一单收的正是那两笔尾账。
+- **两个文件因此都到 100%**：`src/db_audit.py` 268 句里 1 句未覆盖（那句 `pass`）→ **266 句 0 缺**；`src/db_transfer.py` 181 句里 1 句未覆盖（那句 `INSERT OR REPLACE`）→ **178 句 0 缺**。全仓 **4646 → 4641 句**，未覆盖 **44 → 42**。
+- **掉的为什么是 5 句而不是 2 句**：`db_audit` 那半边两句——`if isinstance(...)` 是执行得到的分支头、`pass` 是够不着的那句；`db_transfer` 那半边三句——`elif`、内层 `if`、体内那句跨四行的 `await conn.execute(...)`，**一个多行调用在覆盖率里只算一句且记在第一行**。已覆盖 4602 → **4599**，所以这一单连分子都真的少了 3，和 #205 那次「分子只掉 1」不是同一种形状。
+- **这一单写不出红，而且是定义上写不出**：被删的那两句在两种方言下都执行不到，任何断言都摸不着它。见证是三样——① 上面那两个读数（0 缺）；② `tests/test_db_transfer.py` 24 → **23 条**，少的那一条是被删分支的死亡证明而不是功能钉子，其余测试文件与 `src/` 之外零改动；③ 全量 **1053 passed，一条没红**。
+- **删掉那条用例不丢签字，因为签字在更上一层**：`test_sqlite_keeps_its_own_counter_when_rows_arrive_with_explicit_ids` 用裸 sqlite3 量出「带显式 rowid 插进去时 SQLite 自己把计数器顶上去」，它原本是那一格「够不着也没关系」的唯一实测依据。删了它，同一件事仍由 `test_the_new_library_keeps_handing_out_fresh_ids` 在**真路径**上签着——新库是 Alembic `upgrade_head` 建出来的 SQLite 文件，搬完之后新写一条断言拿到的就是 4，撞号会当场红。
+- **反射那道过滤的钉子留着，是一处口径，说在这里**：面板记的是「pinning cases 随分支一起删」，而留下的那条用例两头都签——它既给已删的分支开过死亡证明，也钉着 `_check_source` 那份「老库里多出来的表」清单（命令行那格 `len(warn) == 2` 就是它的后果：`sqlite_sequence` 一旦被反射看见，每次搬 SQLite 老库都会多报一句用户从没建过的内部表）。所以按「删证据、留活钉子」处理，只删了纯粹给死分支当理由的那一条。**要按字面全删，说一声我立刻去掉。**
+- **顺手就地更正一句假话**：`CHANGELOG.md` P4 那一轮（回滚预案）写着「`_reset_sequences` 两种方言都实现了」。SQLite 那一半从写下那天起一次也没执行过——反射把 `sqlite_%` 内部表滤掉，那个存在性判断恒假；那次真跑 153 行没撞 id，是因为 SQLite 自己顶了计数器。已在原句后加括注更正，`backend/CLAUDE.md` 里同一句照改。
+- **没有 idle 的东西带走**：`_table_names` 仍在 `_check_source`（`db_transfer.py:227`）活着，`text` 在别处还有落点；`db_audit` 那段塌成 `try/except` 之后 `json` 仍由 `canonical_value` 用着——两处删完 `ruff check src tests` 都干净。
+- **一处没动，因为它不在面板那「两处」里**：`db_audit._is_type_violation` 中 `not isinstance(value, bool)` 那半句排除是同样形状的够不着（sqlite3 从不还回 bool），#201 的电池把它也记成了等价格。面板答的是「两处」，所以源码原样留着，未动。
+- **未覆盖清单同步收窄**：有名有姓的从 5 句四处变 **3 句两处**——`api/users.py:155-156`（可推导地到不了）、`video_service.py:404`（上面那条 SQL 已排除 `file_size IS NULL`）；另 39 句仍是 `e2e_seed.py` 里那道刻意留给真 e2e 链路的空白（#203）。
+- **读数**：PG 全量 **1053 passed** / TOTAL **99.10%**（4641 句 / 42 缺），`ruff check src tests` 干净，`mypy src` 基线 **34** 不变；SQLite 分支同日重测这两个测试文件 **56 passed + 1 skipped**。`src/db_audit.py` 515 行 md5 `8ad5dd05de3118ac3837d084bfedef35`（原 516 行 `43299967baf6aa94d47ab74a32b40978`）、`src/db_transfer.py` 348 行 md5 `5dc8fc4143269c702e2a80fe901a0ef4`（#202 记的 `6a80e728fa15b41228634bbfe9c149a8` → 行数不变：删 6 行代码、docstring 补 6 行）、`tests/test_db_transfer.py` 735 行 md5 `6abf94c25dd44a4c8850aff9bf3aec3f`（原 753 行 `0d268e937ce4e265c99372d637aab4d6`）。三个文件删前删后都是纯 LF。
+
 ## 2026-10-10
 ### 一个零调用方的服务方法被删掉，而不是补一条用例让它看起来是活的（#205）
 
@@ -1612,7 +1627,7 @@
 - **审计和搬家现在报的是同一个数**：摘要的行文本从两处各自的拼接里抽成 `db_audit.row_text` 共用，`tests/test_db_transfer.py` 里有用例断言审计算出的摘要等于搬家记录的源摘要。之前两边一个是带列名的、一个是裸值，永远不可能相等，也就永远核对不上
 - **测试的方言开关收成一个出处**：`settings.test_database_url`（`backend/.env` 的 `TEST_DATABASE_URL`），`tests/conftest.py` 和搬家的 PG 用例都读它，换库不用再另设环境变量。PG 上每个用例靠 `TRUNCATE ... RESTART IDENTITY CASCADE` 隔离，`RESTART IDENTITY` 保证第一个自增 id 还是 1，用例里写死的 id 不用跟着改；schema 一次会话只建一次，走的就是 `0001` 基线。新增 `tests/support.py` 的 `ensure_source` / `ensure_video`：PG 真的执行外键，子行必须先有父行，不能手工凑 id
 - **P4 切换与真机走查**：`.env` 指到 `home_sites`，后端跑在 PG 上，浏览器走查 21 项全过（登录、首页、列表、详情、播放器、收藏、片单、历史、统计、标签、设置、用户、个人、转码页）。时序类页面重点看：历史页把库里 `03:27:46Z` 那一行显示成本地 `2026/10/4 11:27:46`，即时刻存对了、只是按浏览器时区展示；统计页的日桶落在 10月4日，连看天数正确。播放器 `duration=60 / seekable=60 / seek 到 30.0`，说明 Range 流式在这套组合下照常工作
-- **回滚预案实测过，不是纸面的**：老 SQLite 文件切换后原样在盘，退回一行配置即可（代价是切换后的新增）。想把增量带走就反向再搬一次——新建一个 SQLite 文件启动一次让基线建表，再 `db_transfer --from <PG> --to <新文件>`。这条今天真跑了一遍：153 行，`MISMATCHED: NONE`，`_reset_sequences` 两种方言都实现了
+- **回滚预案实测过，不是纸面的**：老 SQLite 文件切换后原样在盘，退回一行配置即可（代价是切换后的新增）。想把增量带走就反向再搬一次——新建一个 SQLite 文件启动一次让基线建表，再 `db_transfer --from <PG> --to <新文件>`。这条今天真跑了一遍：153 行，`MISMATCHED: NONE`，`_reset_sequences` 两种方言都实现了（#206 就地更正：后半句当时就是假话——SQLite 那一半被反射的 `sqlite_%` 过滤挡着，一次也没执行过；那次真跑之所以没撞 id，是因为 SQLite 自己把计数器顶了上去。那一格现已删掉）
 - **顺手修掉一处文档与代码不符**：`CLAUDE.md` 写着"项目没有 Alembic，加列只能走 `init_db()` 的幂等 SQL"——这句在 P2 之后就是错的，会直接把下一个人引到已经废弃的路上，改成"改表只有一条路：写 Alembic 修订 + 约束同时声明在模型上"。`backend/CLAUDE.md` 里"PG 按会话时区给值"那句同样不准，改成上面那条写入侧的说法
 - **一条被本地配置污染的用例**：`tests/test_config.py::test_load_default_settings` 断言的是代码里声明的默认值（SQLite），但 `Settings()` 会读开发者机器上的 `backend/.env`——真库一切到 PG 它就红。改成 `Settings(_env_file=None)`，用例守的东西一点没变，但不再能被任何人的 `.env` 弄红
 - **测试**：后端 577 → **580 passed**（+3：naive 值必须按 UTC 读、搬进 PG 目标库时刻不变、审计与搬家报同一个数）。两种方言各跑一遍——PG 上 **580 passed**（6:41），`TEST_DATABASE_URL` 留空的 SQLite 上 **579 passed + 1 skipped**（47s，跳的是那条只可能在 PG 上验的搬迁用例）。前端未动

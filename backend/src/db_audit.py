@@ -305,17 +305,16 @@ def _audit_table(
                 )
 
             if isinstance(col.type, JSON):
-                if isinstance(value, (dict, list)):
-                    pass
-                else:
-                    try:
-                        json.loads(value)
-                    except (TypeError, ValueError):
-                        report(
-                            "bad_json",
-                            f"{name}.{col.name} 不是合法 JSON：{value!r}",
-                            True,
-                        )
+                # 不判 ``value`` 已经是 dict/list 的情况：这个审计只从 SQLite 连接读行，
+                # sqlite3 永远给回原始存储类型。原先那道 ``pass`` 保险够不着，#206 删掉了。
+                try:
+                    json.loads(value)
+                except (TypeError, ValueError):
+                    report(
+                        "bad_json",
+                        f"{name}.{col.name} 不是合法 JSON：{value!r}",
+                        True,
+                    )
 
         for column_name, (parent_table, ref_column) in child_columns.items():
             value = row[column_name]

@@ -13,10 +13,11 @@ SQLite 还回来的是不带 tzinfo 的 UTC 文本，asyncpg 见到不带 tzinfo
 「先启动再来」，以及那个命令行出口——每张表一行、报告走 stdout、失败走 stderr 并退 1，
 还有「不带 --to 就搬进应用自己配的那张库」这条必须写在纸面上的默认值。
 
-其中给 SQLite 拨序列那一句是**量出来够不着**的：本仓两种新库形状的 DDL 都不写
-AUTOINCREMENT 关键字（纯 INTEGER PRIMARY KEY 自动 max+1），而 SQLite 反射默认把
-``sqlite_`` 打头的内部表滤掉了，所以那句「库里有 sqlite_sequence 才拨」永远不成立。
-下面钉的是两个实测事实——反射看不见它，以及不靠它也不会撞 id——不是那句代码。
+其中给 SQLite 拨序列那一格已经按 #206 删掉了（第三块面板⑩甲）：本仓两种新库形状的 DDL
+都不写 AUTOINCREMENT 关键字，反射又默认把 ``sqlite_`` 打头的内部表滤掉，那道保险两头够
+不着。留在这里的是它背后那两条实测事实——反射看不见这张内部表，以及带显式 rowid 插进去
+时 SQLite 自己就把 ``sqlite_sequence`` 顶上去。前者如今只有一个活消费者：``_check_source``
+那句「老库里多出来的表」用的正是同一份反射清单——所以那格照钉，只是钉的理由换了。
 """
 
 import sqlite3
@@ -551,17 +552,18 @@ async def test_a_new_library_that_rewrites_a_value_rolls_the_whole_thing_back(tm
     assert held == ("text", "007")
 
 
-# ---------------------------------------------------------------- 边界：那句拨序列的保险
+# ---------------------------------------------------------------- 边界：反射看不见的那张内部表
 
 
 def test_the_reflection_this_script_uses_cannot_see_the_sequence_table(tmp_path):
     """``sqlite_sequence`` 在 sqlite_master 里，但反射的默认过滤把它藏了。
 
     ``get_table_names()`` 的 SQL 里写着「name NOT LIKE sqlite 打头」（方言参数
-    ``sqlite_include_internal`` 默认 False），而 ``_reset_sequences`` 的 SQLite 分支正是
-    拿 ``_table_names`` 判「库里有没有这张表」。所以那句 INSERT OR REPLACE 一次也执行不到。
-    两份清单同时摆出来：将来谁把反射换成裸 sqlite_master 查询，这一条会当场红，
-    那时才轮到重新决定那格要不要活过来。
+    ``sqlite_include_internal`` 默认 False），而 ``_check_source`` 那句「老库里多出来的表」
+    正是拿 ``_table_names`` 算的：没有这道过滤，搬一次 SQLite 老库就会报一张用户从没建过的
+    内部表——命令行那格 ``len(warn) == 2`` 就是它的后果。两份清单同时摆出来是早先给
+    ``_reset_sequences`` 的 SQLite 保险开的死亡证明（#202），那一格已经按 #206 删了，而这道
+    过滤还活着，所以钉子留着。将来谁把反射换成裸 sqlite_master 查询，这一条会当场红。
     """
     path = tmp_path / "internal.db"
     engine = create_engine(f"sqlite:///{path}")
@@ -579,26 +581,6 @@ def test_the_reflection_this_script_uses_cannot_see_the_sequence_table(tmp_path)
     assert "sqlite_sequence" in raw
     assert "sqlite_sequence" not in reflected
     assert "t" in reflected
-
-
-def test_sqlite_keeps_its_own_counter_when_rows_arrive_with_explicit_ids(tmp_path):
-    """那句保险不跑也不会撞 id：显式 rowid 插进去，SQLite 自己把计数器顶上去。
-
-    这一条是「所以那格可以留着不管」的实测依据，不是顺带：如果这里新写的行拿到的是 1
-    而不是 8，那句够不着的 INSERT OR REPLACE 就是真缺了一道闸门，处理方式完全不同。
-    故意按最坏的 AUTOINCREMENT 形状造，因为纯 INTEGER PRIMARY KEY 连计数器都没有。
-    """
-    conn = sqlite3.connect(tmp_path / "autoinc.db")
-    try:
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT)")
-        conn.execute("INSERT INTO t (id, label) VALUES (7, '搬过来的那一行')")
-        conn.commit()
-        assert list(conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 't'")) == [(7,)]
-        conn.execute("INSERT INTO t (label) VALUES ('搬完之后新写的一条')")
-        conn.commit()
-        assert [row[0] for row in conn.execute("SELECT id FROM t ORDER BY id")] == [7, 8]
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------- 那个命令行出口

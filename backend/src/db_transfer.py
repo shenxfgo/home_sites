@@ -186,6 +186,12 @@ async def _reset_sequences(
 
     不拨的话，新库的第一条插入会撞上搬过来的 id：PG 直接报主键冲突，SQLite 则把
     冲突留到下一条写入。复合主键的表（``video_tags``、两张 ``_reads``）没有序列可拨。
+
+    只有 PG 这一头需要拨。SQLite 不用：#202 实测过，带显式 rowid 插进去时它自己就把
+    ``sqlite_sequence`` 顶到那个值（插 id 7 之后计数器就是 7，下一条自动给 8），而这里
+    原先那道「库里得有 ``sqlite_sequence`` 才拨」的保险根本够不着——脚本用的是 SQLAlchemy
+    反射，方言默认把 ``sqlite_%`` 内部表滤掉，于是那个存在性判断永远为假。#206 按用户
+    定夺（第三块面板⑩甲）把那一格删了，不是把它修活。
     """
     if not rows:
         return
@@ -207,12 +213,6 @@ async def _reset_sequences(
             ),
             {"t": table.name, "c": pk.name, "v": highest},
         )
-    elif conn.dialect.name == "sqlite" and pk.autoincrement is True:
-        if "sqlite_sequence" in await conn.run_sync(_table_names):
-            await conn.execute(
-                text("INSERT OR REPLACE INTO sqlite_sequence (name, seq) VALUES (:n, :s)"),
-                {"n": table.name, "s": highest},
-            )
 
 
 def _digest(rows: Sequence[Mapping[str, Any]], table: Table) -> str:
