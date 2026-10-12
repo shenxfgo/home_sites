@@ -1,5 +1,7 @@
 """Tests for subtitle API endpoints."""
+import json
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.api.subtitles import SubtitleResponse
@@ -406,6 +408,50 @@ async def test_embedded_stream_reports_unconvertible_track_as_415(
 
     assert response.status_code == 415
     assert "Unsupported codec" in response.json()["detail"]
+
+
+async def test_a_cueless_embedded_track_reaches_the_interface_as_415(
+    client, db_session, tmp_path
+):
+    """面板 ④ 甲接到接口这一头：换掉的是最下面那层的子进程，判断链整条真走了一遍。
+
+    上面那条 415 把 `extract_subtitle_webvtt` 整个换成一个会抛的替身，所以"ffmpeg 回了 rc=0、而转
+    出来的那份一个词都没有"这一步从来没在接口测试里真的发生过——那一格签的只是状态码映射。这一格
+    不换它，只换 `subprocess.run`：探针说这条轨在、ffmpeg 说它成功了、闸门说它没词，200 那条沉默的
+    路从这里才变成 415。
+    """
+    video, _ = await _video_with_subtitle(db_session, tmp_path)
+    probe_json = json.dumps(
+        {
+            "streams": [
+                {"index": 0, "codec_type": "video", "codec_name": "h264"},
+                {
+                    "index": 1,
+                    "codec_type": "subtitle",
+                    "codec_name": "mov_text",
+                    "tags": {"language": "chi"},
+                },
+            ],
+            "format": {"format_name": "mp4"},
+        }
+    )
+    children = [
+        SimpleNamespace(returncode=0, stdout=probe_json, stderr=""),
+        # 本机实测的真形状：一份只有头部的字幕封进 mov_text 再抽出来正是这 7 个字节。
+        SimpleNamespace(returncode=0, stdout="WEBVTT\n", stderr=""),
+    ]
+
+    def fake_run(command, **kwargs):
+        return children.pop(0)
+
+    with patch("src.utils.media_streams.subprocess.run", fake_run):
+        response = await client.get(f"/api/videos/{video.id}/subtitles/embedded/1/stream")
+
+    assert response.status_code == 415
+    detail = response.json()["detail"]
+    assert "没有解析出任何一条字幕" in detail
+    # 也不是那句关于这部片子的假话：轨是在的，它只是没词（#184 分的正是这两件事）。
+    assert "编号" not in detail
 
 
 def test_a_subtitle_without_a_creation_time_serializes_to_null():

@@ -13,6 +13,7 @@ from src.utils.subtitles import (
     SubtitleConversionError,
     ffmpeg_stderr_reason,
     fold_blank_lines_inside_cues,
+    has_a_cue,
     language_display_name,
 )
 
@@ -160,6 +161,11 @@ def extract_subtitle_webvtt(filepath: str, stream_index: int) -> str:
     ``StreamNotFoundError`` here means ffprobe did answer and the answer had no such
     subtitle stream; a probe that never answered travels as ``ProbeFailedError``
     instead, so the API can't claim the film has no such track (#184).
+
+    ffmpeg returning 0 is not the end of the question either: a track that muxes into
+    a WebVTT with no cue in it raises on the same predicate the sidecar path uses
+    (:func:`src.utils.subtitles.has_a_cue`), so the two lanes can't answer one
+    "nothing to say" with a 415 and the other with a silent 200 (#155).
     """
     if not os.path.isfile(filepath):
         raise FileNotFoundError(filepath)
@@ -202,4 +208,10 @@ def extract_subtitle_webvtt(filepath: str, stream_index: int) -> str:
     if result.returncode != 0 or not (result.stdout or "").strip():
         reason = ffmpeg_stderr_reason(result.stderr, "该轨无法转成 WebVTT")
         raise SubtitleConversionError(f"内嵌字幕提取失败：{reason}")
-    return fold_blank_lines_inside_cues(result.stdout)
+    webvtt = fold_blank_lines_inside_cues(result.stdout)
+    # 子进程回话说它成功了，这一路还要自己问一句「里面有没有词」：本机实测一份只有头部的字幕封进
+    # mov_text 再抽出来正是 rc=0 加 7 字节的 `WEBVTT\n`。它和外挂那一路守的是
+    # 同一个判据（#155 甲），不是各写一套口径。
+    if not has_a_cue(webvtt):
+        raise SubtitleConversionError("内嵌字幕提取失败：这条轨里没有解析出任何一条字幕")
+    return webvtt

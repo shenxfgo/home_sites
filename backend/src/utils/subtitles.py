@@ -252,7 +252,9 @@ def convert_to_webvtt(filepath: str) -> str:
     hand back a well-formed empty WebVTT with HTTP 200, which the browser loads
     happily (``readyState`` 2, zero cues) and the player can therefore not report.
     Failing here is what makes the 415, and with it the ``<track>`` ``error`` event
-    (#146), reachable at all.
+    (#146), reachable at all. The embedded path (:func:`src.utils.media_streams.
+    extract_subtitle_webvtt`) asks the same question through :func:`has_a_cue` rather
+    than trusting ffmpeg's exit code alone (#155).
     """
     if not os.path.isfile(filepath):
         raise FileNotFoundError(filepath)
@@ -267,7 +269,7 @@ def convert_to_webvtt(filepath: str) -> str:
     else:
         raise SubtitleConversionError(f"不支持的字幕格式: {ext}")
 
-    if not any(_CUE_TIMESTAMP_LINE.match(line) for line in webvtt.splitlines()):
+    if not has_a_cue(webvtt):
         raise SubtitleConversionError(
             f"字幕转换失败：这份文件里没有解析出任何一条字幕（{ext}）"
         )
@@ -280,6 +282,18 @@ def convert_to_webvtt(filepath: str) -> str:
 _CUE_TIMESTAMP_LINE = re.compile(
     r"^\s*(?:\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})\s*-->"
 )
+
+
+def has_a_cue(webvtt: str) -> bool:
+    """Whether the text holds at least one finished WebVTT cue.
+
+    Both lanes ask this one question before they answer (#155). They used to ask it
+    differently: a sidecar that converted to nothing raised, while an embedded track
+    that muxed to nothing came back as ``WEBVTT`` and was served with HTTP 200 — the
+    browser loaded it happily with zero cues, so the player had nothing to report and
+    the viewer could only tell the track was silent by watching the film.
+    """
+    return any(_CUE_TIMESTAMP_LINE.match(line) for line in webvtt.splitlines())
 
 
 def fold_blank_lines_inside_cues(webvtt: str) -> str:

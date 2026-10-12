@@ -1,6 +1,23 @@
 # 更新日志
 
 ## 2026-10-12
+### 内嵌字幕轨那句「没词」不再伪装成功：ffmpeg 回 0 而里面一条 cue 都没有也算失败，两条路问同一个判据（#208）
+
+- **这一单是第三块面板 ④**（#155 剩下的那一半）：用户选**甲**——内嵌那一路照补零 cue 闸门，但补的是**同一个判据**，否掉的是「两条路各写一套口径」。#187 当时只把闸门装在外挂那三支上，`backend/CLAUDE.md` 里明留了一句「没装闸门的：内嵌那一支……现状留给下一单」，这一单就是那一单。
+- **洞是量出来的**：本机真 ffmpeg 实测——一份只有头部、一条 cue 都没有的 `.srt` 封进 `mov_text` 再抽出来，子进程回的是 **rc=0、stdout 恰好 7 字节（`WEBVTT` 加一个换行）、stderr 空**。旧闸门 `returncode != 0 or not stdout.strip()` 问的是「有没有写字节」，那四个字母算写了，于是接口交出 200，浏览器把那条轨标成 loaded（`cues.length === 0`）而**不发 `error`**，#146 那套「没能加载」的提示一辈子不执行——看的人只能靠盯着片子发现这条轨是哑的。闸门落在 `media_streams.py:211-216`。
+- **判据只有一句**：`has_a_cue`（`subtitles.py:287-296`）是从 `convert_to_webvtt` 里那句 `any(...)` 原样提出来的，正则一字未动。外挂三支（`subtitles.py:272`）与内嵌一支（`media_streams.py:215`）各调一次，两边的 docstring 互相点名——改一边口径的人会读到「另一条路问的是这同一个问题」。
+- **两道闸门各管一种失败**：子进程失败或整段空白 → 沿用 ffmpeg 自己的原因；子进程成功而里面没 cue → 「这条轨里没有解析出任何一条字幕」。**诚实记录**：电池 A7（摘掉旧那道 `or not stdout.strip()`）第一次跑是**绿的**——「rc=0 且一个字都没写」这一格在改前就没有任何钉子；补上 `test_extract_says_the_track_wrote_nothing_when_it_wrote_no_bytes` 之后 A7 才红 1 条。**新闸门不是旧闸门的替代品**，别把两句合并成一句。
+- **红在前，而且是当场看到的**：本单五条新用例打在**改前的源码**（HEAD 那一份 `media_streams.py` + `subtitles.py`）上当场 **3 failed, 2 passed** —— `test_extract_refuses_a_track_that_muxed_to_no_cues`（253 行）与 `test_both_lanes_refuse_the_same_cueless_webvtt`（276 行）各是一个 `DID NOT RAISE`，API 那条是 `assert 200 == 415`。照旧绿的那两条各有理由：`test_extract_says_the_track_wrote_nothing_when_it_wrote_no_bytes` 测的是**旧**闸门本来就接住的形状（它是为了让 A7 变红而加的），`test_extract_still_serves_a_track_with_a_single_cue` 是反面用例、改前也该绿。API 那条只把 `subprocess.run` 换成「一份手写 ffprobe JSON + 一段 7 字节 stdout」，其余全走真路由、真异常映射、真状态码。
+- **电池 9 格 = 7 红 + 2 绿**（基线 **85 passed**，三份字幕文件、内存 SQLite；每格一个变量，跑完按 md5 复原并复核）：A1 摘新闸门 → 红 3（正是这一单的三条签名用例），A2 改掉那句共用尾巴 → 红 3，A3 判据永真 → 红 **10**，A4 判据永假 → 红 **19**，A5 摘掉 ffmpeg 短写时间戳那一支 → 红 8，A7 摘旧闸门 → 红 1，A8 **只**摘外挂那道（#187）→ 红 8——内嵌这几条没有替 #187 兜底，两边各签各的。**A3/A4 一起塌**是这一单「同一判据」的签名：它不是 DRY 装饰。两格绿各有名字：**A6 是等价变异**（把闸门挪到缝合之前，`fold_blank_lines_inside_cues` 从不增删时间戳行，按设计就该绿），**C1 是对照格**（只改 docstring 的一个词）。
+- **第一盘电池作废，两笔账都记在这儿**：① 那一版每格只重写「这格动的那个文件」，于是 A2 改过的那句话在 A3/A4/A5 跑的时候还留在磁盘上，那三格的红里混着我另一处改动；② 它整个跑在我补 A7 那条签名用例之前。第二版每格之前先把**两个**文件都复原再动一个变量。**规矩（补进电池卫生那条）：电池必须在每一格开始前把所有被碰过的源文件回到 pristine，否则前一格的红会算到后一格头上。**
+- **一条旧测试被这单改掉**：`test_both_child_processes_are_given_a_deadline_and_a_decoding_contract` 那份假装的 ffmpeg 正文从前是「`WEBVTT` 后面两个换行」（今天 430 行），正是这一单开始要拒的形状——它红在闸门上，而不是红在它要测的那份 argv/kwargs 契约。按 #187 立下的连带规矩换夹具（假装的 stdout 必须带一条真 cue），**不是放宽闸门**。同文件 151 行与 226 行那两处空 stdout 原样保留：它们测的是子进程本身就失败。
+- **反面用例守着另一头**：`test_extract_still_serves_a_track_with_a_single_cue`（305-315 行，正文只有一条 cue）和 170 行那条正常提取照旧全绿，判据不许把正常字幕也判死。新那三条共用常量 `HEADER_ONLY_WEBVTT = "WEBVTT\n"`（239 行），假子进程由 `_stdout`（104-105 行）喂。
+- **接口零连带**：415 早就写在这一族地址的三个 catch 里（`api/subtitles.py:158-159` 内嵌 GET、`187-188` 手工 POST、`221-222` 外挂 GET），本单只是让内嵌 GET **第一次真能走到**它；`openapi.json`、五条静态守卫、前端一行未动。新写的那句原话本身就是中文（第五守卫的要求），`tests/test_error_message_language.py` 当场 3 / 3 全过。
+- **真后端 e2e 第 21 条不受影响**：`frontend/e2e/real/video-embedded-subtitles.real.spec.ts` 现场编的那条 `mov_text` 带的是两句真 cue，签的仍是 200（219-222 行）加浏览器渲染出来的 cue（266 行）。**没给它加第二个空壳片子**：那要一整轮扫描/删除循环，超出这一单的范围。
+- **读数**：PG 全量 **1060 passed in 210.84s**（带 coverage）（用例 1055 → 1060，本单 **+5**：`test_media_streams.py` 4 条、`test_api/test_subtitles.py` 1 条）/ TOTAL **99.10%**——**4649** 句 / **42** 缺；分母涨的 5 句正是本单新写的 5 句（`extract_subtitle_webvtt` 的 `if` + `raise`，`has_a_cue` 的 `def` + docstring + `return`），它们全被执行到，所以缺句名单与 #207 一字不差（`users.py:155-156`、`video_service.py:404`、`e2e_seed.py` 那 39 句留白）。`media_streams.py` 与 `subtitles.py` 照旧各 **0 缺 / 100%**——这两处在改前后都是 100%——未覆盖那 42 句里从来没有它们——而洞一直在：行覆盖对这个形状**什么都说不出来**，签字只能靠电池。
+- **两份文档同批**：`backend/CLAUDE.md` 插了一条 #208  bullet（薄位置清单首条）、改写 #187 那句标题（「闸门只有一道、三条支路共用」→「判据只有一道，外挂三支与内嵌一支共用」）、并把「没装闸门的：内嵌那一支」那条换成它落地的记录。
+- **账目**：`ruff check src tests` 干净（两处 E501 是我把中文按 1 列算写长了，ruff 按 2 列），`mypy src` 基线 **34** 条未变。行数：`media_streams.py` 217、`subtitles.py` 380、`test_media_streams.py` 由 488 涨到 582、`test_api/test_subtitles.py` 由 421 涨到 467；源文件 md5（工作区，CRLF）`media_streams.py` `a3b8a3fa0a527e14241a356a12f4606a`、`subtitles.py` `0f9018d90217ed8db3e5bd136b2005fd`。
+
 ### 组名上限那个 30 数的不再是字符，而是屏幕上占几列（#207）
 
 - **这一单是第三块面板 ⑥**：`_find_group` 里「候选组名长过 30 就跳过」那道闸门，用户选**甲**（按显示宽度封顶），否掉的是「照现状数字符」和「按 UTF-8 字节数算」。#193 把这个分叉量出来之后源码一行没动、只记成「同一个数字、两种单位」，这一单收的就是那笔尾账。

@@ -10,6 +10,16 @@
 顺带量到的一处现状已经在 #184 改掉：`extract_subtitle_webvtt` 从前在 ffprobe 自己跑不起来时
 说"文件里没有编号为 N 的字幕轨"——原因被换成了一个关于这部片子的假话。现在这一步发自己的
 异常（`ProbeFailedError`），接口把它回成 503，`StreamNotFoundError` 只在真读到过清单时才发。
+
+而上面那些 `57-58`、`66`、`176-177` 记的是 **#175 当时**量到的行号，不是本文件此刻的行号：#184
+给探针加了 `ProbeFailedError`、#208 又给提取加了闸门，两段主体都往下挪了。此刻（2026-10-12）
+的落点是 ffprobe 起不来 `62-63`、坏 JSON `72-73`、ffmpeg 起不来 `205-206`。
+
+#208 补的是这一路**自己的**零 cue 闸门（面板 ④ 甲）：ffmpeg 回 rc=0 而 stdout 只有 `WEBVTT\n`
+时从前一路放行到浏览器，200、加载成功、永远不说话。判据和外挂那一路共用同一个
+（`src.utils.subtitles.has_a_cue`），不是两处各写一套口径。顺带改了另一格里的一份 filler：
+`test_both_child_processes_are_given_a_deadline_and_a_decoding_contract` 原先写着 `WEBVTT\n\n`，
+那正是这一单要拦的形状，而它钉的是发出去的参数表——payload 换成一条带 cue 的，那一格的题不变。
 """
 import json
 import subprocess
@@ -24,7 +34,7 @@ from src.utils.media_streams import (
     extract_subtitle_webvtt,
     probe_streams,
 )
-from src.utils.subtitles import SubtitleConversionError
+from src.utils.subtitles import SubtitleConversionError, convert_to_webvtt
 
 PROBE_RESULT = {
     "streams": [
@@ -223,6 +233,88 @@ def test_extract_reports_an_unconvertible_track(tmp_path):
             extract_subtitle_webvtt(str(video), 3)
 
 
+# 本机实测（ffmpeg 8.x）：把一份只有头部的 .srt 以 `mov_text` 封进容器再抽出来，子进程是**成功**的
+# ——rc=0、stdout 正好 7 字节 `WEBVTT\n`、stderr 是空的。所以「没词」这一族在这条路上不走上面那格，
+# 它走得比那格更远：一路开到浏览器，200、加载成功、零条 cue。
+HEADER_ONLY_WEBVTT = "WEBVTT\n"
+
+
+def test_extract_refuses_a_track_that_muxed_to_no_cues(tmp_path):
+    """内嵌那条轨转出来一句词都没有，也得算失败——不能回一份结构完好但永远不说话的 WebVTT。
+
+    第三块面板 ④（#155）定的甲：两条路径同一判据。外挂那一路早就这么判了（#187），这一路从前只判
+    「子进程有没有回话」，rc=0 加一个头部就从这里过去了。
+    """
+    video = tmp_path / "movie.mkv"
+    video.write_bytes(b"matroska")
+
+    fake = FakeRun(_probe(), _stdout(HEADER_ONLY_WEBVTT))
+    with patch("src.utils.media_streams.subprocess.run", fake):
+        with pytest.raises(SubtitleConversionError) as excinfo:
+            extract_subtitle_webvtt(str(video), 1)
+
+    assert "没有解析出任何一条字幕" in str(excinfo.value)
+    # 闸门在收口之后：`\N` 开头那种被拆散的形状先缝回来，再问有没有词。
+    assert [command[0] for command in fake.calls] == ["ffprobe", "ffmpeg"]
+
+
+def test_both_lanes_refuse_the_same_cueless_webvtt(tmp_path):
+    """同一个「一句词都没有」，两条路说的是同一句话——只是各自的主语不同。
+
+    这一格钉的是面板 ④ 甲的**那个**要点：判据共用一个，不是两处各写一套口径。真各写一套的话，两行
+    消息迟早分叉（#142 就是同一件事在两条路上一边能诊断、一边不能的样子）。
+    """
+    cueless = tmp_path / "movie.vtt"
+    cueless.write_text(HEADER_ONLY_WEBVTT, encoding="utf-8")
+    video = tmp_path / "movie.mkv"
+    video.write_bytes(b"matroska")
+
+    with pytest.raises(SubtitleConversionError) as sidecar:
+        convert_to_webvtt(str(cueless))
+    fake = FakeRun(_probe(), _stdout(HEADER_ONLY_WEBVTT))
+    with patch("src.utils.media_streams.subprocess.run", fake):
+        with pytest.raises(SubtitleConversionError) as embedded:
+            extract_subtitle_webvtt(str(video), 1)
+
+    shared = "没有解析出任何一条字幕"
+    assert shared in str(sidecar.value) and shared in str(embedded.value)
+    # 各自的主语留着：415 落在菜单上时，读的人得知道坏的是挂在旁边的文件还是容器里那条轨。
+    assert str(sidecar.value).startswith("字幕转换失败")
+    assert str(embedded.value).startswith("内嵌字幕提取失败")
+
+
+def test_extract_says_the_track_wrote_nothing_when_it_wrote_no_bytes(tmp_path):
+    """ffmpeg 连一个字节都没写（rc=0、stdout 空）和写了一个没词的头部，是两件不同的事。
+
+    后者归 #208 这道零 cue 闸门管，前者归它前面那道「什么都没写」的旧闸门管（#175）。这一格是电池
+    A7 量出来的：把旧的那道摘掉全绿——新那道确实会把空文本一起接住，可换出来的是一句
+    关于「词」的说法，而这一次连格式都没出来。两道闸门各说各的话，从这一格起才各有签字。
+    """
+    video = tmp_path / "movie.mkv"
+    video.write_bytes(b"matroska")
+
+    with patch("src.utils.media_streams.subprocess.run", FakeRun(_probe(), _stdout(""))):
+        with pytest.raises(SubtitleConversionError) as excinfo:
+            extract_subtitle_webvtt(str(video), 1)
+
+    message = str(excinfo.value)
+    assert "该轨无法转成 WebVTT" in message
+    assert "没有解析出任何一条字幕" not in message
+
+
+def test_extract_still_serves_a_track_with_a_single_cue(tmp_path):
+    """闸门只拦「零条」：一条词的轨照常 200，不许顺手把短字幕也判死。
+
+    真实形状是存在的——本机实测一份只有一行台词的 .srt 封成 mov_text 后抽出来正是四条一行。
+    """
+    video = tmp_path / "movie.mkv"
+    video.write_bytes(b"matroska")
+    payload = "WEBVTT\n\n00:00.000 --> 00:02.000\n只有一句\n"
+
+    with patch("src.utils.media_streams.subprocess.run", FakeRun(_probe(), _stdout(payload))):
+        assert extract_subtitle_webvtt(str(video), 1) == payload
+
+
 def test_extract_needs_the_file_on_disk():
     with pytest.raises(FileNotFoundError):
         extract_subtitle_webvtt("D:\\videos\\ gone.mkv", 1)
@@ -333,7 +425,9 @@ def test_both_child_processes_are_given_a_deadline_and_a_decoding_contract(tmp_p
     fake = FakeRun(
         _child(_streams({"index": 0, "codec_type": "subtitle", "codec_name": "subrip"})),
         _child(_streams({"index": 0, "codec_type": "subtitle", "codec_name": "subrip"})),
-        _child("WEBVTT\n\n"),
+        # 这份 filler 从 #208 起必须自带一条 cue：它从前写着 `WEBVTT\n\n`，而那不说话的形状正是
+        # 这一单要拦的。这一格钉的是发出去的参数表，别让闸门把它半路拦下来。
+        _child("WEBVTT\n\n00:01.000 --> 00:02.000\n参数表\n"),
     )
 
     with patch("src.utils.media_streams.subprocess.run", fake):
