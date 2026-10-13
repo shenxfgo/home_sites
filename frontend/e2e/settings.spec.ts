@@ -102,3 +102,35 @@ test('高度那一格的上下限和宽度不是同一对，各自钳各自', as
   // 宽度留在播种的 320：两格各有 :min/:max，把任何一对写反都会在这里露出来。
   await expect(field(page, '缩略图宽度').locator('input')).toHaveValue('320')
 })
+
+test('配置没读进来之前五格全是空的，保存按下去也发不出请求', async ({ page }) => {
+  // #214：界面不再揣着一份自己的字面量开局。这里独占的是"真按"——单测能钉住 `:disabled`
+  // 这个属性，但"按钮灰着的时候人点了什么也不会发出去"要在真浏览器里才算数。
+  await page.route((url) => url.pathname === '/api/settings', (route) =>
+    route.request().method() === 'GET'
+      ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: '服务未就绪' }) })
+      : route.fallback(),
+  )
+  const bodies: string[] = []
+  page.on('request', (req) => {
+    if (req.method() === 'PUT' && req.url().endsWith('/api/settings')) bodies.push(req.postData() ?? '')
+  })
+
+  await page.goto('/settings')
+  await expect(page.locator('.el-message--error')).toContainText('服务未就绪')
+
+  await expect(field(page, '扫描间隔').locator('.el-select__placeholder')).toHaveText('未读取')
+  await expect(field(page, '默认转码格式').locator('.el-select__placeholder')).toHaveText('未读取')
+  await expect(field(page, '缩略图宽度').locator('input')).toHaveValue('')
+  await expect(field(page, '缩略图高度').locator('input')).toHaveValue('')
+  await expect(field(page, '自动扫描').locator('.el-switch')).not.toHaveClass(/is-checked/)
+  // 反面那句才是本单的落点：读失败时页面不许停在「每小时 / 320×180 / MP4」这套字面量上，
+  // 因为那会让人以为按下保存就是把库里现有值换成它们。
+  await expect(field(page, '扫描间隔')).not.toContainText('每小时')
+
+  const save = page.getByRole('button', { name: '保存设置' })
+  await expect(save).toBeDisabled()
+  await save.click({ force: true })
+  await page.waitForTimeout(300)
+  expect(bodies).toEqual([])
+})

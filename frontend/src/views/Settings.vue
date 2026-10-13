@@ -1,19 +1,34 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Setting } from '@element-plus/icons-vue'
 import { getSettings, updateSettings, type Settings } from '@/api/settings'
 
 // 这一页只剩系统配置（owner 可见）；主题这类个人偏好在 /profile 按人保存。
-const settings = ref<Settings>({
-  auto_scan_enabled: true,
-  auto_scan_interval: 3600,
-  default_transcode_format: 'mp4',
-  thumbnail_width: 320,
-  thumbnail_height: 180,
-})
+//
+// 读回来之前这一页**一个数也不揣**（#214，面板 ⑦ 甲）：从前这五个初始字面量
+// （true / 3600 / 'mp4' / 320 / 180）只在 `GET /api/settings` 失败那一格露出来，
+// 显示的却是界面自己替服务器做的决定。而 `PUT /api/settings` 的请求模型五个键
+// 全都带默认值——漏一格不是那格不动，是把它写回代码默认值，所以"半张表"连保存
+// 的资格都没有（`canSave` 就是这道闸）。
+type SettingsDraft = Partial<Settings>
+
+const settings = ref<SettingsDraft>({})
 const loading = ref(false)
 const saving = ref(false)
+
+/** 五格都读回来过，才谈得上整表写回去。 */
+function isComplete(draft: SettingsDraft): draft is Settings {
+  return (
+    draft.auto_scan_enabled !== undefined &&
+    draft.auto_scan_interval !== undefined &&
+    draft.default_transcode_format !== undefined &&
+    draft.thumbnail_width !== undefined &&
+    draft.thumbnail_height !== undefined
+  )
+}
+
+const canSave = computed(() => isComplete(settings.value))
 
 const transcodeFormats = [
   { label: 'MP4 (H.264)', value: 'mp4' },
@@ -44,9 +59,14 @@ async function loadSettings() {
 }
 
 async function handleSave() {
+  // 按钮在未读全时就是按不动的（模板那道 `:disabled`），这一句要的是类型收窄：
+  // 过了它，`settings.value` 才真的是一份全五项的 `Settings`。
+  const draft = settings.value
+  if (!isComplete(draft)) return
+
   saving.value = true
   try {
-    await updateSettings(settings.value)
+    await updateSettings(draft)
     ElMessage.success('设置已保存')
   } catch (err: unknown) {
     ElMessage.error(`保存失败: ${err instanceof Error ? err.message : err}`)
@@ -81,7 +101,9 @@ onMounted(loadSettings)
         </el-form-item>
 
         <el-form-item label="扫描间隔">
-          <el-select v-model="settings.auto_scan_interval" style="width: 200px">
+          <!-- 占位文案必须自己写：全站没给 Element Plus 配中文 locale，空值时组件默认显示英文
+               "Select"，而 #214 之后空值是这个页面开局的第一态。 -->
+          <el-select v-model="settings.auto_scan_interval" placeholder="未读取" style="width: 200px">
             <el-option
               v-for="item in scanIntervals"
               :key="item.value"
@@ -102,7 +124,7 @@ onMounted(loadSettings)
 
       <el-form label-width="140px" label-position="left">
         <el-form-item label="默认转码格式">
-          <el-select v-model="settings.default_transcode_format" style="width: 200px">
+          <el-select v-model="settings.default_transcode_format" placeholder="未读取" style="width: 200px">
             <el-option
               v-for="item in transcodeFormats"
               :key="item.value"
@@ -146,7 +168,12 @@ onMounted(loadSettings)
     </el-card>
 
     <div class="actions">
-      <el-button type="primary" :loading="saving" @click="handleSave">
+      <el-button
+        type="primary"
+        :loading="saving"
+        :disabled="!canSave"
+        @click="handleSave"
+      >
         保存设置
       </el-button>
     </div>

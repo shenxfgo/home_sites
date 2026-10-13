@@ -346,7 +346,7 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 `settings` 表里五个键现在**全都有读者**（#210 起；此前只有第一个）。`auto_scan_enabled` 是自动扫描的总开关，读者是 `scheduler/tasks.py` 里那两个扫描包装任务，每轮现读（`SettingService.is_auto_scan_enabled`），关了就整轮不走、也不写任何通知——一轮被开关拦下的扫描不是事件，给它写一条就是 #85 刚删掉的那种心跳。解析规则只留 `setting_service.parse_auto_scan_enabled` 一份：没写过这一行算**开**（新库那张表本来就是空的，一个字没写过的人不该被静默停扫），设置页 `GET` 也走它；两处各写一套的话，同一个字符串就有两种真值。闸门刻意落在**任务**上而不是 `ScanService` 上：设置页说的是"自动"扫描，人按「扫描」按钮那一路不归它管。用例在 `tests/test_scheduler_auto_scan_switch.py`，五条各挡一种改法——把闸门从任务挪进 service，只会红在「手工扫描不该被管」那一条。
 
-另外四个键的读者各是一条管线，守的是同一条规矩：**一个数只住一处**。默认值只存在于这张表（以及 `setting_service` 那张规则表里的兜底值）里，请求模型和 e2e 替身都不许再揣一份自己的字面量。
+另外四个键的读者各是一条管线，守的是同一条规矩：**一个数只住一处**。默认值只存在于这张表（以及 `setting_service` 那张规则表里的兜底值）里，请求模型和 e2e 替身都不许再揣一份自己的字面量——界面那一头同理（#214：`Settings.vue` 那五个表单初值删了，`GET` 落地之前五格留空、保存按不动，因为整表 PUT 漏一格就是把那一格写回默认值）。
 - `auto_scan_interval` 只给**新建的片源**当默认值：`SourceService.create` 在请求没带 `scan_interval` 时去读这一行，而 `SourceCreate.scan_interval` 的默认是 `None` 而不是某个数——为的就是"没填"和"填了 3600"在这条线上分得开。它是默认不是覆盖：源级别的 `VideoSource.scan_interval` 一旦写定就是那个源自己的排班，改设置页不会把已有片源重新排一遍。这一格从前有三处各写死了一个 3600（前端表单初值、后端请求模型默认、e2e 替身的答复），三处现在都改成问这张表。
 - `thumbnail_width` / `thumbnail_height` 是 `scan_source` 开头读一次（`get_thumbnail_size()`），一路传到 `file_scanner` 拼成 `-vf scale={宽}:{高}`。`file_scanner` 那一层既不读表也不留默认，所以"设置页改了尺寸，刷出来的封面就是那个大小"从 #210 起才是真话；已经落盘的老封面**不重刷**，`scale=320:-1` 那批还是原来的像素。
 - `default_transcode_format` 只走到界面：转码页的下拉拿它当默认选项，API 契约一个字没改，少了目标格式照样 422。

@@ -9,6 +9,10 @@
  *
  * 单元层在这里独占的是**能指定服务器回什么**：真库那 18 条里设置页读到的就是库里那份，
  * 指不出「服务器回了一个界面不认识的值」这种形状（下面第 2、4、5 条）。
+ *
+ * #214 起，这一页在读回来之前**一个数也没有**（面板 ⑦ 甲）：那五个初始字面量原先只在
+ * 「GET 失败」那一格露出来，等于界面替服务器做主。于是"空态"成了单元层能演、而真库
+ * 那一路永远演不出的形状——真库里 GET 总会落地。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
@@ -23,16 +27,7 @@ vi.mock('@/api/settings', () => ({
   updateSettings: vi.fn(),
 }))
 
-/** `Settings.vue` 那份 ref 的初始值——也就是"一次也没读进来"时页面会显示的东西。 */
-const INITIAL: SystemSettings = {
-  auto_scan_enabled: true,
-  auto_scan_interval: 3600,
-  default_transcode_format: 'mp4',
-  thumbnail_width: 320,
-  thumbnail_height: 180,
-}
-
-/** 和初始值逐项都不同的服务器答案，这样"显示的是服务器那份"才量得出来。 */
+/** 服务器那份答案：与「一次也没读进来」的那个空态逐项都不同，"显示的是服务器那份"才量得出来。 */
 const FROM_SERVER: SystemSettings = {
   auto_scan_enabled: false,
   auto_scan_interval: 7200,
@@ -66,6 +61,9 @@ function numberValue(wrapper: VueWrapper, label: string) {
 function switchIsChecked(wrapper: VueWrapper) {
   return field(wrapper, '自动扫描').find('.el-switch').classes().includes('is-checked')
 }
+
+/** 那五格齐了才该松开的那颗按钮。 */
+const saveButton = (wrapper: VueWrapper) => buttonByText(wrapper, '保存设置')
 
 describe('Settings view', () => {
   beforeEach(() => {
@@ -150,14 +148,45 @@ describe('Settings view', () => {
     wrapper.unmount()
   })
 
-  it('quotes the server when the initial read fails and leaves the form on its defaults', async () => {
+  it('quotes the server when the initial read fails and leaves every field blank', async () => {
     const wrapper = await mountSettings(new Error('服务未就绪'))
 
     expect(ElMessage.error).toHaveBeenCalledWith(expect.stringContaining('服务未就绪'))
-    // 读失败时页面停在 ref 的初始值上：这一句是防止有人把 catch 写成"清空重来"。
-    expect(field(wrapper, '扫描间隔').text()).toContain('每小时')
-    expect(numberValue(wrapper, '缩略图宽度')).toBe(String(INITIAL.thumbnail_width))
+    // #214（面板 ⑦ 甲）：读不回来时页面停在**空**上，而不是停在界面自己揣的那五个数上。
+    // 「把 catch 写成清空重来」这一句从前是防反方向的，现在方向反过来了——空态才是对的。
+    expect(field(wrapper, '扫描间隔').text()).not.toContain('每小时')
+    expect(field(wrapper, '默认转码格式').text()).not.toContain('MP4')
+    expect(numberValue(wrapper, '缩略图宽度')).toBe('')
+    expect(numberValue(wrapper, '缩略图高度')).toBe('')
+    expect(switchIsChecked(wrapper)).toBe(false)
+    expect(saveButton(wrapper).element.hasAttribute('disabled')).toBe(true)
     expect(updateSettings).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('holds every field blank until the first read lands', async () => {
+    // GET 悬着不落地：这一格演的就是「服务器还没说任何一个数」，而它是真库那一路
+    // 演不出的形状（真库里 GET 总会落地），所以只有单元层能钉。
+    vi.mocked(getSettings).mockReturnValue(new Promise<SystemSettings>(() => {}))
+    const wrapper = mount(Settings, { attachTo: document.body })
+    await flushPromises()
+
+    expect(field(wrapper, '扫描间隔').text()).not.toContain('每小时')
+    expect(field(wrapper, '默认转码格式').text()).not.toContain('MP4')
+    expect(numberValue(wrapper, '缩略图宽度')).toBe('')
+    expect(numberValue(wrapper, '缩略图高度')).toBe('')
+    expect(switchIsChecked(wrapper)).toBe(false)
+    // 读不到现状的人不该有能力把半张表写回服务器。
+    expect(saveButton(wrapper).element.hasAttribute('disabled')).toBe(true)
+    expect(getSettings).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('enables the save button again once the read has landed', async () => {
+    // 上一格挡住的是「一直空着」，这一格挡住的是「空着就再也不活了」：GET 落地后
+    // 保存必须重新可用，否则这一页就成了只读的。
+    const wrapper = await mountSettings()
+    expect(saveButton(wrapper).element.hasAttribute('disabled')).toBe(false)
     wrapper.unmount()
   })
 
