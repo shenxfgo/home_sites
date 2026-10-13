@@ -250,6 +250,8 @@ async def create_example(
 
 中间件已经保证登录，路由不必再判 401；`user_id` 只用于取"当前这份数据属于谁"。
 
+**更新接口的请求体：可空声明必须配一道「显式 null」闸口。** 差量写走的是 `data.model_dump(exclude_unset=True)`，而 pydantic 认为「显式送 null」是*已设置*——于是 `{"name": null}` 会带着 `None` 一路走到 `setattr` 和那次 commit。库里那一列是 NOT NULL 的话，数据库报 `IntegrityError`，而路由那句 `except ValueError` 接不住它（`IntegrityError` 不是它的子类），真服务器上就是一次 500；#211 实测过 7 格（片源五格里 path 那格更早在路由自己的配对校验里就 `AttributeError`，标签两格撞 `tags.name` / `tags.color`）。所以**凡是 `str | None` 而库里 NOT NULL 的字段，都要配一道 field_validator**，形状照 `SourceUpdate` / `TagUpdate` / `VideoUpdate.rating`：一张「接口字段名 → 那句中文的主语」的表，`@field_validator(*那张表)`（字段清单从表里生，漏一列结构上不可能），体里 `raise PydanticCustomError("cannot_be_cleared", "{label}不能留空", {"label": 表[str(info.field_name)]})`。三个细节别丢：`PydanticCustomError` 只从 `pydantic_core` 导出（`pydantic` 包里没有），用它而不是裸 `ValueError` 是因为 422 的 `msg` 会带「Value error, 」这个英文包装、而它正是界面 toast 读的那一格（`reasonOf` 不认识的 `type` 退 `item.msg`）；`str(info.field_name)` 不加就超出 mypy 基线；闸口只挡送来的值——pydantic 不校验默认值，所以"省略 = 不改"这条天然成立，但要有一条用例钉着（`test_a_patch_that_omits_the_other_columns_still_works` 那一族），否则"全列改必填"也能蒙绿。反过来，库里真可为空的那列（`videos.title` / `description`）显式 null 就是合法的清空，回 200 写真 NULL，那两格也有对照用例钉着——别顺手把两道合成一道。
+
 ### 4. 注册路由
 
 ```python
@@ -525,9 +527,9 @@ tests/
 
 界面那句 toast 是 `frontend/src/api/client.ts:100` 把 `error.response.data.detail` 原样当 Error message 拼出来的——**后端写哪种语言，用户就读哪种语言**。#131 那层守卫只看界面里写死的字面量，运行时从后端来的那句它看不见；反过来这一层也不管界面文案。两条守卫各管一半出面。
 
-为什么用 Python 的 `ast` 而不是隔壁四条 Vitest 守卫那种正则遍历：被扫的源是 Python。正则要在 TypeScript 里再解析一遍 Python 字符串，会漏隐式拼接、被 docstring 假命中，而 `detail=某个常量名` 要查定义才能判——`ast` 对这些是免费的。三段式照抄 `frontend/tests/views/toast-language.spec.ts`：**扫描下限（41 个文件）/ 命中下限（140 站点、94 句自撰、46 转发）/ offenders 为空**。
+为什么用 Python 的 `ast` 而不是隔壁四条 Vitest 守卫那种正则遍历：被扫的源是 Python。正则要在 TypeScript 里再解析一遍 Python 字符串，会漏隐式拼接、被 docstring 假命中，而 `detail=某个常量名` 要查定义才能判——`ast` 对这些是免费的。三段式照抄 `frontend/tests/views/toast-language.spec.ts`：**扫描下限（41 个文件）/ 命中下限（144 站点、98 句自撰、46 转发）/ offenders 为空**。
 
-出海的面是**三种形状**，少一种就会在全绿的同时留一句英文进 toast：`detail="…"`（api 写死）、`raise ValueError("…")`（经路由 `detail=str(e)` 出海，抛它的可能是 services / utils / storage），以及 `return False, "…"`（`transcode_video` 那一族不抛异常，那句进 `job.error` 经 `/api/transcode/status` 原样落进 `ElMessage.error(…)`，实测四条全在 `src/utils/ffmpeg.py`）。**边界也写下来了**：`passthrough` 那 46 处是转发型（`str(e)`、纯变量），这里没有可判的语言；ffmpeg 自己的 stderr、操作系统那句 `[Errno 2]`，语言不由我们决定，所以也不由这一层负责。`src/api/stream.py:73` 那个 JSONResponse 的 `message` 字段是刻意留下的例外——它是给 curl 看的端点回声，界面从不渲染它。
+出海的面是**四种形状**，少一种就会在全绿的同时留一句英文进 toast：`detail="…"`（api 写死）、`raise ValueError("…")`（经路由 `detail=str(e)` 出海，抛它的可能是 services / utils / storage），`raise PydanticCustomError(code, 模板, ctx)`（#211 ⑨ 甲新添的那一类：422 的 `detail[i].msg` 就是模板渲染后的那句，`code` 只进 `type`，所以守卫判的是 **args[1]** 而不是 args[0]——按第一个参数判等于天天在检查一个英文代号，真模板没人看过），以及 `return False, "…"`（`transcode_video` 那一族不抛异常，那句进 `job.error` 经 `/api/transcode/status` 原样落进 `ElMessage.error(…)`，实测四条全在 `src/utils/ffmpeg.py`）。**边界也写下来了**：`passthrough` 那 46 处是转发型（`str(e)`、纯变量），这里没有可判的语言；ffmpeg 自己的 stderr、操作系统那句 `[Errno 2]`，语言不由我们决定，所以也不由这一层负责。`src/api/stream.py:73` 那个 JSONResponse 的 `message` 字段是刻意留下的例外——它是给 curl 看的端点回声，界面从不渲染它。
 
 变异电池 `backend/Temp/m188_mut.py`（11 格：M1 api / M2 services / M3+M3b 那条 return 形状 / M4 扫描面缩成一层 / M5 f-string 两条识别路径 / M6 判据恒假 / M7 raise 遍历摘掉 / M8 跨模块常量 / 三格对照）实测 **9 红 + 2 绿**，两格绿是设计好的 A/B 对照（M9：同一句英文、摘掉 `return` 遍历 → 看不见，证明 M3 的红是那条遍历给的；D1：判据恒真 → 任何句子都不算违规，证明承重的是判据而不是命中数）。
 

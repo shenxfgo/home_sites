@@ -3,7 +3,8 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, ValidationInfo, field_serializer, field_validator
+from pydantic_core import PydanticCustomError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
@@ -12,6 +13,19 @@ from src.services.source_service import SourceService
 from src.storage.base import S3_SCHEME
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
+
+# 库里这五列全是 NOT NULL（`src/models/source.py`），所以差量 PUT 里的显式 null 只能收在
+# 闸口（#211 ①甲）。放行它会走到 `UPDATE video_sources SET <列>=NULL`，数据库报
+# NotNullViolation，而路由那句 `except ValueError` 接不住 SQLAlchemy 的 IntegrityError——真
+# 服务器上就是一次 500；`path` 那格还更早在 `_check_path_shape` 里对 None 调 `.startswith`
+# 就 AttributeError。键是接口字段名（422 的 loc 用它），值是那句中文里的主语。
+_NOT_NULL_COLUMN_LABELS = {
+    "name": "名称",
+    "path": "路径",
+    "type": "类型",
+    "scan_interval": "扫描间隔",
+    "is_active": "启用状态",
+}
 
 
 def _check_path_shape(source_type: str, path: str) -> None:
@@ -65,6 +79,27 @@ class SourceUpdate(BaseModel):
         None, ge=SCAN_INTERVAL_MIN, le=SCAN_INTERVAL_MAX
     )
     is_active: bool | None = None
+
+    # 字段清单就从那张表出生：列和中文名不可能各走各的（少一个键就是 500，而不是
+    # 一句看不见的漏拦）。
+    @field_validator(*_NOT_NULL_COLUMN_LABELS)
+    @classmethod
+    def _not_null_columns_cannot_be_cleared(
+        cls, value: object, info: ValidationInfo
+    ) -> object:
+        """「省略」是不改，「显式 null」是清空，而这一列清不得。
+
+        闸口只在值真被送来时才跑——pydantic 不校验默认值，所以界面那种只带改动项的差量
+        body 照旧合法（那格由用例钉着）。
+        """
+        if value is None:
+            raise PydanticCustomError(
+                "cannot_be_cleared",
+                "{label}不能留空",
+                # 清单就是从这张表生的，所以 field_name 既不会是 None，也不会缺键。
+                {"label": _NOT_NULL_COLUMN_LABELS[str(info.field_name)]},
+            )
+        return value
 
 
 class SourceResponse(BaseModel):

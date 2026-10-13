@@ -192,24 +192,31 @@ async def test_an_explicit_null_rating_is_rejected_instead_of_500(client, db_ses
     response = await client.put(f"/api/videos/{video.id}", json={"rating": None})
 
     assert response.status_code == 422, response.text
+    # ⑨甲：界面拼 toast 时用的就是这句 msg，pydantic 那句「Value error, 」前缀不许跟着出门。
+    assert response.json()["detail"][0]["msg"] == "评分不能留空：要清空请填 0"
     # 拒绝发生在写库之前：那一行还是播种时的 0 分
     assert (await client.get(f"/api/videos/{video.id}")).json()["rating"] == 0
 
 
 @pytest.mark.asyncio
-async def test_an_explicit_null_title_is_still_allowed(client, db_session):
-    """反面那一半：标题那一列**可以**为空，所以同样的 null 必须照旧放行。
+@pytest.mark.parametrize("column", ["title", "description"])
+async def test_an_explicit_null_on_a_nullable_column_is_still_allowed(client, db_session, column):
+    """反面那一半：标题和简介那两列**可以**为空，所以同样的 null 必须照旧放行。
 
     少了这条，上面那个 422 可以靠"rating 那类字段一律不许为 null"甚至"整个 body 不许有
     null"蒙绿，而清空标题是界面上做得到的事（`VideoDetail.vue` 把空文本框发成 null）。
     """
     source = await _create_source(db_session)
     video = await _create_video(db_session, source_id=source.id)
+    # 先经由同一个接口写进一句真内容，再清空：只测「null 不被拦」的话，「压根没写」也能蒙绿。
+    seeded = await client.put(f"/api/videos/{video.id}", json={column: "原来有内容"})
+    assert seeded.status_code == 200, seeded.text
+    assert seeded.json()[column] == "原来有内容"
 
-    response = await client.put(f"/api/videos/{video.id}", json={"title": None})
+    response = await client.put(f"/api/videos/{video.id}", json={column: None})
 
     assert response.status_code == 200, response.text
-    assert (await client.get(f"/api/videos/{video.id}")).json()["title"] is None
+    assert (await client.get(f"/api/videos/{video.id}")).json()[column] is None
 
 
 @pytest.mark.asyncio

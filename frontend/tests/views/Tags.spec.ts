@@ -206,6 +206,25 @@ describe('Tags view', () => {
     wrapper.unmount()
   })
 
+  /**
+   * #211 ②甲：取色器的「清空」按钮发的是 null，而 `tags.color` 那一列是 NOT NULL——
+   * 临时探针实测过一次 PUT body 就是 `{"color":null}`，也就是界面上点得到的一次 500。
+   * 界面把清空归回默认色；后端那道闸口（`TagUpdate`）管的是别的客户端。
+   */
+  it('treats a cleared colour as the default one instead of sending null', async () => {
+    const wrapper = await mountTags([ACTION])
+
+    await clickInCard(wrapper, 0, '编辑')
+    // 取色器被 teleport 到 body 上，DOM 查不到，只能按组件名拿到实例再模拟清空那一下。
+    wrapper.findComponent({ name: 'ElColorPicker' }).vm.$emit('update:modelValue', null)
+    await flushPromises()
+    await clickInDialog(wrapper, '更新')
+
+    // 精确相等：多发一个 null 就红，所以这一条同时钉住「不发 null」这件事。
+    expect(updateTag).toHaveBeenCalledWith(1, { color: '#409eff' })
+    wrapper.unmount()
+  })
+
   it('shows the server reason when the name is already taken', async () => {
     const wrapper = await mountTags()
     vi.mocked(createTag).mockRejectedValue(new Error('标签「动作片」已存在'))

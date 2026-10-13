@@ -177,8 +177,11 @@ test('编辑影片：写进真库、扫描不覆盖手改的名字，评分留�
   for (const [label, body, type] of [
     ['评分越界', { rating: 6 }, 'less_than_equal'],
     ['标题空串', { title: '' }, 'string_too_short'],
-    // 修之前这一发是 500：NOT NULL 由数据库在 UPDATE 时才报，路由接不住 IntegrityError
-    ['评分留空', { rating: null }, 'value_error'],
+    // 这一格在 #211 之前就是 422（rating 那道闸口早就有），改的是那句 `msg` 的包装：
+    // 裸 `ValueError` 出门带「Value error, 」，`PydanticCustomError` 不带——于是 `type`
+    // 也从 pydantic 的 `value_error` 换成我们自己的代号。界面读的是 `msg`（`reasonOf`
+    // 不认识这个代号就退回原文），那句中文照旧出得来。
+    ['评分留空', { rating: null }, 'cannot_be_cleared'],
   ] as const) {
     const rejected = await requestJson<{ detail: { type: string; loc: string[] }[] }>(
       page,

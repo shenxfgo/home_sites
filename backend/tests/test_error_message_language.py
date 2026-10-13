@@ -91,6 +91,35 @@ def _failure_reason(node: ast.stmt) -> ast.expr | None:
     return rest[0]
 
 
+CUSTOM_ERROR = "PydanticCustomError"
+
+
+def _is_custom_error(call: ast.Call) -> bool:
+    """``PydanticCustomError(…)``，无论写作裸名还是 ``pydantic_core.…``。"""
+    if isinstance(call.func, ast.Name):
+        return call.func.id == CUSTOM_ERROR
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr == CUSTOM_ERROR
+    return False
+
+
+def _raised_message(call: ast.Call) -> ast.expr | None:
+    """The half of a raise that a reader actually gets shown.
+
+    普通异常的第一格就是那句话（`ValueError("评分不能留空…")`）。
+    `PydanticCustomError(code, template, ctx)` 不一样：第一格是一个英文标识符，
+    它出在 422 的 `type` 里，界面永远不显示；出海的是第二格模板
+    （#211 ⑨甲选这条正是为了拆掉 `ValueError` 那句「Value error, 」包装）。
+    照着 args[0] 判会同时犯两个错：把守卫引到一句从不出口的东西上，
+    又把真出海的那句放过——这一单新加的八格全是英文 code，于是当场全红。
+    """
+    if not call.args:
+        return None
+    if _is_custom_error(call) and len(call.args) >= 2:
+        return call.args[1]
+    return call.args[0]
+
+
 class Site:
     def __init__(self, where: str, kind: str, shape: str, text: str) -> None:
         self.where = where
@@ -117,10 +146,11 @@ def _all_constants() -> dict[str, str]:
     return table
 
 
-def _collect() -> tuple[list[str], list[Site]]:
+def _collect() -> tuple[list[str], list[Site], list[str]]:
     constants = _all_constants()
     files: list[str] = []
     sites: list[Site] = []
+    custom_errors: list[str] = []
     for path in _layer_paths():
         files.append(f"{path.parent.name}/{path.name}")
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -129,8 +159,12 @@ def _collect() -> tuple[list[str], list[Site]]:
             targets: list[tuple[str, ast.expr]] = []
             if isinstance(node, ast.Call):
                 targets += [("detail", kw.value) for kw in node.keywords if kw.arg == "detail"]
-            if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call) and node.exc.args:
-                targets.append(("raise", node.exc.args[0]))
+            if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+                message = _raised_message(node.exc)
+                if message is not None:
+                    targets.append(("raise", message))
+                    if _is_custom_error(node.exc):
+                        custom_errors.append(files[-1])
             reason = _failure_reason(node)
             if reason is not None:
                 targets.append(("return", reason))
@@ -147,10 +181,10 @@ def _collect() -> tuple[list[str], list[Site]]:
                     continue
                 shape, text = _classify(expr)
                 sites.append(Site(files[-1], kind, shape, text))
-    return files, sites
+    return files, sites, custom_errors
 
 
-FILES, SITES = _collect()
+FILES, SITES, CUSTOM_ERROR_RAISES = _collect()
 JUDGED = [site for site in SITES if site.shape == "judged"]
 PASSTHROUGH = [site for site in SITES if site.shape != "judged"]
 
@@ -163,11 +197,45 @@ def test_scans_every_layer_that_can_author_a_toast() -> None:
 
 def test_examines_every_message_that_can_reach_a_toast() -> None:
     # 遍历器写坏同样是「一条都没看到」的绿——这几条下限是给守卫自己用的。
-    # 实测基线：站点 140 处，其中带自撰句子（字面量 / f-string / 常量 / 拼接里的字面量）的 94 处，
+    # 实测基线：站点 144 处，其中带自撰句子（字面量 / f-string / 常量 / 拼接里的字面量）的 98 处，
     # 转发型（`str(e)`、纯变量）46 处。
     assert len(SITES) >= 120, len(SITES)
     assert len(JUDGED) >= 80, len(JUDGED)
     assert len(PASSTHROUGH) >= 35, len(PASSTHROUGH)
+
+
+def test_a_custom_error_is_judged_by_the_sentence_that_leaves() -> None:
+    """`PydanticCustomError(code, template, ctx)` 判第二格，不是第一格那个英文 code。
+
+    这条是给上一格的新分支自己用的：形状识别写坏一次，八格就一起退回「按 args[0] 判」，
+    于是守卫在两种口径下都能全绿——一次是把英文 code 当句子抓到（当场红），
+    一次是把 code 放过而模板从没被看过（静默红）。两头都钉住才叫闸门。
+    """
+    judged = _judged_snippet(
+        'raise PydanticCustomError("cannot_be_cleared", "名称不能留空")'
+    )
+    assert judged == ("judged", "名称不能留空")
+    # 模板真写成英文时必须被抓到——这一格才是「判第二格」的意义。
+    assert not _has_cjk(
+        _judged_snippet('raise PydanticCustomError("名字", "field cannot be cleared")')[1]
+    )
+
+
+def test_every_gate_that_refuses_an_explicit_null_is_still_walked() -> None:
+    # #211 那八格（sources 五 + tags 二 + videos 的 rating）全走这条形状，但闸口是按列清单
+    # 一句写完的，所以站点是三处而不是一格一处。数一次下限，是为了让「新分支把这类 raise
+    # 整个跳过」这种坏法也留不住绿。
+    assert len(CUSTOM_ERROR_RAISES) >= 3, CUSTOM_ERROR_RAISES
+
+
+def _judged_snippet(source: str) -> tuple[str, str]:
+    """把一段只有一句 raise 的代码喂给真遍历器用的那两个判据。"""
+    module = ast.parse(source)
+    raise_node = next(node for node in ast.walk(module) if isinstance(node, ast.Raise))
+    message = _raised_message(raise_node.exc)
+    assert message is not None
+    return _classify(message)
+
 
 
 def test_no_english_sentence_leaves_the_backend() -> None:

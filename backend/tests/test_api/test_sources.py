@@ -191,6 +191,71 @@ async def test_update_source_empty_body(client):
     assert response.json()["detail"] == "没有需要更新的字段"
 
 
+# 这五列在 `src/models/source.py` 里全是 NOT NULL，而 `SourceUpdate` 五项全标了 `| None`。
+# 键是接口字段名（422 的 loc 用它），值是那句中文里的主语（界面 `SourceForm.vue` 的叫法）。
+_NOT_NULL_COLUMNS = {
+    "name": "名称",
+    "path": "路径",
+    "type": "类型",
+    "scan_interval": "扫描间隔",
+    "is_active": "启用状态",
+}
+_SEEDED_SOURCE = {
+    "name": "原始名",
+    "path": "/seeded/path",
+    "type": "nas",
+    "scan_interval": 7200,
+    "is_active": False,
+}
+
+
+async def _seed_source(client) -> int:
+    response = await client.post("/api/sources", json=dict(_SEEDED_SOURCE))
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("column", "label"), _NOT_NULL_COLUMNS.items())
+async def test_an_explicit_null_cannot_clear_a_not_null_column(client, column, label):
+    """差量 PUT 里显式 null 是「要清空这一列」，不是「没填这一项」——而这五列清不得（#211 ①甲）。
+
+    `data.model_dump(exclude_unset=True)` 会把显式 null 收进差量，`None` 一路走到 `setattr`
+    和那次 commit：name/type/scan_interval/is_active 四格撞数据库的 NotNullViolation，
+    `path` 那格更早在路由那句 `_check_path_shape` 里就 AttributeError（它对 path 调
+    `.startswith`）。两条都落在 `except ValueError` 的射程之外，真服务器上就是 500。
+    """
+    source_id = await _seed_source(client)
+
+    response = await client.put(f"/api/sources/{source_id}", json={column: None})
+
+    assert response.status_code == 422, response.text
+    # ⑨甲：422 里那句话必须是光秃秃的中文，不带 pydantic 那句「Value error, 」包装。
+    assert response.json()["detail"][0]["msg"] == f"{label}不能留空"
+    # 拒绝发生在写库之前：整行还是播种时的样子。
+    fresh = (await client.get(f"/api/sources/{source_id}")).json()
+    assert {column: fresh[column] for column in _NOT_NULL_COLUMNS} == _SEEDED_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_a_patch_that_omits_the_other_columns_still_works(client):
+    """③甲：闸口只挡显式 null，「省略」这条路照旧是不改。
+
+    少了这条，上面那五格可以靠「五列全变必填」蒙绿——而 `SourceForm.vue` 发的正是只带改动
+    那几项的差量，一次改名会连带把路径、类型、间隔、开关四项按播种值撞回去。
+    """
+    source_id = await _seed_source(client)
+
+    response = await client.put(f"/api/sources/{source_id}", json={"name": "只改名字"})
+
+    assert response.status_code == 200, response.text
+    fresh = (await client.get(f"/api/sources/{source_id}")).json()
+    assert fresh["name"] == "只改名字"
+    assert {column: fresh[column] for column in _NOT_NULL_COLUMNS if column != "name"} == {
+        column: value for column, value in _SEEDED_SOURCE.items() if column != "name"
+    }
+
+
 @pytest.mark.asyncio
 async def test_delete_source(client):
     """Test deleting a source."""

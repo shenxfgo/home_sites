@@ -1,6 +1,7 @@
 """Tag management API endpoints."""
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic_core import PydanticCustomError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.videos import VideoResponse
@@ -8,6 +9,12 @@ from src.database import get_session
 from src.services.tag_service import BlankTagNameError, DuplicateTagNameError, TagService
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
+
+# 库里这两列都是 NOT NULL（`src/models/tag.py`），而 `color` 那格是界面点得到的：
+# `Tags.vue` 的 `el-color-picker` 自带清空按钮，实测点它再点更新，PUT body 就是
+# `{"color": null}`（#211 ②甲）。显式 null 放行到 `setattr` 之后就是 NotNullViolation，
+# 路由那句 `except ValueError` 接不住 IntegrityError——真服务器上是一次 500。
+_NOT_NULL_COLUMN_LABELS = {"name": "标签名", "color": "颜色"}
 
 
 class TagCreate(BaseModel):
@@ -22,6 +29,27 @@ class TagUpdate(BaseModel):
 
     name: str | None = Field(None, min_length=1, max_length=100)
     color: str | None = Field(None, pattern="^#[0-9a-fA-F]{6}$")
+
+    # 字段清单就从那张表出生：列和中文名不可能各走各的（漏一个键就是一次 500，
+    # 而不是一句看不见的漏拦）。
+    @field_validator(*_NOT_NULL_COLUMN_LABELS)
+    @classmethod
+    def _not_null_columns_cannot_be_cleared(
+        cls, value: object, info: ValidationInfo
+    ) -> object:
+        """「省略」是不改，「显式 null」是清空，而这两列都清不得。
+
+        界面上那个清空按钮由 `Tags.vue` 归回默认色（#211 ②甲），这道闸口管的是别的客户端
+        ——包括 `name` 那一格结构上永远不该发生的清空。
+        """
+        if value is None:
+            raise PydanticCustomError(
+                "cannot_be_cleared",
+                "{label}不能留空",
+                # 清单就是从这张表生的，所以 field_name 既不会是 None，也不会缺键。
+                {"label": _NOT_NULL_COLUMN_LABELS[str(info.field_name)]},
+            )
+        return value
 
 
 class TagResponse(BaseModel):

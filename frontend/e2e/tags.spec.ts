@@ -159,6 +159,38 @@ test('改名只发改动的那个字段，卡片跟着换成新名字', async ({
   expect(JSON.parse(bodies[0])).toEqual({ name: '文艺片' })
 })
 
+/**
+ * #211 ②甲：取色面板页脚那个清空按钮发的是 null，而 `tags.color` 那一列是 NOT NULL。
+ *
+ * 这一格是三条路由八格里唯一界面点得到的，所以两条腿都要钉：替身夹具照单全收（修好之前
+ * 屏幕上那个点真的换成透明），真服务端那一路以前是 500、现在闸口回 422。于是这里既断发出
+ * 去的字节、也断卡片上那个点的颜色——只断一边都留着一个能骗过去的口子。
+ */
+test('取色器清空后发出的是默认色，卡片上的点跟着换成默认色', async ({ page }) => {
+  await page.goto('/tags')
+  await card(page, '动作片').getByRole('button', { name: '编辑' }).click()
+
+  const bodies: string[] = []
+  page.on('request', (req) => {
+    if (req.method() === 'PUT') bodies.push(req.postData() ?? '')
+  })
+
+  // 清空长在取色面板的页脚里，而面板是 teleport 到 body 上的浮层，不点开就点不到。
+  await page.locator('.el-dialog .el-color-picker__trigger').click()
+  await page.locator('.el-color-footer__link-btn').click()
+  await page.locator('.el-dialog__header').click()
+
+  await page.locator('.el-dialog').getByRole('button', { name: '更新', exact: true }).click()
+
+  expect(bodies).toHaveLength(1)
+  // 名字一眼没动；颜色是清空之后归回的默认色，null 压根不该出现在这里。
+  expect(JSON.parse(bodies[0])).toEqual({ color: '#409eff' })
+  await expect(card(page, '动作片').locator('.tag-color-dot')).toHaveCSS(
+    'background-color',
+    'rgb(64, 158, 255)',
+  )
+})
+
 test('什么都没改时不发出更新请求', async ({ page }) => {
   await page.goto('/tags')
   await card(page, '动作片').getByRole('button', { name: '编辑' }).click()

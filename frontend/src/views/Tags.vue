@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Edit, Delete, CollectionTag } from '@element-plus/icons-vue'
 import { listTags, createTag, updateTag, deleteTag } from '@/api/tags'
-import type { Tag, TagCreate, TagUpdate } from '@/types/video'
+import type { Tag, TagUpdate } from '@/types/video'
 
 const tags = ref<Tag[]>([])
 const loading = ref(false)
@@ -11,12 +11,34 @@ const loading = ref(false)
 // Dialog state
 const showDialog = ref(false)
 const editingTag = ref<Tag | null>(null)
-const formData = ref<TagCreate>({ name: '', color: '#409eff' })
 const submitting = ref(false)
+
+// 默认色只住这一处：新建表单的初值、预设色板的第一个、以及清空取色器之后的归处，
+// 全都是它。
+const DEFAULT_TAG_COLOR = '#409eff'
+// 表单里这一格对界面内部永远不为 null：取色器发来的那个 null 在 `formColor` 那儿就归回
+// 默认色了，所以差量判断和预览各自兜一次的那两遍没有必要。
+const formData = ref<{ name: string; color: string }>({
+  name: '',
+  color: DEFAULT_TAG_COLOR,
+})
+
+/** 取色器的「清空」按钮发的是 null，而 `tags.color` 那一列是 NOT NULL（#211 ②甲）。
+ *
+ * 实测过一次 PUT body 就是 {"color": null}——服务端闸口现在回 422，那一单之前是 500。
+ * 点清空在这里被归回默认色，于是「清空 = 用默认色」当场看得见（预览的点和第一个色块
+ * 一起亮起来），而库里那一列压根没有「空」这个状态。
+ */
+const formColor = computed<string | null>({
+  get: () => formData.value.color,
+  set: (value) => {
+    formData.value.color = value ?? DEFAULT_TAG_COLOR
+  },
+})
 
 // Preset colors for quick selection
 const presetColors = [
-  '#409eff',
+  DEFAULT_TAG_COLOR,
   '#67c23a',
   '#e6a23c',
   '#f56c6c',
@@ -41,7 +63,7 @@ async function loadTags() {
 
 function openCreateDialog() {
   editingTag.value = null
-  formData.value = { name: '', color: '#409eff' }
+  formData.value = { name: '', color: DEFAULT_TAG_COLOR }
   showDialog.value = true
 }
 
@@ -187,7 +209,7 @@ onMounted(loadTags)
         <el-form-item label="颜色">
           <div class="color-section">
             <el-color-picker
-              v-model="formData.color"
+              v-model="formColor"
               :predefine="presetColors"
               show-alpha
               color-format="hex"

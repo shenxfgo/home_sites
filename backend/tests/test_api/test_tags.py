@@ -209,6 +209,46 @@ async def test_updating_a_tag_that_is_not_there(client):
     assert response.status_code == 404
 
 
+# `tags.name` 和 `tags.color` 两列都是 NOT NULL（`src/models/tag.py`），而请求模型两项全标了
+# `| None`。颜色那格不是假想形状：`Tags.vue` 那个 `el-color-picker` 默认带清空按钮，实测点它
+# 再点更新，PUT body 就是 {"color": null}（#211 ②甲）。
+_NOT_NULL_COLUMNS = {"name": "标签名", "color": "颜色"}
+
+
+@pytest.mark.parametrize(("column", "label"), _NOT_NULL_COLUMNS.items())
+async def test_an_explicit_null_cannot_clear_a_not_null_column(client, column, label):
+    """显式 null 是「要清空这一列」，而这一列清不得——闸口拦在写库之前（#211 ①甲）。
+
+    放行它会走到 `UPDATE tags SET <列>=NULL`，数据库报 NotNullViolation，而路由那句
+    `except ValueError` 接不住 SQLAlchemy 的 IntegrityError，真服务器上就是 500。
+    """
+    created = await _create(client, "科幻", color="#123456")
+
+    response = await client.put(f"/api/tags/{created['id']}", json={column: None})
+
+    assert response.status_code == 422, response.text
+    # ⑨甲：422 里那句话必须是光秃秃的中文，不带 pydantic 那句「Value error, 」包装。
+    assert response.json()["detail"][0]["msg"] == f"{label}不能留空"
+    fresh = (await client.get(f"/api/tags/{created['id']}")).json()
+    assert fresh["name"] == "科幻"
+    assert fresh["color"] == "#123456"
+
+
+async def test_a_patch_that_omits_the_other_field_still_works(client):
+    """③甲：闸口只挡显式 null，「省略」照旧是不改。
+
+    界面（`Tags.vue` 的差量判断）发的正是只带改动那一项的 body；少了这条，上面那两格可以靠
+    「两项全变必填」蒙绿。
+    """
+    created = await _create(client, "科幻", color="#123456")
+
+    response = await client.put(f"/api/tags/{created['id']}", json={"color": "#654321"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "科幻"
+    assert response.json()["color"] == "#654321"
+
+
 # ---------- 删 ----------
 
 

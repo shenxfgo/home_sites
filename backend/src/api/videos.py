@@ -3,6 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, computed_field, field_serializer, field_validator
+from pydantic_core import PydanticCustomError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -93,9 +94,15 @@ class VideoUpdate(BaseModel):
         `except ValueError` 接不住 SQLAlchemy 的 IntegrityError——真服务器上就是一次 500。
         界面上"清空评分"本来就是点回 0 星，不是一个缺值状态。标题和简介那一列可以为空，
         所以那两列照旧收 null。
+
+        抛的是 `PydanticCustomError` 而不是裸 `ValueError`：后者进 422 时 pydantic 会在前面
+        拼一句英文的「Value error, 」（#211 ⑨甲），而界面那句 toast 用的就是这条 msg 原文
+        （`frontend/src/api/client.ts` 的 `reasonOf` 对未知类型退回 `item.msg`）。
         """
         if value is None:
-            raise ValueError("评分不能留空：要清空请填 0")
+            raise PydanticCustomError(
+                "cannot_be_cleared", "评分不能留空：要清空请填 0"
+            )
         return value
 
 
