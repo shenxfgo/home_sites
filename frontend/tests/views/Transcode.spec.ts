@@ -11,6 +11,9 @@ const env = vi.hoisted(() => ({
   status: null as Record<string, unknown> | null,
   formats: [] as Record<string, unknown>[],
   products: [] as Record<string, unknown>[],
+  // 普通用例给一份对象；那条「读得慢」的用例把它换成一个待兑现的 Promise，
+  // 替身这句 `Promise.resolve(...)` 两种都给得了。
+  settings: {} as unknown,
   // 拦截器（src/api/client.ts）在服务端返回 detail 时 reject 的是一个新的
   // Error，只留一句人话，不再带 response。替身照这个形状失败，用例才测得到
   // 视图有没有把那句原因显示出来。
@@ -29,6 +32,7 @@ vi.mock('@/api/client', () => ({
       const failure = rejectionFor(env.failGet, url)
       if (failure) return Promise.reject(new Error(failure))
       if (url === '/transcode/formats') return Promise.resolve({ data: env.formats })
+      if (url === '/settings') return Promise.resolve(env.settings).then((data) => ({ data }))
       if (url.endsWith('/outputs')) return Promise.resolve({ data: env.products })
       if (url.endsWith('/status')) return Promise.resolve({ data: env.status })
       return Promise.resolve({ data: env.video })
@@ -68,6 +72,9 @@ describe('Transcode view', () => {
     env.failPost = []
     env.formats = [{ format: 'webm', codec: 'libvpx-vp9', extension: 'webm' }]
     env.products = []
+    // 这一页只从系统配置读 `default_transcode_format` 那一项（#151 甲：界面的下拉默认），
+    // 其余四项它用不上，就不在这里抄一遍。
+    env.settings = { default_transcode_format: 'webm' }
     env.video = {
       id: 7,
       title: '深夜测试',
@@ -86,7 +93,7 @@ describe('Transcode view', () => {
     vi.useRealTimers()
   })
 
-  it('requests the video, formats, status and products through the proxied api paths', async () => {
+  it('requests the video, formats, status, products and the configured default', async () => {
     const wrapper = mount(Transcode)
     await flushPromises()
 
@@ -95,6 +102,7 @@ describe('Transcode view', () => {
       '/transcode/formats',
       '/transcode/7/status',
       '/transcode/7/outputs',
+      '/settings',
     ])
     expect(wrapper.text()).toContain('深夜测试.mp4')
     wrapper.unmount()
@@ -238,6 +246,8 @@ describe('Transcode view', () => {
   })
 
   it('refuses to start a transcode without a target format', async () => {
+    // 配置里那项不在支持列表里 → 不预填（下一条约等于把它填上了），所以下拉仍是空的。
+    env.settings = { default_transcode_format: 'divx' }
     const wrapper = mount(Transcode)
     await flushPromises()
 
@@ -246,6 +256,58 @@ describe('Transcode view', () => {
 
     expect(ElMessage.warning).toHaveBeenCalledWith('请选择目标格式')
     expect(env.post).toEqual([])
+    wrapper.unmount()
+  })
+
+  it('目标格式预填的是系统配置里那一项', async () => {
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    expect(wrapper.findComponent(ElSelect).props('modelValue')).toBe('webm')
+    wrapper.unmount()
+  })
+
+  it('配置里那项不在支持的格式列表里就不硬填', async () => {
+    // 硬填进去的下拉会在后端换回一句拒绝，而列表里根本没有这一档；留空才有话可说。
+    env.settings = { default_transcode_format: 'divx' }
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    expect(wrapper.findComponent(ElSelect).props('modelValue')).toBe('')
+    wrapper.unmount()
+  })
+
+  it('配置读不到时说得出原因，也只是没有默认', async () => {
+    env.failGet = [{ on: '/settings', message: '仅管理员可读系统配置' }]
+    const wrapper = mount(Transcode)
+    await flushPromises()
+
+    expect(ElMessage.error).toHaveBeenCalledWith(expect.stringContaining('仅管理员可读系统配置'))
+    expect(wrapper.findComponent(ElSelect).props('modelValue')).toBe('')
+    wrapper.unmount()
+  })
+
+  it('先选了一档时，配置读回来也不盖掉已选的', async () => {
+    // 让 /settings 那份响应压着不回：等待期间用户已经点定了格式。默认值只是默认值，
+    // 不能盖掉他刚刚选的那一个——所以两边刻意给成不同的档。
+    let release: (value: Record<string, unknown>) => void = () => {}
+    env.formats = [
+      { format: 'webm', codec: 'libvpx-vp9', extension: 'webm' },
+      { format: 'mp4', codec: 'libx264', extension: 'mp4' },
+    ]
+    env.settings = new Promise((resolve) => {
+      release = resolve
+    })
+    const wrapper = mount(Transcode)
+    // 先让四次首屏请求走完（影片没读回来时整张卡片还没渲染，下拉还不存在），
+    // 此时视图正压在那份没回的 /settings 上。
+    await flushPromises()
+
+    wrapper.findComponent(ElSelect).vm.$emit('update:modelValue', 'mp4')
+    release({ default_transcode_format: 'webm' })
+    await flushPromises()
+
+    expect(wrapper.findComponent(ElSelect).props('modelValue')).toBe('mp4')
     wrapper.unmount()
   })
 

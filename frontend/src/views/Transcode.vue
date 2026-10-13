@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { VideoPlay } from '@element-plus/icons-vue'
 import { getVideo } from '@/api/videos'
+import { getSettings } from '@/api/settings'
+import type { Settings } from '@/api/settings'
 import {
   cancelTranscode,
   getTranscodeStatus,
@@ -102,6 +104,32 @@ const fetchProducts = async () => {
   } catch (error) {
     // 表格里一行都不显示和"这部片子没转过码"在界面上是同一个样子，得说出原因
     ElMessage.error(`获取转码产物失败：${errorReason(error) ?? '未知原因'}`)
+  }
+}
+
+/**
+ * 目标格式预填系统配置里那一项（面板④甲：只是界面的下拉默认，接口照旧要求显式带格式，
+ * 不带仍然 422）。这一页从前只写「选择目标格式」，设置页那个「默认转码格式」下拉
+ * 改了它一次也没被读过——第五个装饰键。
+ *
+ * 配置里那项不在支持的格式列表里就**不填**：填进去点了就是后端一句拒绝，而下拉里
+ * 明明白白没有这一档；留空让「请选择目标格式」来说话。读失败要说出来——空的下拉
+ * 和"没配默认格式"在界面上是同一个样子。
+ */
+async function prefillFormat() {
+  let settings: Settings
+  try {
+    settings = await getSettings()
+  } catch (error) {
+    ElMessage.error(`读取默认转码格式失败：${errorReason(error) ?? '未知原因'}`)
+    return
+  }
+  // 读回来这一段是异步的：期间用户可能已经自己选了一档，换片源重进这一页时上一片的
+  // 选择也还留着。配置只是默认，不盖已经选好的。
+  if (selectedFormat.value) return
+  const configured = settings.default_transcode_format
+  if (formats.value.some((fmt) => fmt.format === configured)) {
+    selectedFormat.value = configured
   }
 }
 
@@ -216,6 +244,8 @@ watch(
 
 const loadAll = async () => {
   await Promise.all([fetchVideo(), fetchFormats(), fetchStatus(), fetchProducts()])
+  // 排在 formats 之后：预填要拿配置里那项对照已经读回来的格式列表。
+  await prefillFormat()
   if (transcodeStatus.value?.is_transcoding) {
     startPolling()
   }

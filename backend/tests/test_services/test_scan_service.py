@@ -634,7 +634,7 @@ async def test_same_basename_in_two_subfolders_keeps_two_covers(
 
     written: list[str] = []
 
-    def _fake_generate(video_path: str, output_path: str) -> str:
+    def _fake_generate(video_path: str, output_path: str, _width: int, _height: int) -> str:
         # 真 ffmpeg 会落下文件，扫描靠它判断封面是否成功
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "wb"):

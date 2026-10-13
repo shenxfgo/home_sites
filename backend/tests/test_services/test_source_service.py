@@ -38,6 +38,25 @@ async def test_create_source_defaults(db_session):
 
 
 @pytest.mark.asyncio
+async def test_an_omitted_interval_is_the_configured_one(db_session):
+    """没填间隔不是"这里写死一个 3600"，是去读系统配置那一项。
+
+    这条直接建那一行——`SettingService` 读的就是这张表，走 API 写的话就把两个
+    读者各自的那半圈挤成了一条链路（那半圈在
+    `test_settings_wired_into_pipelines.py`）。
+    """
+    from src.models.setting import Setting
+    from src.services.source_service import SourceService
+
+    db_session.add(Setting(key="auto_scan_interval", value="1800"))
+    await db_session.commit()
+
+    source = await SourceService(db_session).create(name="Configured", path="/p", type="local")
+
+    assert source.scan_interval == 1800
+
+
+@pytest.mark.asyncio
 async def test_list_sources(db_session):
     """Test listing all video sources."""
     from src.services.source_service import SourceService

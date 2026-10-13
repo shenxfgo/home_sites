@@ -287,23 +287,27 @@ def test_a_cover_is_written_where_the_caller_asked(tmp_path, monkeypatch):
     output = tmp_path / "covers" / "deep" / "ep01.jpg"
     _patch_run(monkeypatch, _FakeRun(side_effect=_write_cover))
 
-    assert generate_thumbnail("ep01.mkv", str(output)) == str(output)
+    assert generate_thumbnail("ep01.mkv", str(output), 320, 180) == str(output)
     # 目录是这里建的，调用方不用先 mkdir。
     assert output.exists()
 
 
 def test_the_cover_command_is_pinned(tmp_path, monkeypatch):
-    """封面取第 1 秒、缩到 320 宽，参数顺序就是这里的行为。
+    """封面取第 1 秒、刷成调用方给的那个框，参数顺序就是这里的行为。
 
     ``-ss`` 现在跟在 ``-i`` 后面，也就是解码到该时间点的精确取帧；家里这片源上
-    1 秒的解码代价可以忽略，所以这条用例锁的是"取哪一帧、多宽"，不是顺序的快慢。
+    1 秒的解码代价可以忽略，所以这条用例锁的是"取哪一帧、多大"，不是顺序的快慢。
+
+    尺寸以前是 ``scale=320:-1``——宽度写死在这里、高度按比例。设置页上那两项
+    从前没人读它，于是"改了缩略图尺寸"在界面上什么都不改。现在这一层只认参数：
+    数字的出处在 `setting_service`，不在这里。
     """
     output = tmp_path / "covers" / "ep01.jpg"
     fake = _FakeRun(side_effect=_write_cover)
     _patch_run(monkeypatch, fake)
     video = str(tmp_path / "ep01.mkv")
 
-    generate_thumbnail(video, str(output))
+    generate_thumbnail(video, str(output), 320, 180)
 
     assert fake.argv == [
         "ffmpeg",
@@ -315,20 +319,35 @@ def test_the_cover_command_is_pinned(tmp_path, monkeypatch):
         "-vframes",
         "1",
         "-vf",
-        "scale=320:-1",
+        "scale=320:180",
         str(output),
     ]
     assert fake.kwargs["timeout"] == 30
 
 
+def test_the_size_the_caller_gave_is_the_size_that_lands(tmp_path, monkeypatch):
+    """这一层不许把尺寸改回它自己的偏好：两个参数都得进 ``scale``。
+
+    只有宽度进得去的话（``scale=W:-1``），高度那一项就又是一件装饰——而它现在
+    管着的是 ffmpeg 真写出来的那个框。
+    """
+    output = tmp_path / "covers" / "ep01.jpg"
+    fake = _FakeRun(side_effect=_write_cover)
+    _patch_run(monkeypatch, fake)
+
+    generate_thumbnail(str(tmp_path / "ep01.mkv"), str(output), 1280, 720)
+
+    assert fake.argv[fake.argv.index("-vf") + 1] == "scale=1280:720"
+
+
 def test_a_zero_exit_without_a_file_is_a_failure(tmp_path, monkeypatch):
     _patch_run(monkeypatch, _FakeRun(returncode=0, stdout=""))
-    assert generate_thumbnail("a.mkv", str(tmp_path / "missing.jpg")) == ""
+    assert generate_thumbnail("a.mkv", str(tmp_path / "missing.jpg"), 320, 180) == ""
 
 
 def test_a_failing_ffmpeg_is_silent(tmp_path, monkeypatch):
     _patch_run(monkeypatch, _FakeRun(returncode=1, stdout=""))
-    assert generate_thumbnail("a.mkv", str(tmp_path / "cover.jpg")) == ""
+    assert generate_thumbnail("a.mkv", str(tmp_path / "cover.jpg"), 320, 180) == ""
 
 
 @pytest.mark.parametrize(
@@ -340,4 +359,4 @@ def test_a_failing_ffmpeg_is_silent(tmp_path, monkeypatch):
 )
 def test_a_missing_or_hanging_ffmpeg_yields_no_cover(tmp_path, monkeypatch, exception):
     _patch_run(monkeypatch, _FakeRun(exception=exception))
-    assert generate_thumbnail("a.mkv", str(tmp_path / "cover.jpg")) == ""
+    assert generate_thumbnail("a.mkv", str(tmp_path / "cover.jpg"), 320, 180) == ""

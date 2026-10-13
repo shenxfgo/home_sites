@@ -123,6 +123,7 @@ backend/
 │   ├── test_api/          # API 测试
 │   ├── test_backup.py     # 备份用例：假子进程演 pg_dump/pg_restore，断言真实 argv/env、读不回即删、轮转只认自己的文件名
 │   ├── test_scheduler_auto_scan_switch.py # 设置页那个总开关：关了整轮不扫 / 没写过算开 / 手工扫描不受它管
+│   ├── test_settings_wired_into_pipelines.py # 设置页那四项的读者：建源省略间隔读这张表 / 封面尺寸一路进到 ffmpeg / 写闸门与读者同一批取值
 │   ├── test_scheduler_backup.py # 挂载与通知：重新挂载只留一条任务；失败写 backup_error，成功一条都不写
 │   ├── test_scheduler_source_lifecycle.py # 片源的增删改与调度任务同步：挂上/拆掉/换间隔各钉一次，另外 /api/scheduler 那四个端点第一次被请求
 │   ├── test_db_audit.py   # 审计用例：造一个每类问题各一条的脏库，证明检查还活着
@@ -339,9 +340,16 @@ DATABASE_URL="postgresql+asyncpg://..." .venv/Scripts/alembic.exe revision --aut
 
 `settings` 与 `user_preferences` 是两张不同的表，别混：前者全家一份（扫描间隔、缩略图尺寸、默认转码格式），改一次所有人的播放都受影响，读写都限 owner；后者一人一份（`user_id` 主键 + `prefs` JSON），走 `/api/preferences`，成员改自己的主题不该碰着别人的屏幕。写入是按键合并（`save_prefs` 只覆盖 patch 里非空的键），响应字段由 API 层的 Pydantic 模型限定，所以加一项偏好只是加一个字段，不必改表。JSON 列的坑：原地 `row.prefs["k"]=v` SQLAlchemy 看不见，必须换一个新 dict 赋回去。
 
-`settings` 那一面有两道校验，别只做一半：键名走 `SYSTEM_SETTING_KEYS` 白名单，值走 `_check_setting_value`。第二道存在的理由是第一道挡不住——`GET /api/settings` 把三个数字键 `int(...)` 回来，而单键 `PUT` 收的是裸字符串，于是"写进去一个读不回来的值"会把整个设置页永久打成 500（整份 `PUT` 有 Pydantic 挡着，从来没这个问题）。校验规则就一条：**写进去的值必须能被读回来的那条路径解析**。范围（负数、0）刻意不管：那三个键目前没有任何消费者，定时扫描读的是源级别的 `scan_interval`，等真有消费者了再按它的约束收口。
+`settings` 那一面有两道校验，别只做一半：键名走 `SYSTEM_SETTING_KEYS` 白名单，值走 `_check_setting_value`。第二道存在的理由是第一道挡不住——`GET /api/settings` 要把三个数字键读成整数，而单键 `PUT` 收的是裸字符串，于是"写进去一个读不回来的值"会把整个设置页永久打成 500（整份 `PUT` 有 Pydantic 挡着类型，但类型过了不代表这一项真能用）。校验规则只有一条：**写进去的值必须能被读回来的那条路径接受**，所以门口和读者问的是同一个问题——`_check_setting_value` 调 `setting_service.int_setting_acceptable`，管线和 `GET` 调 `parse_int_setting`，两边共用 `INT_SETTING_RULES` 那一张表（每个键一份：默认值、下限、上限）。范围从 #210 起是真的在管事，而收口的依据是**读者的意义**，不是界面上那道 `max`：`auto_scan_interval` 收 60–86400，因为它现在的意义就是"一个源的间隔"，而 `POST /api/sources` 自己从来不肯收 30；两个封面尺寸只要求正整数——ffmpeg 的 `scale=W:H` 除此之外不设上限，把界面输入框那两道 `max` 抄进后端，只会让一行本来就合法的老配置读回来变成假话。判据写两份迟早分家，`tests/test_settings_wired_into_pipelines.py` 里那条 13 值取值表对撞钉的就是「门口放行的」和「读者留下的」必须是同一批字符串。
 
-`settings` 表里现在**只有一个键真的在管事**：`auto_scan_enabled` 是自动扫描的总开关，读者是 `scheduler/tasks.py` 里那两个扫描包装任务，每轮现读（`SettingService.is_auto_scan_enabled`），关了就整轮不走、也不写任何通知——一轮被开关拦下的扫描不是事件，给它写一条就是 #85 刚删掉的那种心跳。解析规则只留 `setting_service.parse_auto_scan_enabled` 一份：没写过这一行算**开**（新库那张表本来就是空的，一个字没写过的人不该被静默停扫），设置页 `GET` 也走它；两处各写一套的话，同一个字符串就有两种真值。闸门刻意落在**任务**上而不是 `ScanService` 上：设置页说的是"自动"扫描，人按「扫描」按钮那一路不归它管。用例在 `tests/test_scheduler_auto_scan_switch.py`，五条各挡一种改法——把闸门从任务挪进 service，只会红在「手工扫描不该被管」那一条。另外四个键（`auto_scan_interval`、`default_transcode_format`、`thumbnail_width`、`thumbnail_height`）**仍是装饰**：存得进去、读得回来，`Settings.vue` 之外没有任何代码按它们做事——包括那个和源级别的 `scan_interval` 长得很像的间隔。
+`settings` 表里五个键现在**全都有读者**（#210 起；此前只有第一个）。`auto_scan_enabled` 是自动扫描的总开关，读者是 `scheduler/tasks.py` 里那两个扫描包装任务，每轮现读（`SettingService.is_auto_scan_enabled`），关了就整轮不走、也不写任何通知——一轮被开关拦下的扫描不是事件，给它写一条就是 #85 刚删掉的那种心跳。解析规则只留 `setting_service.parse_auto_scan_enabled` 一份：没写过这一行算**开**（新库那张表本来就是空的，一个字没写过的人不该被静默停扫），设置页 `GET` 也走它；两处各写一套的话，同一个字符串就有两种真值。闸门刻意落在**任务**上而不是 `ScanService` 上：设置页说的是"自动"扫描，人按「扫描」按钮那一路不归它管。用例在 `tests/test_scheduler_auto_scan_switch.py`，五条各挡一种改法——把闸门从任务挪进 service，只会红在「手工扫描不该被管」那一条。
+
+另外四个键的读者各是一条管线，守的是同一条规矩：**一个数只住一处**。默认值只存在于这张表（以及 `setting_service` 那张规则表里的兜底值）里，请求模型和 e2e 替身都不许再揣一份自己的字面量。
+- `auto_scan_interval` 只给**新建的片源**当默认值：`SourceService.create` 在请求没带 `scan_interval` 时去读这一行，而 `SourceCreate.scan_interval` 的默认是 `None` 而不是某个数——为的就是"没填"和"填了 3600"在这条线上分得开。它是默认不是覆盖：源级别的 `VideoSource.scan_interval` 一旦写定就是那个源自己的排班，改设置页不会把已有片源重新排一遍。这一格从前有三处各写死了一个 3600（前端表单初值、后端请求模型默认、e2e 替身的答复），三处现在都改成问这张表。
+- `thumbnail_width` / `thumbnail_height` 是 `scan_source` 开头读一次（`get_thumbnail_size()`），一路传到 `file_scanner` 拼成 `-vf scale={宽}:{高}`。`file_scanner` 那一层既不读表也不留默认，所以"设置页改了尺寸，刷出来的封面就是那个大小"从 #210 起才是真话；已经落盘的老封面**不重刷**，`scale=320:-1` 那批还是原来的像素。
+- `default_transcode_format` 只走到界面：转码页的下拉拿它当默认选项，API 契约一个字没改，少了目标格式照样 422。
+
+读者的兜底口径也记在这儿：表里的值读不出来（脏行、超出范围）就退回规则表里的默认值，而不是抛异常，所以 `GET /api/settings` 再不会因为一行手写的 `wide` 打成 500。这是"接进管线"带来的一处**行为改动**：那张表是全员共用的一行，读到默认值意味着有人填坏了值时所有人的管线一起退到默认，而不是页面先炸掉——门口那道校验还在（三个数字键都过它），所以这条路只有绕过 API 直接往库里写才走得到。`tests/test_settings_wired_into_pipelines.py`（22 条，其中一条是 13 值取值表）钉的是这三条管线各自动作，包括"显式填的间隔永远赢过表里那一项"和"表是空的就落在代码默认值上"。还有两个数**刻意没接**，别把它们当成第二个默认值来源：`src/config.py` 的 `default_scan_interval` 仍然零读者，`models/source.py` 那一列的 `default=3600` 如今只是 NOT NULL 的保险——`SourceService.create` 每条都会自己算出一个数，那个列默认永远不会被走到。
 
 同一类闸口的另一半是**可空性**：请求模型里标 `X | None` 的字段，那一列必须真的收 `NULL`。`VideoUpdate.rating` 从前标的是 `int | None`（意思是"不填就不改"），而 `videos.rating` 那一列是 NOT NULL，于是 `{"rating": null}` 是一条一路好走的请求——Pydantic 放行、服务层 `setattr` 照单写库、asyncpg 在 `UPDATE videos SET rating=NULL` 上顶回来才炸成 500，而响应模型 `rating: int` 本来就从来发不出 null，那一半契约是假的。收口放在请求模型的 `field_validator` 上（得到一个 422 加一句原话），不放在服务层：这是**表示层的形状**，不是业务规则，而且 422 那套 `detail` 结构前端已经有统一处理。反面那一半同样要钉住——`title` / `description` 那两列可以为空，同样的 null 照旧 200，否则一次修复会顺手把合法输入一起挡在门外（用例：`tests/test_api/test_videos.py` 的 `test_an_explicit_null_rating_is_rejected_instead_of_500` 与 `test_an_explicit_null_title_is_still_allowed`；界面那一侧在 `frontend/e2e/real/video-edit.real.spec.ts`）。Pydantic v2 的口径量清楚过：`field_validator` **不跑**在"根本没提供"的字段上（`VideoUpdate().model_dump(exclude_unset=True)` 实测是 `{}`），只会跑在显式给进来的值上，所以"不填不改"和"填 null"这两件事天然分得开，闸口不必自己判 `model_fields_set`。
 
@@ -432,7 +440,7 @@ class Video(Base):
 
 - **文件名由 locator 派生并带一段摘要**：`{原文件名}-{sha256(locator)[:12]}.jpg`，落在 `THUMBNAIL_PATH/{source_id}/` 下（`scan_service._thumbnail_target`）。只按 basename 命名的话，同一视频源的不同子目录里的同名视频（`a/01.mp4` 与 `b/01.mp4`）会写到同一个 `01.jpg`，后扫的那张悄悄盖掉前一张，两行都显示"有封面"，看不出坏过
 - **`THUMBNAIL_PATH` 的相对值在配置层就按 `backend/` 展开成绝对路径**：库里 `videos.thumbnail_path` 存的是算出来的完整字符串，读取端（`stream.py` 的 `os.path.isfile`）按进程工作目录解析它，相对值会让"从仓库根目录启动"变成全库无封面。同类的 `DATABASE_URL` 与 `.env` 本身仍是 cwd 相对，**从 `backend/` 启动服务这个约定没取消**
-- **设置页的「缩略图宽度 / 高度」没有接**：`generate_thumbnail` 里的 `scale=320:-1` 和 `-ss 00:00:01` 是硬编码，那两个值只是存进 `settings` 表、无人读取。要真做成可配得改函数签名并把设置读进来，别以为改表单就行
+- **封面尺寸是设置页那两项，取帧那一秒仍是写死的**：`generate_thumbnail` 的 `-vf scale={宽}:{高}` 由调用方传进来（`scan_service` 每轮读一次那张表），函数签名里 `width` / `height` 是必填、没有默认值，`file_scanner` 这一层也不去读表——尺寸这件事的默认值只住在 `settings` 和规则表里（#210）。"改表单就行"现在成立，但只对**这一轮新收的片子**成立：已经落盘的封面不重刷，`scale=320:-1` 那批老图还是原来的像素。`scale=W:H` 是精确框，不按比例缩放，非 16:9 会被拉扁——界面上的封面是 `object-fit: cover` 裁着显示的，所以看不出。`-ss 00:00:01` 那个取帧位置**没有**对应键，别以为它跟着设置页走
 - **生成的文件跟着记录走**：删影片或删整个视频源时，`delete_videos_cascade` 把被删行的 `thumbnail_path` 和 `transcode_outputs.output_path` 交给调用方，提交成功后由 `delete_generated_files`（#185 前叫 `delete_cover_files`）从磁盘移除；漏了这一步就是永久孤儿文件（删行不碰磁盘，重扫又会按同一个派生名新建一张封面，盘上只会越攒越多；产物目录压根不在扫描范围内，那一行又跟着影片一起没了，从此无人知晓）。产物那一头还有一道目录闸门，只认 `transcode_output_dir` 里面的路径。视频本体**永远不删**——那是用户的片，不是应用生成的。细节见「数据模型」一节
 
 ### 转码产物落盘（#154）

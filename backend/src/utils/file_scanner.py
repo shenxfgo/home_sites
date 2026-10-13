@@ -102,8 +102,12 @@ def extract_video_info(filepath: str) -> dict:
     return info
 
 
-def generate_thumbnail(video_path: str, output_path: str) -> str:
+def generate_thumbnail(video_path: str, output_path: str, width: int, height: int) -> str:
     """Generate a thumbnail from a video file using ffmpeg.
+
+    尺寸由调用方给——那是系统配置里那两项，而这一层不该去读那张表。``scale=W:H``
+    是精确的那个框：不按比例缩放，非 16:9 的片源会被拉扁，而界面上的封面本来就是
+    ``object-fit: cover`` 裁着显示的。
 
     Returns the output_path on success, empty string on failure.
     """
@@ -116,7 +120,7 @@ def generate_thumbnail(video_path: str, output_path: str) -> str:
                 "-i", video_path,
                 "-ss", "00:00:01",
                 "-vframes", "1",
-                "-vf", "scale=320:-1",
+                "-vf", f"scale={width}:{height}",
                 output_path,
             ],
             capture_output=True,

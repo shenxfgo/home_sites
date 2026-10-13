@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
+from src.services.setting_service import SCAN_INTERVAL_MAX, SCAN_INTERVAL_MIN
 from src.services.source_service import SourceService
 from src.storage.base import S3_SCHEME
 
@@ -46,7 +47,11 @@ class SourceCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     path: str = Field(..., min_length=1, max_length=1024)
     type: Literal["local", "nas", "minio"]
-    scan_interval: int = Field(default=3600, ge=60, le=86400)
+    # 没填 = 用系统配置里那一项，而不是这里再写死一个 3600：一个默认值只该有一个
+    # 出处。区间和设置页那一项共用同一对常量。
+    scan_interval: int | None = Field(
+        default=None, ge=SCAN_INTERVAL_MIN, le=SCAN_INTERVAL_MAX
+    )
     is_active: bool = Field(default=True)
 
 
@@ -56,7 +61,9 @@ class SourceUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
     path: str | None = Field(None, min_length=1, max_length=1024)
     type: Literal["local", "nas", "minio"] | None = None
-    scan_interval: int | None = Field(None, ge=60, le=86400)
+    scan_interval: int | None = Field(
+        None, ge=SCAN_INTERVAL_MIN, le=SCAN_INTERVAL_MAX
+    )
     is_active: bool | None = None
 
 

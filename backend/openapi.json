@@ -107,7 +107,7 @@
         "type": "object"
       },
       "AllSettingsResponse": {
-        "description": "Response model for all settings.",
+        "description": "Response model for all settings.\n\n这五个默认值和读路径的回退是同一批常量：整份 PUT 漏一个键时 Pydantic 替人填上\n的，必须和\"这一行没人写过\"读到的是同一个东西。",
         "properties": {
           "auto_scan_enabled": {
             "default": true,
@@ -1112,11 +1112,17 @@
             "type": "string"
           },
           "scan_interval": {
-            "default": 3600,
-            "maximum": 86400.0,
-            "minimum": 60.0,
-            "title": "Scan Interval",
-            "type": "integer"
+            "anyOf": [
+              {
+                "maximum": 86400.0,
+                "minimum": 60.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Interval"
           },
           "type": {
             "enum": [

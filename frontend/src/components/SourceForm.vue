@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import type { FormInstance, FormRules } from 'element-plus'
+import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { SOURCE_TYPE_LABELS } from '@/types/source'
 import type { Source, SourceCreate } from '@/types/source'
+import { getSettings } from '@/api/settings'
 
 /** Props for the dialog. */
 const props = defineProps<{
@@ -21,7 +22,7 @@ const form = ref({
   name: '',
   path: '',
   type: 'local' as SourceCreate['type'],
-  scan_interval: 3600,
+  scan_interval: undefined as number | undefined,
   is_active: true,
 })
 
@@ -57,7 +58,7 @@ watch(
         name: '',
         path: '',
         type: 'local',
-        scan_interval: 3600,
+        scan_interval: undefined,
         is_active: true,
       }
     }
@@ -66,6 +67,36 @@ watch(
 )
 
 const isEditing = () => !!props.source
+
+/**
+ * 扫描间隔的默认值取自系统配置那张表（#151 甲）。这里从前写死一个 3600，于是
+ * 同一个数字有三句话：设置页那个下拉改了它，新建的片源照旧按 3600 挂调度任务。
+ * 现在只剩一处——这一格空着的时候，后端去读那张表，界面不必替它猜。
+ *
+ * 读不到就留空，并把原因说出来：那条 required 规则会拦住提交，所以发出去的是
+ * 「没填」，而不是一个界面上显示过、后端却没配过的间隔。
+ */
+async function fillDefaultInterval() {
+  // 编辑态那一格是这条片源自己的间隔，跟"默认值"没关系，不读配置也不改它。
+  if (props.source) return
+  let seconds: number
+  try {
+    seconds = (await getSettings()).auto_scan_interval
+  } catch (err: unknown) {
+    ElMessage.error(`默认扫描间隔没读到：${err instanceof Error ? err.message : err}`)
+    return
+  }
+  // 读回来这一段是异步的：期间可能已经有人自己填过了，默认值不盖已填的。
+  if (form.value.scan_interval != null) return
+  form.value.scan_interval = seconds
+}
+
+watch(
+  () => props.visible,
+  (open) => {
+    if (open) void fillDefaultInterval()
+  },
+)
 
 function handleClose() {
   emit('update:visible', false)
@@ -134,7 +165,7 @@ const pathPlaceholder = () =>
           :max="86400"
           :step="60"
         />
-        <span class="interval-hint">秒</span>
+        <span class="interval-hint">秒，默认取自系统设置</span>
       </el-form-item>
 
       <el-form-item label="启用">

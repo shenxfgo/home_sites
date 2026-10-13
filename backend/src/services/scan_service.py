@@ -16,6 +16,7 @@ from src.models.source import VideoSource
 from src.models.tag import Tag
 from src.models.video import Video
 from src.services.notification_service import NotificationService
+from src.services.setting_service import SettingService
 from src.services.subtitle_service import SubtitleService
 from src.storage import MediaStorage, storage_for_source
 from src.utils.file_scanner import extract_video_info, generate_thumbnail
@@ -197,6 +198,10 @@ class ScanService:
             raise ValueError(f"视频源 #{source_id} 不存在")
 
         storage = storage_for_source(source.type)
+        # 封面的尺寸是设置页那两项，一轮读一次：给每张封面各查一遍表没有意义，
+        # 而"这一轮刷出来的封面是一个尺寸"才是人按下扫描时想看到的。
+        # 已经存在的封面不动——这一单改的是新收的片子，不是重刷整库。
+        cover_width, cover_height = await SettingService(self.session).get_thumbnail_size()
 
         files_found = 0
         new_videos = 0
@@ -295,7 +300,12 @@ class ScanService:
                             # Run thumbnail generation in a thread to avoid blocking
                             loop = asyncio.get_event_loop()
                             await loop.run_in_executor(
-                                None, generate_thumbnail, filepath, thumbnail_path
+                                None,
+                                generate_thumbnail,
+                                filepath,
+                                thumbnail_path,
+                                cover_width,
+                                cover_height,
                             )
                             if not thumbnail_path or not os.path.exists(thumbnail_path):
                                 thumbnail_path = ""

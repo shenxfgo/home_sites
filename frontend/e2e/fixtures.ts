@@ -172,6 +172,22 @@ const formats = [
   { format: 'webm', codec: 'libvpx-vp9', extension: 'webm' },
 ]
 
+/**
+ * 替身那份系统配置的五个键。`mockApi` 每次安装拿它重建一份可写的，用例要改其中
+ * 一项也从这里展开——手抄一遍就会和夹具漂开，而漂开在桩面上是静默的。
+ *
+ * 这五项现在真的有人读了：`auto_scan_interval` 是新建片源的默认间隔，
+ * `default_transcode_format` 是转码页下拉的预填，`thumbnail_*` 由后端读去拼 ffmpeg
+ * 的 `scale=`（#151 甲）。
+ */
+export const SEEDED_SETTINGS = {
+  auto_scan_enabled: true,
+  auto_scan_interval: 3600,
+  default_transcode_format: 'mp4',
+  thumbnail_width: 320,
+  thumbnail_height: 180,
+}
+
 type TranscodeState = 'idle' | 'running' | 'completed' | 'cancelled'
 
 export const subtitles = [
@@ -549,13 +565,7 @@ export async function mockApi(
   let nextSubtitleId = 100
 
   /** 整份系统配置的样子。`GET /settings` 与 `GET /settings/{key}` 同源，不抄两遍。 */
-  const systemSettings: Record<string, string | number | boolean> = {
-    auto_scan_enabled: true,
-    auto_scan_interval: 3600,
-    default_transcode_format: 'mp4',
-    thumbnail_width: 320,
-    thumbnail_height: 180,
-  }
+  const systemSettings: Record<string, string | number | boolean> = { ...SEEDED_SETTINGS }
 
   /** 后端的 `TagResponse` 带 `video_count`，数的是此刻还活着的行（删掉的影片不数）。 */
   const tagBody = (tag: { id: number; name: string; color: string }) => ({
@@ -983,7 +993,11 @@ export async function mockApi(
           name: body.name ?? '未命名视频源',
           path: body.path ?? '',
           type: body.type ?? 'local',
-          scan_interval: body.scan_interval ?? 3600,
+          // 省略扫描间隔时后端读的是 `auto_scan_interval` 那一行，替身也得跟着读——
+          // 原先这里写死 3600，和 `systemSettings` 那份就是同一个数的两句话。
+          // 那个 `Number` 不是防卫：真后端的 `settings.value` 是 Text 列，读回来要过
+          // 一次强制转换，这一层在替身里同样存在。
+          scan_interval: body.scan_interval ?? Number(systemSettings.auto_scan_interval),
           last_scan_at: null,
           is_active: body.is_active ?? true,
           created_at: new Date().toISOString(),

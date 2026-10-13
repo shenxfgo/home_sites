@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { mockApi } from './fixtures'
+import { mockApi, SEEDED_SETTINGS } from './fixtures'
 
 test.beforeEach(async ({ page }) => {
   await mockApi(page)
@@ -12,6 +12,18 @@ async function confirmDialog(page: Page) {
 async function chooseFormat(page: Page, format: string) {
   await page.locator('.transcode-section .el-select').click()
   await page.locator('.el-select-dropdown__item', { hasText: format }).click()
+}
+
+/** 覆盖替身那份系统配置：只改要的那一项，其余五项从夹具展开。 */
+async function overrideSettings(page: Page, overrides: Record<string, unknown>) {
+  // 后注册的路由先匹配，所以这条盖得住 `mockApi` 那份兜底的 `/api/**`。
+  await page.route((url) => url.pathname === '/api/settings', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...SEEDED_SETTINGS, ...overrides }),
+    }),
+  )
 }
 
 test('转码页展示视频信息与可选格式', async ({ page }) => {
@@ -61,7 +73,19 @@ test('取消转码会停掉任务并结束轮询', async ({ page }) => {
   await expect(page.getByRole('button', { name: '取消转码' })).toBeHidden()
 })
 
-test('未选择目标格式时不会发起转码', async ({ page }) => {
+test('目标格式默认就是系统配置里那一项', async ({ page }) => {
+  // 替身播种的默认是 mp4，这里换成 webm 才分得开「读了配置」和「写了个默认值」。
+  await overrideSettings(page, { default_transcode_format: 'webm' })
+  await page.goto('/videos/1/transcode')
+
+  await expect(page.locator('.transcode-section .el-select')).toContainText('webm (webm)')
+})
+
+test('配置里那项不在支持的格式列表里就不预填，也就发不出转码', async ({ page }) => {
+  // 这一条把 #151 甲的"只给界面当下拉默认"和原来那条「未选择目标格式」一起签了：
+  // 替身只支持 mp4 与 webm，`avi` 是列表外的一档——硬填进去点了就是后端一句拒绝，
+  // 所以界面宁可不填，让「请选择目标格式」那句话来说话。
+  await overrideSettings(page, { default_transcode_format: 'avi' })
   await page.goto('/videos/1/transcode')
 
   let posted = false

@@ -14,12 +14,17 @@ export interface Source {
   created_at: string
 }
 
-/** Request body for creating a video source. */
+/**
+ * Request body for creating a video source.
+ *
+ * `scan_interval` 可以整个不带：省略时后端读系统配置里的 `auto_scan_interval`
+ * （#151 甲）。界面上它是预填好的一个数，不是必填的另一种写法。
+ */
 export interface SourceCreate {
   name: string
   path: string
   type: SourceType
-  scan_interval: number
+  scan_interval?: number
   is_active: boolean
 }
 

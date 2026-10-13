@@ -114,6 +114,42 @@ async def test_a_number_setting_refuses_a_value_the_read_path_cannot_parse(clien
     assert (await client.get("/api/settings")).status_code == 200
 
 
+@pytest.mark.parametrize(
+    ("key", "raw"),
+    [("auto_scan_interval", "30"), ("thumbnail_width", "0"), ("thumbnail_height", "-8")],
+)
+async def test_a_number_that_is_a_number_but_is_unusable_is_refused_too(client, key, raw):
+    """闸门和读者共用一份区间：门口放行、管线里回退的话就有两种真值。
+
+    这三项现在各有管线管着（新片源的默认间隔、ffmpeg 的 `scale=W:H`），"是个整数"
+    已经不够——30 秒当不了一个源的间隔，0 也进不了封面的框。
+    """
+    response = await client.put(f"/api/settings/{key}", json={"value": raw})
+
+    assert response.status_code == 400
+    assert "取值范围" in response.json()["detail"]
+
+    assert (await client.get("/api/settings")).json()[key] != int(raw)
+
+
+async def test_the_bulk_put_is_gateable_too(client, db_session):
+    """整份 PUT 以前只靠 Pydantic 认字形，区间没人管——两条写路径得撞同一道门。
+
+    `AllSettingsResponse` 的字段类型是 `int`，所以 30 这种值能一路走进库里；而读
+    路径现在会把它回退成默认值，于是"保存成功"和"页面上写的是 3600"同时成立。
+    """
+    bad = dict(BULK, auto_scan_interval=30)
+
+    response = await client.put("/api/settings", json=bad)
+
+    assert response.status_code == 400
+    assert "取值范围" in response.json()["detail"]
+
+    # 判完再写：这条链路不能留下面一半落库、一半被拒的配置。
+    result = await db_session.execute(select(Setting))
+    assert result.scalars().all() == []
+
+
 BULK = {
     "auto_scan_enabled": False,
     "auto_scan_interval": 7200,

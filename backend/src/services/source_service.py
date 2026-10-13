@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.source import VideoSource
 from src.models.video import Video
 from src.scheduler import scheduler
+from src.services.setting_service import SettingService
 from src.services.video_service import delete_generated_files, delete_videos_cascade
 
 
@@ -22,10 +23,18 @@ class SourceService:
         name: str,
         path: str,
         type: str,  # noqa: A002
-        scan_interval: int = 3600,
+        scan_interval: int | None = None,
         is_active: bool = True,
     ) -> VideoSource:
-        """Create a new video source."""
+        """Create a new video source.
+
+        ``scan_interval`` 留空 = 用系统配置里那一项。这里原先自己写死一个 3600，
+        而设置页上「扫描间隔」那一项写着同样的数却没人读它：两处默认值一旦不一致，
+        界面上看到的默认和真挂上去的间隔就是两件事。
+        """
+        if scan_interval is None:
+            scan_interval = await SettingService(self.session).get_auto_scan_interval()
+
         source = VideoSource(
             name=name,
             path=path,
