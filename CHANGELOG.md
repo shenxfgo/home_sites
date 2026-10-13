@@ -2,6 +2,16 @@
 
 ## 2026-10-13
 
+### `reasonOf` 全表 12 格过一次签字电池：没有新洞，四格绿正好是面板⑤那四格（#222，只量不改）
+
+- **这一单的产出是一个「没有新洞」的证明**：#221 学到「grep 到代号名 ≠ 有签字」，于是把 `frontend/src/api/client.ts` 里 `reasonOf` 的 12 条 `case` 全过一遍电池——每格把那条 `case 'X':` 换成后端永远不会发的 `case 'X_DEAD':`，看套件动不动；再加三道 `ctx` 闸门分支和一格已知有签字的对照。两遍共 **17 格 = 10 红 + 7 绿**（第一遍 14 格 = 10 红 + 4 绿，第二遍那三道 `ctx` 闸门全绿，逐条结论见下）。本单源码零改动、用例零改动。
+- **四格绿不是新发现，是 #217 那四格零产口代号**：`too_short`、`too_long`、`greater_than`、`less_than`。所以这条记录的价值在于把「signed five」那句从 grep 证据升级成变异证据——**有产口的八格全部红**：`missing`、`string_too_short`、`string_too_long`、`greater_than_equal`、`less_than_equal`、`int_parsing`、`bool_parsing`、`string_pattern_mismatch`，另外 `string_too_short` 里那条 `ctx.min_length === 1` 说「不能为空」的特判被单独摘掉也红（B13），说明「必填翻成不能为空」这条口径也有钉子。
+- **那四格绿不给补用例，是因为补了就等于替用户先选面板⑤**：面板⑤ 问的正是这四格的处置（删掉 / 留着并加一条从 `openapi.json` 推导可发代号集合的静态守卫 / 留着只记档）。给一条真后端发不出来的代号写用例，等于把「删掉」这条路提前堵死，所以处置权原样交回，本单只在账目里把「四格确实无人签」钉成量过的数。
+- **三道 `ctx` 闸门的绿是等价变异，这一点是量的不是推的**：探针把 14 个 api 模块的每一张 `Request/Update/Create` 的每个字段各喂 10 种坏值，`string_too_short` 命中 **17** 次、`string_too_long` **17** 次、`greater_than_equal` **10** 次，三个代号每一次都带着前端要读的那个键（17/17、17/17、10/10，一次 `MISSING` 都没有），而 `flattenDetail` 唯一的发信人就是 pydantic——与 #221 里 `less_than_equal` 那道 `ctx.le` 闸门同一族结论。
+- **一处可比性要记清，不是更正**：这一遍 `greater_than_equal` 数到 10 次命中，#217 记的是 8 次。两遍探针喂的坏值清单不同（#217 那份 11 种、本单这份 10 种），而计的是**命中次数**不是「能命中它的字段数」，所以两个数各自都对、但不可直接比。本单需要的那个结论不依赖这个数：要的是「带不带 ctx」，44 次命中里 0 次缺。
+- **读数**：`frontend/src/api/client.ts` 全程一字节未动（105 行、纯 LF、md5 `bcec5c4188b00795f36118ecac9b8c6f`，每格复原后按 md5 复核、收尾再验一次），`frontend/tests/` 也未动，所以 Vitest 沿用 #221 的 **365**（电池每格单跑 `tests/api/client.spec.ts`，基线 12 passed）；后端 **1106 passed** / TOTAL **99.11%**（4730 句 / 42 缺）、SQLite 1105 + 1 skip、替身 e2e **105**、真后端 e2e **26**、`backend/openapi.json`（5697 行 LF、md5 `7f96d240e61a944391d1013186fa14d5`）全部沿用——本单没有碰任何后端或 e2e 文件，也没有重跑它们。
+- **账目**：`frontend/CLAUDE.md` 774 → **775** 行、md5 `209c89a9971f4eca4241088c5bdae14f` → `7948293aaef17babad67a8dae387d71f`、纯 LF；`frontend/src/api/client.ts` 与 `frontend/tests/` **未动**；`CHANGELOG.md` 2203 → **{2203 + ADDED}** 行（本条 10 行：标题 + 空行 + 7 条要点 + 条后空行），全文件纯 CRLF、裸 LF 0 个（本文件不登记自己的 md5：那个数就写在文件里，一写就变）；电池与探针脚本都在系统临时目录、跑完即删，工作区除那两份已知的 autocrlf 幻影（`backend/src/api/transcode.py`、`backend/src/storage/__init__.py`）之外干净。
+
 ### 后端今天真发得出、用例一次也没提过的三格 422 翻译，各钉一颗（#221）
 
 - **这一单不在面板上，是 #217 普查里「有真产口、零签字」那三格的补钉子**：`bool_parsing`、`string_pattern_mismatch`、`less_than_equal`。零签字是量出来的不是推断的——`git grep -c -F "'bool_parsing'" HEAD -- frontend/tests` 这类查法三格各 **0 命中**，而同一棵树上已知有签字的 `string_too_short` **2 命中**。它和面板⑤正交：⑤ 处置的是另外四格**零产口**的翻译（等用户选），本单没动那四格，也没动 `src/api/client.ts` 一个字节。
