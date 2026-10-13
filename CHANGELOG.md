@@ -2,6 +2,17 @@
 
 ## 2026-10-13
 
+### 422 翻译表的户口普查，外加取色器选出来的颜色一律存不下去（#217，只量不改，两处都进面板）
+
+- **这一单一行源码、一行用例也没动**：它是 #216 那条口径的延续——「还有哪些格子钉着后端不再产生的形状」，问的是普查而不是修复。普查做完，凡是处置方式会改到行为的都按规矩记进第六轮面板（①–⑤），交用户选。
+- **`reasonOf`（`frontend/src/api/client.ts:37-70`）那张 12 个代号的表，正向四个是死的**：`too_short`、`too_long`、`greater_than`、`less_than` 在本仓后端**全仓无产口**，也**零签字**。无产口有两条独立证法——① 探针遍历 14 个 api 模块的每一张 `Request/Update/Create`，每个字段喂 11 种坏值（错类型 / 字符串冒充数字 / bool / 空列表 / 空串 / 500 个字符 / null / 0 / 负数 / 十亿），收上来的 `type` 共 14 种，那四个一次没出现；② `backend/src` 里词边界 grep 找不到任何 `gt=`/`lt=`，也找不到任何列表长度约束（`backend/openapi.json` 里 `minItems`/`maxItems`/`exclusiveMinimum` 各 0 个，而 `minimum` 14 / `maximum` 8 / `minLength` 17 / `maxLength` 22 / `pattern` 3 / `enum` 4，所以「从快照推导可发代号集合」这条路走得通）。
+- **反向查出两批**：有真产口却没进表的五个会把 pydantic 英文原文送上界面（`string_type` 220 次、`literal_error` 31、`list_type` 19、`int_type` 18、`bool_type` 11；次数是探针命中数，同一字段可被多种坏值命中），但实测这一批从 UI 走不到——前端载荷全由 TS 类型拼出来，缺字段送出去的是 `missing` 而不是类型错，所以只咬非 UI 客户端；已经在表里、有产口、却没有一条签字用例的三格是 `bool_parsing`(24)、`string_pattern_mismatch`(6)、`less_than_equal`(4)（`grep` 整个 `frontend/tests/` 无一处提到这三个代号）。
+- **标签取色器今天选不出任何颜色，这是界面点得到的**：`views/Tags.vue` 那枚 `el-color-picker` 带 `show-alpha` + `color-format="hex"`，element-plus 2.14.3 在这组配置下写回 `v-model` 的**永远是 8 位十六进制**。一次性 Playwright 探针走真界面量到三份原文——面板底部预设定色块 + 页脚「确定」→ `{"color":"#67c23aff"}`；面板输入框手打 `#ff0000` +「确定」→ `{"color":"#ff0000ff"}`；拉透明度条到一半 → `#7c6cff80`。而 `TagCreate` 的 pattern 是 `^#[0-9a-fA-F]{6}$`，三个都拒（对着 schema 直接量到的 `string_pattern_mismatch`）——替身夹具照单全收，所以「界面发什么」用探针量、「服务端认不认」另行量 schema，两句分开说才都算量过。
+- **顺手更正我自己写下的一个口径**：#211 ② 那条记录里「预设色板能存」这句分不出对象——界面上有**两排预设**，`Tags.vue` 自己那排 `.preset-color` 写的是 6 位原文（探针量到 `{"color":"#67c23a"}`，存得下），element-plus 面板底部那排 `.el-color-predefine__color-selector` 走的是取色器（8 位，存不下）。同一趟还量到第二个形状、而且它不是我们的 bug：不点页脚那颗「确定」，而是点触发器或面板外面把浮层关掉，element-plus 走 `hide() -> resetColor()`，**选中的颜色整块丢弃**（三条探针都是零 PUT，预览那个点也停在原色）——所以「确定」是唯一的提交路径，而它因为没装 zh-CN locale 显示成英文 `OK`（#214 记过同一族现象）。
+- **两处处置都交给用户**：第六轮面板 **①**（去 `show-alpha` / 后端 pattern 放宽到 `#RRGGBBAA` 并让透明度真进到那个点上，列是 `String(20)` 装得下 9 个字符 / 留着 `show-alpha` 在 `Tags.vue` 截成 6 位）、**⑤**（删掉那四格零产口的翻译，按 #205/#206/#212 的先例 / 留着并加第六条静态守卫从快照推导可发代号集合 / 留着只把清单记进文档），同批提出的是 `#409eff` 五处安家、`VideoUpdate.tag_ids` 显式 null 与「没带」分不开、#200 的 `UserPreference` repr。**本单不动它们中的任何一个**。
+- **读数**：`frontend/src/api/client.ts` 未动（105 行 LF，md5 `bcec5c4188b00795f36118ecac9b8c6f`，与 #216 记的同一份）、`views/Tags.vue` 未动、`frontend/tests/` 未动，所以 Vitest **364** 沿用 #216；后端全量 **1106 passed** / TOTAL **99.11%**（4730 句 / 42 缺）与 SQLite 那份 1105 + 1 skip 沿用 #215/#216；替身 e2e 本单只跑过一次性探针那几趟（探针文件已删，套件未重跑），**105** 沿用 #216；真后端 e2e **26** 沿用 #214；`backend/openapi.json` **5697 行 LF、md5 `7f96d240e61a944391d1013186fa14d5`**，与 #210–#216 记的同一份。
+- **账目**：`frontend/CLAUDE.md` 771 → **773** 行、md5 `bad5e7925c31e06d190c015f6e3f5633` → `a9e9ea6a200e7a53d778093b87352e34`、纯 LF（773 个 `\n`、0 个 `\r\n`）；`CHANGELOG.md` 2180 → **2191** 行（本条 11 行：标题 + 空行 + 7 条要点 + 账目 + 条后空行），全文件纯 CRLF、裸 LF 0 个（本文件不登记自己的 md5：那个数就写在文件里，一写就变）；本单没有 `src/`、没有 `tests/`、没有 e2e 的改动，探针脚本写在系统临时目录、跑完即删，工作区除那两份已知的 autocrlf 幻影（`backend/src/api/transcode.py`、`backend/src/storage/__init__.py`）之外干净。
+
 ### 422 摊平那两条退路：一条用例钉着已死的代号，另一条压根没有钉子（#216）
 
 - **这一单不在面板上，是量出来的一处测试失明**：`src/api/client.ts` 的 `reasonOf` 有两条退路——「表外代号退回 `item.msg`」和「同一字段多处出错只说一遍」。前者在 `tests/api/client.spec.ts` 里举的例子是 `value_error`，而 #211 自己就把「后端改完之后 `value_error` 从此不再由我们自己产生」记进了 `frontend/CLAUDE.md`，用例却留在旧代号上；后者的那句 `[...new Set(lines)]` 去重没有任何用例能改坏它。
