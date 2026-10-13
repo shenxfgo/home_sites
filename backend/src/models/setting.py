@@ -24,3 +24,6 @@ class Setting(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+    def __repr__(self) -> str:
+        return f"<Setting(key='{self.key}', value='{self.value}')>"

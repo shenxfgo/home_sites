@@ -2,6 +2,19 @@
 
 ## 2026-10-13
 
+### 18 个模型里最后那一个 `__repr__` 补上了——留着当引线的那条用例今天该红（#215，面板⑧甲）
+
+- **这一单是第五块面板的 ⑧，选甲**：给 `backend/src/models/setting.py` 的 `Setting` 补上 `__repr__`，两行源码（`def` 一行 + `return` 一行），形状跟其余 17 条同一族——`<Setting(key='auto_scan_interval', value='3600')>`。否掉的是乙（照现状记着它没有，让 #200 那条事实用例继续钉「它确实没有 repr」）。`value` 那一列在库里是 Text、`key` 是主键字符串，所以这一条是两个带引号的字段，也是本文件 18 条里唯一「第一个字段不是整数 id」的那条。
+- **先就地更正面板上那句口径**：提面板时我先说「18 个映射类里 `UserPreference` 和 `Setting` 两个都没写 repr」，那是错的。`preference.py:34` 那条是 #200 加的，而我那次 `grep -L` 命中的是 `src/models/__init__.py`——那份文件里一个模型也没有。真正的缺口**恰好一个类**，就是本单补的这个。两处文档里的那句盘点已就地括注。
+- **一进一出，用例总数一条没动**：#200 留下的 `test_the_setting_model_is_the_one_without_a_repr` 删掉，同一位置换进第 18 条等式。那条用例本来就是给这一天留的引线——「将来谁补上这条就红」，它红了就该换成等式，而不是两个人各自记着同一件事。于是 `test_model_reprs.py` 仍是 **19 条**、`tests/test_models` 整目录仍是 **30 条**（两种方言各实测一遍），全量仍是 **1106 条**。
+- **红在改前的 HEAD 上当场量到**：新那条等式打在还没有 `__repr__` 的 `setting.py` 上是 **1 failed / 18 passed**，diff 里收到的正是默认实现那串含内存地址的 `<src.models.setting.Setting object at 0x0000025A60872CF0>`——这也正是 #200 当初只能钉「它没有 repr」这个事实、钉不了内容的理由。
+- **电池 7 格 = 6 红 + 1 格该绿的对照，两种方言各跑一遍逐格结果一字不差**：只留 `value`（少一个字段）、`key` 与 `value` 对调（字段串了）、去掉 `key` 两侧的引号（引号也是签名的一部分）、去掉收尾的 `>`、整个 `__repr__` 删掉（红回默认实现那串）、`return None`（红成 `TypeError: __repr__ returned non-string (type NoneType)`）——**各红 1 条，无一等价**。对照那格是把 `key` 那列的 `String(100)` 改成 `String(120)`：这一族用例从不看列宽，所以它必须绿，它是本仓记过的「电池整片红其实是用法子坏了」（#210/#211 各踩过一次）的探测器。
+- **电池第一版里有一格假红，记下来是因为它差点被当成证据**：`M5`（删掉 repr）第一版只摘 `return` 那一行，留下一个空的 `def` 头，报的是收集阶段的 `IndentationError: expected an indented block after function definition on line 28`（退出码 4）——那既不是「退回默认实现」这一手，也不是那条用例的红。改成 `def` 与 `return` 两行一起删才是真正的那一格。
+- **一次流程事故差点把读数带走**：上一段会话遗留的后台全量跑还没结束，我又起了一套，两套 pytest 并发打同一张 `home_sites_test`。第一次读数是 **40 failed / 5 errors**（`DeadlockDetectedError` 那一族形状，本文件测试库那一节早就写过「同一时间只能有一套」），两遍都被污染，全部作废；单独重跑才拿到 **1106 passed / 220.97s**。七个电池子进程也按 #203 那条规矩改成一律 `TEST_DATABASE_URL=` 走内存 SQLite 重跑一遍，逐格结果与先前敲真测试库那遍一致。
+- **读数**：PG 全量 **1106 passed**、TOTAL **99.11%**——**4728 → 4730** 句（+2 就是新那两句，都被那条等式走到）/ 未覆盖 **42 → 42**（一条没动：`e2e_seed.py:181-284` 那 39 句留给真 e2e 链路的空白，加 `api/users.py:155-156`、`video_service.py:404` 三句已记明理由的，与 #213 那份清单一字不差）。`src/models/setting.py` 从 **10 句 0 缺** 变成 **12 句 0 缺 / 100%**。`ruff check src tests` 全绿，`mypy src` 基线 **34** 不变。接口、`openapi.json`、替身 e2e、真后端 e2e、前端一行没动。
+- **还没答的那个分叉照原样留着**：`UserPreference` 的 repr 在没赋过 `prefs` 的内存实例上 `sorted(None)` 抛 `TypeError`（#200 交回用户的选择，全仓唯一构造点永远显式传 `prefs`，线上走不到），本单没动那一行，那条崩溃记录用例也照旧钉着今天量到的行为。
+- **账目**：`backend/src/models/setting.py` 26 → **29** 行、md5 `d3c152d04edb4a396f8ffbe94619f4d7` → `19a409d2e1976f3545fc9d02a59b5307`、纯 LF（29 个 `\n`、0 个 `\r\n`）；`backend/tests/test_models/test_model_reprs.py` 187 → **192** 行、md5 `f0aa50197acba97063b73858d3b5f5b8` → `570dcabe9d7d15692223efc87682486c`、纯 LF；`backend/CLAUDE.md` 861 → **867** 行、md5 `f94df678a916238d99ab0dfc8ace911a` → `d4764d54bedc847f2995d400157e2d10`、纯 LF；`CHANGELOG.md` 2158 → **2171** 行（本条新增 13 行），行尾全部 CRLF、裸 LF 0 个）。
+
 ### 设置页在读回来之前五格全是空的：半张表连保存的资格都没有（#214，面板⑦甲）
 
 - **这一单是第五块面板的 ⑦，选甲**：`frontend/src/views/Settings.vue` 里那个 `settings` ref 从此开局是 `{}`，五个兜底字面量（`true` / `3600` / `'mp4'` / `320` / `180`）全部删掉，`GET /api/settings` 落地之前五格一律留白。它是本轮第一单纯前端的活（后端一行没动），也是 #210「一个数只住一处」那条规矩的最后一块：那张表里的五个键当时接进了四条管线，唯独界面自己还揣着一份。

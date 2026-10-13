@@ -1,15 +1,17 @@
-"""模型层 17 个 ``__repr__`` 的 return 第一次被逐条敲到（#200，纯 coverage 单）。
+"""模型层 18 个 ``__repr__`` 的 return 逐条敲到（#200 钉下 17 个，#215 补齐最后那一个）。
 
-盘点（不是估算，是从 ``src/models/*.py`` 的 AST 数出来的）：18 个映射类里 17 个写了
-``__repr__``，唯一没写的是 ``Setting``（``settings`` 表）——它落回默认实现
-``<src.models.setting.Setting object at 0x...>``，含地址、不确定，本单因此不钉它。
+盘点（不是估算，是从 ``src/models/*.py`` 的 AST 数出来的）：18 个映射类**现在全都有**
+``__repr__``。#200 那一单量到的缺口只有一个 ``Setting``（``settings`` 表）——它当时落回默认实现
+``<src.models.setting.Setting object at 0x...>``，含地址、不确定，所以那一单为它写的是一条
+「它确实没有 repr」的事实用例；#215 按第五块面板⑧甲给它补上了真正的 repr，那条事实用例同时
+删除，18 条等式从此是同一族。
 
-为什么用等式钉，而不是给这 17 行标 ``# pragma: no cover``：
+为什么用等式钉，而不是给这 18 行标 ``# pragma: no cover``：
 
 1. 标 pragma 是一句**假话**。这一行了——``repr(User(id=1, username=..., role=...))`` 就是它，
    所以 pragma 声明的「没有测试够得着」在这里不成立。仓里已有的那处 repr pragma
    （``src/services/auth_service.py:426`` 的 ``LoginRateLimiter``）是另一回事：它内插的是
-   ``len(self._failures)``，值随测试推进漂移，等式钉不住；模型这 17 个全是纯字段拼接。
+   ``len(self._failures)``，值随测试推进漂移，等式钉不住；模型这 18 个全是纯字段拼接。
 2. 这些字符串是**人唯一会读的东西**：出问题时日志里、调试器里、``print`` 出来的就是它。
    同一个仓里已经有一条为这个理由存在的测试——``tests/test_backup.py:262`` 就为了
    「口令不能出现在 repr 里」而真去调 ``repr()``。有产口的 repr 值得钉，这条先例就在旁边。
@@ -18,7 +20,7 @@
    五个多行 f-string 的**接缝空格**（少一个空格就是 ``user_id=7video_id=8``）。
 
 每条用例的值都取成互不相同（11/12/13 这样），所以「把 ``id`` 写成 ``user_id``」这类串字段
-当场红，不需要靠 17 条共享一条断言。整文件不碰数据库：全是内存里的实例，两种方言同一条命令，
+当场红，不需要靠 18 条共享一条断言。整文件不碰数据库：全是内存里的实例，两种方言同一条命令，
 所以它不进 SQLite 分支的差异清单。
 
 最后一条用例钉的是**今天量到的行为**，不是想要的行为：``UserPreference`` 的 ``prefs`` 列
@@ -35,6 +37,15 @@
 ``UserPreference`` 的等式那条和上面那条 ``TypeError``——因为让未落库实例炸掉的正是
 ``sorted`` 这一手。换句话说「顺手把 sorted 去掉」看着像修了个 bug，实际是把排序这条契约
 和崩溃记录一起抹了，而这两件事分别有名字。
+
+``Setting`` 那一格是 #215 补的，它自己配了一组 7 张电池，两种方言各跑一遍逐格结果一致：
+6 格红、1 格该绿的对照。**红的六格各红 1 条**，形状互不相同——只留 value（少一个字段）、
+key 与 value 对调（字段串了）、去掉 key 两侧的引号（引号也是签名的一部分）、去掉收尾的
+``>``、整个 ``__repr__`` 删掉（红回默认实现那串含地址的 ``<... object at 0x...>``，这一格
+同时就是本单「红在改前 HEAD 上」那一手）、``return None``（红成 ``TypeError: __repr__
+returned non-string``）。该绿的那格是把 ``key`` 那列的 ``String(100)`` 改成 ``String(120)``：
+这一族用例从不看列宽，它必须绿——它是这台机器上「电池整片红其实是用法子坏了」那类假象
+（#210/#211 各踩过一次）的探测器。
 """
 
 from datetime import datetime, timezone
@@ -47,6 +58,7 @@ from src.models.new_video import NewVideo
 from src.models.notification import Notification
 from src.models.preference import UserPreference
 from src.models.read_state import NewVideoRead, NotificationRead
+from src.models.setting import Setting
 from src.models.source import VideoSource
 from src.models.subtitle import Subtitle
 from src.models.tag import Tag
@@ -146,6 +158,13 @@ CASES = [
         lambda: WatchlistItem(id=171, watchlist_id=172, video_id=173),
         "<WatchlistItem(id=171, watchlist_id=172, video_id=173)>",
     ),
+    (
+        # 主键是字符串那一列，所以这一条里两个字段都带引号——它是本文件里唯一
+        # 「第一个字段不是整数 id」的那条，写成 `key=` 而不是 `id=` 才有对应。
+        "Setting",
+        lambda: Setting(key="auto_scan_interval", value="3600"),
+        "<Setting(key='auto_scan_interval', value='3600')>",
+    ),
 ]
 
 
@@ -155,7 +174,7 @@ CASES = [
     ids=[name for name, _, _ in CASES],
 )
 def test_each_model_repr_reads_its_own_fields(name, build, expected):
-    """17 个 repr 各钉一次：17 条独立签名，不共享、不总括。"""
+    """18 个 repr 各钉一次：18 条独立签名，不共享、不总括。"""
     assert repr(build()) == expected
 
 
@@ -171,17 +190,3 @@ def test_the_preference_repr_is_the_one_that_needs_a_dict_already_present():
         repr(unsaved)
 
     assert str(excinfo.value) == "'NoneType' object is not iterable"
-
-
-def test_the_setting_model_is_the_one_class_without_a_repr():
-    """盘点写进测试：18 个映射类里只有 ``Setting`` 没写 repr，所以它落回默认实现。
-
-    默认串含地址，钉不了内容；这里只钉「它确实没有自己的 repr」这个事实——将来谁给
-    ``Setting`` 补上 repr，这条会红，那一红就是提醒他顺手把上面 17 条的清单加一格的时刻。
-    """
-    from src.models.setting import Setting
-
-    rendered = repr(Setting(key="scan_interval", value="30"))
-
-    assert "Setting object at 0x" in rendered
-    assert "__repr__" not in vars(Setting)
