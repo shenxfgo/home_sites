@@ -2,6 +2,17 @@
 
 ## 2026-10-13
 
+### 这一轮的收尾：桌面上 31 个提交快进推上去，推之前在同一条树上重跑了前端那两条（#223，丙）
+
+- **这一单是「丙」，授权是新的一次**：用户在 #222 之后原话「提交并推送」。这是这一轮的第二次推送——#192 那一次早已用尽——同样用完即止，下一次仍要他的原话。
+- **「提交」这一半没有内容可提交**：`git status --porcelain` 只剩 `backend/src/api/transcode.py` / `backend/src/storage/__init__.py` 那两个 autocrlf 幻象（`git diff --stat` 与 `git diff --ignore-all-space --stat` 都空，与 HEAD 逐字节相同，**故意不 stage**），未跟踪文件为零。所以落进这次提交的只有本条账目。
+- **推之前在同一份树上重跑的是前端那两条**：Vitest **365 passed**（37 份 spec）、`npm run typecheck:test`（`vue-tsc -p tsconfig.vitest.json --noEmit`）干净。
+- **后端为什么可以不重跑（这是量的，不是猜的）**：`git diff --stat 4fed2f5..HEAD -- backend/src frontend/src backend/openapi.json` 是空的——#215（`4fed2f5`）之后这一串只改过 `CHANGELOG.md`、`frontend/CLAUDE.md`、`frontend/tests/api/client.spec.ts` 三份文件。所以 #215 树上重量的那两组读数对 HEAD 原样成立：PG 全量 **1106 passed** / TOTAL **99.11%**（4730 条语句 / 42 未覆盖），SQLite 整仓 **1105 passed + 1 skipped**；替身 e2e **105 passed** 是 #221 在同树重跑的（`--workers=1`，且必须从 `frontend/` 起——从仓库根起会「No tests found」而管道照样回 0）。**真后端 e2e 那 26 条本轮没重跑**，读数沿用 #214，这一格如实欠着。
+- **推出去的东西先扫过一遍密钥**：`git diff 8388974..HEAD` 里 `password|passwd|secret|token|api_key|access_key|连接串` 的命中逐条看过——全是测试里的假字面量（`e2e-only-password`、`sentinel-never-echoed`）和文档散文；仓库里从来没有 `backend/.env`，`.env.example` 那一次只是删掉一行占位。
+- **快进与推送读数**：`git fetch origin` 后 `git rev-list --count HEAD..origin/main` = **0**（远端无旁支提交），本地领先 **31**。`git push origin main` 回 `8388974..8145f95`；推完 `origin/main == 8145f95`、`git rev-list --count origin/main..HEAD` = **0**。
+- **桌上剩下的只有第六块面板 ①–⑤**：#218 取色器 alpha、#219 `reasonOf` 那四格零产口翻译、#220 默认色五处安家 + `tag_ids` 显式 null 那个 400、④ `UserPreference.__repr__` 在从未保存过的实例上 `sorted(None)` 抛 `TypeError`（生产够不着，因为 `preference_service.py` 永远传 `prefs`）。四格全等他的选择，本轮没有一行业务源码留在这张桌上等我自己拍。
+- **账目**：全文件 2213 → **2223** 行（本条 11 行：标题 + 空行 + 8 条要点 + 条后空行），纯 CRLF、裸 LF 0 个；本文件不登记自己的 md5（那个数一写就变）。工作区除上述两份 autocrlf 幻象之外干净，临时脚本跑完即删。
+
 ### `reasonOf` 全表 12 格过一次签字电池：没有新洞，四格绿正好是面板⑤那四格（#222，只量不改）
 
 - **这一单的产出是一个「没有新洞」的证明**：#221 学到「grep 到代号名 ≠ 有签字」，于是把 `frontend/src/api/client.ts` 里 `reasonOf` 的 12 条 `case` 全过一遍电池——每格把那条 `case 'X':` 换成后端永远不会发的 `case 'X_DEAD':`，看套件动不动；再加三道 `ctx` 闸门分支和一格已知有签字的对照。两遍共 **17 格 = 10 红 + 7 绿**（第一遍 14 格 = 10 红 + 4 绿，第二遍那三道 `ctx` 闸门全绿，逐条结论见下）。本单源码零改动、用例零改动。
