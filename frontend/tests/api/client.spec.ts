@@ -68,6 +68,46 @@ describe('api client', () => {
   })
 
   /**
+   * 三格**后端真发得出、此前一条用例都没提过**的代号。原文不是编的，是拿真 schema
+   * 直接量回来的：`LoginRequest({"remember": ""})` 出 `bool_parsing`（无 ctx）、
+   * `TagCreate({"name": "动作片", "color": "#67c23aff"})` 出 `string_pattern_mismatch`
+   * （ctx 带 pattern）、`VideoUpdate({"rating": 10**9})` 出 `less_than_equal`
+   * （`ctx.le` 量到的是 **5**，不是猜的 10）。loc 是 `model_validate` 直接调的形状
+   * `('remember',)`，经 FastAPI 走 HTTP 才会包成 `['body', 'remember']`，这里写后者。
+   *
+   * 断言取整条消息相等：只要有一格退回英文原文，这句就不相等。
+   */
+  it('布尔、格式、上限三格翻译各自说得出人话', async () => {
+    const detail = [
+      {
+        type: 'bool_parsing',
+        loc: ['body', 'remember'],
+        msg: 'Input should be a valid boolean, unable to interpret input',
+        input: '',
+      },
+      {
+        type: 'string_pattern_mismatch',
+        loc: ['body', 'color'],
+        msg: "String should match pattern '^#[0-9a-fA-F]{6}$'",
+        input: '#67c23aff',
+        ctx: { pattern: '^#[0-9a-fA-F]{6}$' },
+      },
+      {
+        type: 'less_than_equal',
+        loc: ['body', 'rating'],
+        msg: 'Input should be less than or equal to 5',
+        input: 1000000000,
+        ctx: { le: 5 },
+      },
+    ]
+
+    const message = await client
+      .put('/videos/1', {}, { adapter: failingAdapter(422, { detail }, 'Request failed') })
+      .then(() => null, (err: unknown) => (err as Error).message)
+    expect(message).toBe('remember 只能是 true 或 false；color 格式不正确；rating 不能大于 5')
+  })
+
+  /**
    * 同一个字段错两处，摊平之后是**同一句话**：`PUT /api/videos/1` 带 `{"tag_ids": ["a","b"]}`
    * 真后端回两条，loc 分别是 `('body','tag_ids',0)` 与 `('body','tag_ids',1)`（量到的原文，
    * `msg` 逐字相同），而 `fieldOf` 把尾巴上那个数字下标滤掉了，两边都剩 `tag_ids`。

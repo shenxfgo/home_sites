@@ -2,6 +2,18 @@
 
 ## 2026-10-13
 
+### 后端今天真发得出、用例一次也没提过的三格 422 翻译，各钉一颗（#221）
+
+- **这一单不在面板上，是 #217 普查里「有真产口、零签字」那三格的补钉子**：`bool_parsing`、`string_pattern_mismatch`、`less_than_equal`。零签字是量出来的不是推断的——`git grep -c -F "'bool_parsing'" HEAD -- frontend/tests` 这类查法三格各 **0 命中**，而同一棵树上已知有签字的 `string_too_short` **2 命中**。它和面板⑤正交：⑤ 处置的是另外四格**零产口**的翻译（等用户选），本单没动那四格，也没动 `src/api/client.ts` 一个字节。
+- **改前 7 格电池 = 6 绿 + 1 红，比普查时点名的三格更空**（单跑 `tests/api/client.spec.ts`，`client.ts` 每格改前复原、`finally` 里按 md5 复核）：V1/V2/V3 把三格 `case` 的代号名换成后端不会发的 `*_DEAD` → 全绿 11；V4 把那句措辞「不能大于」改成「不能超过」→ 也绿；V5 把 `ctx.le` 那道闸门换成 `ctx.ge` → 还是绿；只有 C1（对照，动已知有签字的 `string_too_short`）红 1，C2 绿。五格绿各自追问「能区分它的输入到不到达」，答案都是到达（三格的产口都真在，见下一条），所以是**洞**而不是等价变异——本仓记过的「整片绿的电池其实是用法子坏了」（#210/#211 各一次）这次不是坏，是真的没人签。
+- **三份原文都是对着真 schema 量的，不是编的**（`backend/.venv` 里 `model_validate`；FastAPI 落地时把 `loc` 包成 `['body', …]`）：`LoginRequest({"remember": ""})` → `{type: bool_parsing, loc: ['remember'], msg: 'Input should be a valid boolean, unable to interpret input'}`；`TagCreate({"name": "动作片", "color": "#67c23aff"})` → `string_pattern_mismatch` 带 `ctx.pattern = ^#[0-9a-fA-F]{6}$`（那个 8 位十六进制正是面板①那颗取色器每天发出去的形状）；`VideoUpdate({"rating": 10**9})` → `less_than_equal`，**`ctx.le` 量到的是 5**——不是从「评分一般上限 10」猜的。
+- **新增那一条用例断的是整条消息相等，不是包含**：三格拼成一句「remember 只能是 true 或 false；color 格式不正确；rating 不能大于 5」，捕获 `err.message` 再 `toBe(...)`。写成 `toThrow('格式不正确')` 的话，「字段名前缀丢了」和「三格串了序」都照样绿——与 #216 那条去重用例同一把尺子。
+- **改后 7 格 = 6 红 + 1 绿，那格绿的必须解释**：V1/V2/V3/V4/V5 与 C1 各红 1（`Tests 1 failed | 11 passed`），C2（把 `ctx.le === undefined ? fallback : …` 的退路摘掉、直接拼模板串）仍绿 12。它绿是因为**区分它的输入到不达**：pydantic 出 `less_than_equal` 必带 `ctx.le`（三份原文都带），而 `flattenDetail` 唯一的发信人就是 pydantic，所以这一格是**等价变异**、不是洞；那条退路留着，它护的是「缺 ctx 的形状不要渲染成 `undefined`」这条规矩，只是这一族用例钉不动它。
+- **`src/api/client.ts` 一字节未动**：改前改后同一份 md5 `bcec5c4188b00795f36118ecac9b8c6f`（105 行、纯 LF）——本单动的只有 `frontend/tests/`。
+- **一处流程记录，别把它当成套件挂了**：第一次把替身 e2e 从仓库根目录发起（`npx playwright test e2e --workers=1`），报的是 `Error: No tests found`（Playwright 的配置在 `frontend/`，根目录找不到那些 spec），而且退出码被管道吞成 0——红的是命令，不是测试。改到 `frontend/` 里跑才拿到读数。这是 #216 那条「先分清工具报错与测试红」的同类。
+- **读数**：Vitest **364 → 365**（新增那一条），`tests/api/client.spec.ts` 单跑 11 → **12 passed**；`npm run typecheck:test`（`vue-tsc -p tsconfig.vitest.json --noEmit`）干净；替身 e2e 在 `frontend/` 里 `npx playwright test e2e --workers=1` → **105 passed**，与 #216 那份读数一致；真后端 e2e **26** 沿用 #214（本单只动一份纯单测文件，为它起 uvicorn 并往开发库写真行不划算，这句就当成没量过的那一半记着）；后端全量 **1106 passed** / TOTAL **99.11%**（4730 句 / 42 缺）与 SQLite 那份 1105 + 1 skip 沿用 #215–#217，本单零后端源码、零后端用例；`backend/openapi.json` **5697 行 LF、md5 `7f96d240e61a944391d1013186fa14d5`**，与 #210–#217 同一份。
+- **账目**：`frontend/tests/api/client.spec.ts` 147 → **187** 行（`git diff --numstat` = 40 加 / 0 删）、md5 `2c4a1b884289cbb76c95062dbf737391` → `5c2880935738a71af0bc532f006ea5cf`、纯 LF（187 个 `\n`、0 个 `\r\n`）；`frontend/CLAUDE.md` 773 → **774** 行、md5 `a9e9ea6a200e7a53d778093b87352e34` → `209c89a9971f4eca4241088c5bdae14f`、纯 LF；`frontend/src/api/client.ts` **未动** 105 行 `bcec5c4188b00795f36118ecac9b8c6f`；`CHANGELOG.md` 2191 → **2203** 行（本条 12 行：标题 + 空行 + 9 条要点 + 条后空行），全文件纯 CRLF、裸 LF 0 个（本文件不登记自己的 md5：那个数就写在文件里，一写就变）；工作区除那两份已知的 autocrlf 幻影（`backend/src/api/transcode.py`、`backend/src/storage/__init__.py`）之外干净，探针与电池脚本都在系统临时目录、跑完即删。
+
 ### 422 翻译表的户口普查，外加取色器选出来的颜色一律存不下去（#217，只量不改，两处都进面板）
 
 - **这一单一行源码、一行用例也没动**：它是 #216 那条口径的延续——「还有哪些格子钉着后端不再产生的形状」，问的是普查而不是修复。普查做完，凡是处置方式会改到行为的都按规矩记进第六轮面板（①–⑤），交用户选。
