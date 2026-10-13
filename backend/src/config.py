@@ -58,9 +58,6 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
 
-    # Scan Settings
-    default_scan_interval: int = 3600
-
     # Auth Settings
     session_hours: int = 12
     remember_me_days: int = 30

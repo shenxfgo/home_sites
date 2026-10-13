@@ -117,3 +117,22 @@ def test_relative_transcode_output_dir_anchors_at_backend_not_cwd(tmp_path, monk
     assert anchored.transcode_output_dir == os.path.normpath(
         str(BACKEND_ROOT / "data" / "transcode")
     )
+
+
+def test_the_retired_scan_interval_env_key_is_ignored_not_fatal(monkeypatch):
+    """`DEFAULT_SCAN_INTERVAL` 这个配置项删掉了，别人机器上的 `.env` 里可能还留着。
+
+    两头都要钉住：构造不许因为那一行多出来的键而炸，而代码里确实不再有第二个「默认
+    3600」的出处——扫描间隔的默认值只剩设置表那一个家。
+
+    为什么留着的那行炸不掉，口径记在这儿：量过 `extra="ignore"` 和 `extra="forbid"`
+    两种写法，**结果一样**。pydantic-settings 的环境变量与 dotenv 两个源都只按已声明
+    的字段名去取值，模型根本没机会见到多余的键，所以 `model_config` 里那个 `extra`
+    不是这条路的保险。保险是这一行不再被任何人读。
+    """
+    from src.config import Settings
+
+    monkeypatch.setenv("DEFAULT_SCAN_INTERVAL", "3600")
+    settings = Settings(_env_file=None)
+
+    assert not hasattr(settings, "default_scan_interval")
