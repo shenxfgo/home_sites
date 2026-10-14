@@ -7,6 +7,15 @@ async function startPlayback(page: Page): Promise<void> {
   await page.goto('/videos/1')
   await page.locator('.preview-area').click()
   await expect(page.locator('.video-player')).toBeVisible()
+  // 可见 ≠ 元数据到达：拿到 duration 之前 seekToPosition（VideoPlayer.vue:339）直接 return，
+  // 第一次点进度条会被悄悄吞掉。并跑时这个窗口真吃得到（#227：同文件连跑 5 次红 1 次）。
+  await expect
+    .poll(() =>
+      page
+        .locator('.video-player video')
+        .evaluate((element) => Number.isFinite((element as HTMLVideoElement).duration)),
+    )
+    .toBe(true)
 }
 
 test.beforeEach(async ({ page }) => {
@@ -221,10 +230,13 @@ test('倍速、音量、字幕字号与延迟都会被记住', async ({ page }) 
 })
 
 test('字号与延迟改的是真实的 WebVTT 轨道，重开页面仍然生效', async ({ page }) => {
+  // expect.poll 不重试「函数自己抛了」：字幕流没回来时这里取不到 track，
+  // 当场断掉的是整条用例（#227 探针量到）。取不到就交回 null，让三条 poll 继续等。
   const cueStart = () =>
-    videoElement(page).evaluate(
-      (el) => ((el as HTMLVideoElement).textTracks[0].cues![0] as VTTCue).startTime,
-    )
+    videoElement(page).evaluate((el) => {
+      const track = (el as HTMLVideoElement).textTracks[0]
+      return track?.cues?.[0]?.startTime ?? null
+    })
 
   await page.locator('.subtitle-btn').click()
   await page.locator('.subtitle-menu-item').nth(1).click()
