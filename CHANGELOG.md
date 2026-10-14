@@ -1,5 +1,17 @@
 # 更新日志
 
+## 2026-10-14
+
+### ①甲落地：取色器回写的 8 位 hex 在前端截成 6 位，用户挑的颜色从此存得下（#218）
+
+- **这单的来源是第六块面板**：#217 出题为 ①，用户在对话框里选「甲：前端把取色器回写的 8 位截成 6 位」。#217 量到的事实是 `show-alpha` + `color-format="hex"` 下 element-plus 2.14.3 写回 `v-model` 的**永远是 8 位**——面板底部预设色块 + 页脚「确定」发出 `{"color":"#67c23aff"}`，手打 `#ff0000` 发 `{"color":"#ff0000ff"}`，把透明度条拉到一半发 `#7c6cff80`；而 `TagCreate` 的 pattern 是 `^#[0-9a-fA-F]{6}$`，三个全拒（对真 schema 量到的 `string_pattern_mismatch`）。也就是说「挑一个颜色」这个动作今天在界面上**完全存不下去**，不是某一格存不下去。
+- **改的逻辑只有一行**：`Tags.vue` 那枚 `formColor`（读写 computed）的 setter 变成 `formData.value.color = (value ?? DEFAULT_TAG_COLOR).slice(0, 7)`。兜的位置不是新挑的——#211 ②甲 已经证明取色器进表单**只有一个入口**（模板不再直接绑 `formData.color`），所以 `null` 和 8 位两种畸形共用同一条归一路径，而不是在两条提交路径上各写一遍；预览那个点也跟着走同一条。
+- **两条新用例分别钉两条提交路径**（`tests/views/Tags.spec.ts` 14 条 → **16 条**）：编辑那条断 `PUT` 的整份差量 `{ color: '#67c23a' }`，新建那条断 `createTag` 的整份载荷 `{ name: '新标签', color: '#ff0000' }`。**两处都断整份对象而不是 `objectContaining`**，否则「顺带把别的字段也改了」这一类看不出。喂进去的是取色器真发的那种字节（`#67c23aff` / `#ff0000ff`），不是自己编的 6 位。
+- **先红后绿（量过的，不是推的）**：两条用例先在改前的 `Tags.vue` 上跑，各红一次——编辑那条收到 `{"color": "#67c23aff"}`，新建那条收到 `{ name: '新标签', color: '#ff0000ff' }`；跑完按**开工时的字节**写回并 md5 复核（`git show HEAD:path` 这条路对 CRLF 文件不可靠，`Tags.vue` 是纯 CRLF）。
+- **签字电池 7 格：6 红 + 1 格该绿的对照**。改坏的分别是「撤掉 `.slice`」（= 开工前）、「改成 `.slice(0, 9)`（8 位照发）」、「改成 `.slice(1, 7)`（丢掉 `#`）」、「撤掉 `??` 只留 `.slice`」、「裁剪挪到编辑分支」「裁剪挪到创建分支」——**后两格各只红对面那一条用例**（V5 只红新建、V6 只红编辑），这就是第二条用例不是冗余的证据。那格绿的对照是给 getter 加一句恒不成立的 `?? null`：`formData.value.color` 声明是 `string` 且 setter 永不写 null，这一支永远走不到，是等价变异不是洞。每格跑前都把两个文件恢复到开工字节，结束时 md5 复核一致。
+- **替身 e2e 全量跑了 3 次**：第 2 次 **105 passed** 全绿，第 1、3 次各 104 passed / 1 failed，红固定在 `e2e/player.spec.ts:223`「字号与延迟改的是真实的 WebVTT 轨道，重开页面仍然生效」，报 `TypeError: Cannot read properties of undefined (reading 'startTime')`，栈顶是 :225 那个 `cueStart` 探针。 **这条与本单无关，而且不是含糊话**：单跑该文件 3/3 绿（本机 ShadowBot 的 `xbot_interpreter` 在场，负载把 reload 后的空窗拉开才露出来），且 ①甲 一个字节都没碰播放器、字幕、偏好三处。根因是 `expect.poll(cueStart)` 的探针本身不总额——`textTracks[0]` 还是 undefined 时它**直接抛**，而 `poll` 见到抛就终止而不是重试。修法（把探针做成 `?.cues?.[0]?.startTime ?? null`）另开一单，不在这里顺手改。
+- **账目**：`frontend/src/views/Tags.vue` 375 行、纯 CRLF（裸 LF 0 个）、10104 字节、md5 `9b66f247b42aa27b46f9cb203072e255`（一句 setter + docstring 里那段 #217 的实测口径）；`frontend/tests/views/Tags.spec.ts` 312 行、纯 LF、12909 字节、md5 `05b57dbe2474590915dbd97b4ef35796`；Vitest **365 → 367 passed**（37 份 spec），`npm run typecheck:test` 干净。后端这一头一行没动，所以 1106 passed / 99.11%、SQLite 1105 + 1 skip、真后端 e2e **26 passed（3.0m，⓪甲 本轮刚在同一条树上重跑）** 和 `openapi.json` 都是沿用。面板剩下的 ②③④⑤ 各是一单（#220 默认色收一处、#226 `tag_ids` 显式 null、#224 那句不可达的说明、#219 那四格零产口翻译）。
+
 ## 2026-10-13
 
 ### 这一轮的收尾：桌面上 31 个提交快进推上去，推之前在同一条树上重跑了前端那两条（#223，丙）

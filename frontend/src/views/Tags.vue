@@ -26,13 +26,18 @@ const formData = ref<{ name: string; color: string }>({
 /** 取色器的「清空」按钮发的是 null，而 `tags.color` 那一列是 NOT NULL（#211 ②甲）。
  *
  * 实测过一次 PUT body 就是 {"color": null}——服务端闸口现在回 422，那一单之前是 500。
- * 点清空在这里被归回默认色，于是「清空 = 用默认色」当场看得见（预览的点和第一个色块
- * 一起亮起来），而库里那一列压根没有「空」这个状态。
+ * 点清空在这里被归回默认色，于是「清空 = 用默认色」当场看得见（预览的点
+ * 和第一个色块一起亮起来），而库里那一列压根没有「空」这个状态。
+ *
+ * 同一个出口还有第二种形状：`show-alpha` 开着，element-plus 回写的是**8 位** hex
+ * （#217 实测三种 `#67c23aff` / `#ff0000ff` / `#7c6cff80`），而后端两处的 pattern 是
+ * `^#[0-9a-fA-F]{6}$`——于是一个人挑出来的颜色全都被 422 拒掉。alpha 在这里砍掉，
+ * 色相照旧（第六块选项板①甲）。
  */
 const formColor = computed<string | null>({
   get: () => formData.value.color,
   set: (value) => {
-    formData.value.color = value ?? DEFAULT_TAG_COLOR
+    formData.value.color = (value ?? DEFAULT_TAG_COLOR).slice(0, 7)
   },
 })
 

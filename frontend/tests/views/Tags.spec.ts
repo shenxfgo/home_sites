@@ -225,6 +225,44 @@ describe('Tags view', () => {
     wrapper.unmount()
   })
 
+  /**
+   * #217 量的形状：`show-alpha` + `color-format="hex"` 下 element-plus 回写的是**8 位** hex
+   * （实测三种 `#67c23aff` / `#ff0000ff` / `#7c6cff80`），而 `TagCreate`/`TagUpdate` 的
+   * pattern 是 `^#[0-9a-fA-F]{6}$`——界面选出来的颜色一律被 422 拒在门外。
+   *
+   * 断言取的是那次调用的**整个对象**：写成 `toHaveBeenCalledWith(1, expect.objectContaining(...))`
+   * 的话，多发两位 alpha 也照样绿。
+   */
+  it('cuts the alpha channel back off before sending the picked colour', async () => {
+    const wrapper = await mountTags([ACTION])
+
+    await clickInCard(wrapper, 0, '编辑')
+    wrapper.findComponent({ name: 'ElColorPicker' }).vm.$emit('update:modelValue', '#67c23aff')
+    await flushPromises()
+    await clickInDialog(wrapper, '更新')
+
+    expect(updateTag).toHaveBeenCalledWith(1, { color: '#67c23a' })
+    wrapper.unmount()
+  })
+
+  /**
+   * 同一件事的另一条写路径：创建走的是 `{ ...formData.value, name }`，和编辑那条
+   * `updateData.color` 是两次不同的组装，所以「只在其中一条分支上砍 alpha」这种改法
+   * 得有一条用例专门看着（电池 V5/V6 量的就是这个岔路）。
+   */
+  it('cuts the alpha channel off on the create path too', async () => {
+    const wrapper = await mountTags()
+    await openCreate(wrapper)
+
+    await nameField(wrapper).setValue('新标签')
+    wrapper.findComponent({ name: 'ElColorPicker' }).vm.$emit('update:modelValue', '#ff0000ff')
+    await flushPromises()
+    await clickInDialog(wrapper, '创建')
+
+    expect(createTag).toHaveBeenCalledWith({ name: '新标签', color: '#ff0000' })
+    wrapper.unmount()
+  })
+
   it('shows the server reason when the name is already taken', async () => {
     const wrapper = await mountTags()
     vi.mocked(createTag).mockRejectedValue(new Error('标签「动作片」已存在'))
