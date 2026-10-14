@@ -31,5 +31,12 @@ class UserPreference(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
+    # 第六块面板 ④ 用户选甲：这一行不动，说明留在代码里。`default=dict` 是**列**默认，
+    # 到 INSERT 才生效，所以一个没赋过 `prefs` 的实例上它是 `None`，`sorted(None)` 当场
+    # 抛 `TypeError('NoneType' object is not iterable)`——一条为调试而生的 repr 在调试现场炸。
+    # 今天够不着：全仓唯一的构造点 `preference_service.py:38` 永远显式传一个 dict（那一份
+    # `current` 上面有 `isinstance` 兜底），读回来的行由 `nullable=False` 和 M2 那条裸 SQL
+    # （`session.py:121` 只写 `{"theme": …}` 字面量）保证是对象。现状由
+    # `tests/test_models/test_model_reprs.py` 里那条 `needs_a_dict_already_present` 钉着。
     def __repr__(self) -> str:
         return f"<UserPreference(user_id={self.user_id}, keys={sorted(self.prefs)})>"
