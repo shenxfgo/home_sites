@@ -2,6 +2,20 @@
 
 ## 2026-10-14
 
+### ①甲落地：遍历器的总数下限改成钉死在实测值 70——#232 电池里那一格绿换成了红（#233）
+
+- **来源**：第九块面板 ①。#232 的电池 A1 量出一个洞：glob 少吃一份只有两条地址的模块时总数 68 仍然够得着「实测 −3」的下限 67，而按模块核对的那条规则又是从 `moduleKeys` 自己推导的，跟着一起少看一份。当时给的三格是「甲：总数钉死在实测值」「乙：给每份模块补一条至少 N 条地址的正向钉」「丙：维持留余量」，用户选**甲**。
+- **改的就是两处断言**：`frontend/tests/api/openapi-contract.spec.ts:164` 与 `frontend/tests/api/stub-coverage.spec.ts:99`，`expect(calls.length).toBeGreaterThanOrEqual(67)` → `expect(calls.length).toBe(70)`，两处各留一段说明为什么改成相等、代价写在旁边。源码、界面、替身夹具、后端一个字节都没动；`frontend/CLAUDE.md` 里那两句讲这两道地板的话同步改成量到的口径（原来写的是「按原有间距钉成实测 −3」）。
+- **改前先红一次、改后基线绿**：`npx vitest run tests/api` 基线 **54 passed（11 份文件全绿）**，读数 `toBe(70)` 与今天实测的 70 条一字不差。这一单的红不在基线里，在电池里。
+- **电池 4 格全红，一格都不用解释成洞或等价变异**（变异只动遍历器 `tests/api/emitted-calls.ts:41` 那行 glob 过滤；每格跑完按 md5 `9b6b00cf9e64e2e0b837a66dbefe3381` 还原，R4b 额外动 `src/api/scan.ts`，收尾复核两份文件 `== pristine? True`）：**R1 glob 少吃 `scan.ts`（2 条 → 68）红 2 份文件 2 条用例**，两条都报 `expected 68 to be 70`——**这一格就是 #232 的 A1，改前绿、改后红**，本单立单的理由。**R2 少吃 `preferences.ts`（2 条 → 68）红同样 2 份**，证明 R1 不是 `scan.ts` 专属（今天 2 条地址的模块就这两份）。**R3 少吃 `transcode.ts`（5 条 → 65）红 2 份**。**R4b 往 `scan.ts` 追加一条发真地址的封装（`client.get('/videos/1')`，71 条）红 2 份，而且只有这两条红**——这就是甲的代价的实测形状：以后每加一条合法封装，要改的是这两个数字，其余守卫一声不响。
+- **附带量到的一格：第一遍我把探针写错了，错得有价值**。R4 最初追加的是 `client.get('/scan/all')`，而后端声明的是 `POST /scan/all`，于是红的不是 2 条而是 **4 条**——除两处 `expected 71 to be 70`，另加 `openapi-contract` 的「每条记录地址都要对得上表上声明的路径与方法」和 `stub-coverage` 的「一次也没碰到那句未预置的接口兜底」（夹具只接 POST）。所以总数这颗钉子不是这一面上唯一的防线：方法写错、夹具没接，另两道各红各的。
+- **`paths.spec.ts` 在 R1 里依然 4 条全绿**——这条事实本身就是本单的说明书：那份「模块还在 glob 里却一次 `client` 都没打到就算红」是从 `moduleKeys` 推导的，glob 少吃到一份模块时它跟着少看一份。总数钉死之后这一格由 `:164` 与 `:99` 兜住；三处 `expect(moduleKeys.length).toBeGreaterThanOrEqual(12)` 本单没动，它不再是这个失效面上的唯一防线。
+- **读数**：`npx vitest run tests/api` **54 passed（11 份文件）**，整套 Vitest **371 passed（37 份文件）**，整套替身 e2e **107 passed（52.3s，默认并发）**，`vue-tsc -p tsconfig.vitest.json --noEmit` rc=0。后端不在这一单的路上：pytest、coverage 与 `openapi.json` 一个字节都没被读到手。
+- **面板状态**：第九块面板 ① 至此落地。②（替身夹具仍接得住 `/videos/new` 与 `/videos/new/{id}/viewed`，而前端今天发不出这两条——要不要加一道反向守卫「夹具接了但没人发 → 红」）用户答「**待你定：先量反向守卫的代价**」，所以开 **#234：只量不改**，量完把代价和路线交回给他。未推：两次授权（#192、#223）都已花掉。
+- **账目**：`frontend/tests/api/openapi-contract.spec.ts` 249 → **253 行**、纯 LF、12107 → **12559 字节**、md5 `23a0cb6878786b24eb578c30f59d1405` → `5bf486775c22eab2f232cedea133e3b2`；`frontend/tests/api/stub-coverage.spec.ts` 141 → **143 行**、纯 LF、7357 → **7545 字节**、md5 `45fb87a9cff7c2ad093db2d0f669557c` → `517c090b94fd1d05f4aef7b2d7e9da76`；`frontend/CLAUDE.md` **785 行**（行数没动）、纯 LF、145155 → **145448 字节**、md5 `4134282e070ad7bebef08a179f53744a` → `3785e5efb2304e9bcc907b7e8a6e5e0b`。本文件 2345 行、纯 CRLF、762742 字节。
+
+## 2026-10-14
+
 ### ①甲＋④甲落地：前端七条零调用方的请求封装删掉，遍历器的两处地板跟着实测重钉（#232）
 
 - **来源**：第八块面板。①「甲：七条全删」（连同只出现在它们签名里的类型 `SubtitleCreate` 一起走）、④「甲：删」`SOURCE_TYPE_ICONS`；同一块面板上 ②「乙：不给界面，维持扫描登记」与 ③「乙：维持现状」在本单的表现是**只删封装、界面与后端一个字节都不动**——字幕那两条（`addSubtitle` / `removeSubtitle`）和新片那两条（`getNewVideos` / `markVideoViewed`）正是这两题里「界面不要的那半接线」。

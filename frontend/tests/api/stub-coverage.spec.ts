@@ -94,7 +94,9 @@ describe('stub fixtures against the addresses the app emits', () => {
     // 两份守卫共用一份遍历器，但"共用"这件事本身也得钉住：glob 走错目录时这里会变成
     // 零条地址、零条违规的一份空测试（#121 的教训）。#232 删掉七条封装后实测 70 条地址。
     expect(moduleKeys.length).toBeGreaterThanOrEqual(12)
-    expect(calls.length).toBeGreaterThanOrEqual(67)
+    // #233 起总数钉死在实测值（另一处在 `openapi-contract.spec.ts`）：留余量时"glob 少吃到一份
+    // 模块"和"按模块核对"会一起看不见那一格（#232 电池 A1）。
+    expect(calls.length).toBe(70)
   })
 
   it('keeps the registered sample arguments alive', () => {

@@ -157,7 +157,11 @@ describe('api URLs against the backend route table', () => {
     // 下限挡的是"遍历器换形状了却没发现"：构造器那一段要是哪天不再返回字符串，
     // 记数会静默掉下来，所以这里同时钉住两者各自的数量。
     // #232 删掉七条零调用方的封装前实测 77 条（注释里的 76 已经少算一条），删后 70 条。
-    expect(calls.length).toBeGreaterThanOrEqual(67)
+    // #233（第九块面板 ①甲）把这条下限改成**钉死在实测值**：留余量的话，glob 少吃掉一份只有
+    // 两条地址的模块时 68 仍然够得着下限，而按模块核对的那条规则（`paths.spec.ts`）又是从
+    // `moduleKeys` 自己推导的，跟着一起少看一份——#232 电池 A1 量到的就是这一格。代价：以后每
+    // 加一条封装都要来这里改数，那一次红正是"知道"的那一环。
+    expect(calls.length).toBe(70)
     const wrongPrefix = calls.filter((call) => !call.url.startsWith('/api/'))
     expect(wrongPrefix.map(label)).toEqual([])
   })
