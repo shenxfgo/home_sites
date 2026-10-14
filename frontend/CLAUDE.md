@@ -689,10 +689,13 @@ tests/
 
 角色面在这份替身里是照抄中间件的：`role: 'member'` 之后，`/users`、`/settings` 连读都 403；写接口反过来按 `MEMBER_WRITE` 这条正则放行，它是 `backend/src/middleware/auth.py` 里 `MEMBER_WRITE_PATHS` 的一比一抄写，名单之外的写请求一律 403。账号表（owner / member / 一个停用号）与 `themes`（按账号存的主题）是跨请求的可变状态，所以"退出后换账号登录、主题跟着人走"这种用例能真跑。后端放行或新收一条写接口时，**`MEMBER_WRITE`、后端名单和 `e2e/roles.spec.ts` 的期望要一起改**，否则浏览器测的是替身，不是后端。
 
-播放器面（`e2e/player.spec.ts`）有两条硬约定，都是 #227 红过才知道的形状：
+播放器面有**两支文件**：`e2e/player.spec.ts`（元数据到齐之后的行为）和 `e2e/player-seek-before-metadata.spec.ts`（#229，专门走「进度条已经上屏、时长还不知道」那一格）。硬约定五条，前两条是 #227 红过才知道的，后三条是 #229 红过才知道的：
 
-- **碰进度条之前必须等元数据到达**。`VideoPlayer.vue` 的 `seekToPosition` 在 `duration` 还不是有限正数时直接 `return`：播放器已经可见、`<video>` 已经挂载，但浏览器还没拿到时长，这半秒里点上去的 seek 被**悄悄吞掉**——不报错、不排队、事后也不补。`startPlayback` 末尾因此多一条 `expect.poll(() => Number.isFinite(video.duration)).toBe(true)`。没有它：默认并发下 156 次跑红 2 次（两次是不同用例，都是「打开页面后第一次点进度条」那一格）；有它：同一个放大器 156 次跑 0 红，整套 105 条在默认 worker 数下一次跑绿（42.4s——此前记的「这一轮要 `--workers=1`」正是被这一格逼出来的，现在不需要了）。真人能不能撞上同一格：能。要不要由应用兜住（把 seek 记下来、元数据到了补一次）是产品决定，已作为**第七块面板 ①** 交给用户；本单只关测试面的 flake。
+- **碰进度条之前必须等元数据到达**。`VideoPlayer.vue` 的 `seekToPosition` 在 `duration` 还不是有限正数时直接 `return`：播放器已经可见、`<video>` 已经挂载，但浏览器还没拿到时长，这半秒里点上去的 seek 被**悄悄吞掉**——不报错、不排队、事后也不补。`startPlayback` 末尾因此多一条 `expect.poll(() => Number.isFinite(video.duration)).toBe(true)`。没有它：默认并发下 156 次跑红 2 次（两次是不同用例，都是「打开页面后第一次点进度条」那一格）；有它：同一个放大器 156 次跑 0 红，整套 105 条在默认 worker 数下一次跑绿（42.4s——此前记的「这一轮要 `--workers=1`」正是被这一格逼出来的，现在不需要了）。真人能不能撞上同一格：能。**（就地更正：这一格后来由第七块面板 ①甲 落地——#229 让 `VideoPlayer.vue` 把元数据到达前那次点击记下来、`loadedmetadata` 补做；`startPlayback` 那条 poll 留着，它挡的是「用例在元数据到达之前就动手」这个测试面的问题，和应用兜不兜无关。）**
 - **`expect.poll` 只重试「断言不成立」，不重试「被轮询的函数自己抛了」**（#227 探针量到：`TypeError` 直接断掉整条用例，不是继续等）。交给它轮询的探针必须是总额的：`cueStart` 原来写 `textTracks[0].cues![0]`，字幕流没回来时当场炸，改成 `track?.cues?.[0]?.startTime ?? null` 之后那三条 poll 才真的在等。
+- **「元数据到达之前点进度条」这一格不能住在 `player.spec.ts` 里**——那里的 `startPlayback`（#227 加的那条 `expect.poll`）会先把窗口关掉。开窗的办法是在 `mockApi(page)` **之后**再注册一次 `/api/videos/1/stream`：Playwright 按注册的逆序匹配，后注册的先吃到，睡完设定的延迟再 `route.fallback()` 把请求交回替身。那个一次性标志位必须在 `await` 之前置好，因为浏览器发的是 Range **那一对**请求，晚置就会两个都掐住。断言的前提同样要当场量：`expect.poll(() => hasDuration(page)).toBe(false)`——没有这一句，「点了没动」可能只是替身压根没回时长。`page.evaluate` 回不了 `NaN`（JSON 没有这个值），探针只能回布尔。
+- **「文件报不出可量的时长」（直播流给的是 `Infinity`）那一支只有真浏览器签得了**：`applyPendingSeek()` 里那道 `isMeasurable()` 判据被删掉时，Vitest 那条用例**照样全绿**——jsdom 把非有限的 `video.currentTime` 赋值钳成 `0`，而断言要的正是 `0`；Chromium 会抛 `TypeError: Failed to set the 'currentTime' property on 'HTMLMediaElement': The provided double value is non-finite.`。所以浏览器那条用例的判别器是 `page.on('pageerror')` 收集来的清单必须为空。宽度那句别当判别器：CSSOM 会把 `width: NaN%` 整个丢掉，`not.toContain('NaN')` 永远红不了，要正向断 `width: 0%`。
+- **`VideoPlayer.vue` 的挂起 seek 有三条语义**，改这一族之前先核对：只由 `loadedmetadata` 交还（所以「元数据永远不来」那一支**没有加超时**，那次点击就像以前一样被丢掉，只是现在是选择而不是机制）；`loadstart` 一律作废（换源之后那一次点击不属于这部片子）；补做**优先于**存下来的续播位置，`applyPendingSeek()` 返回 true 就不走 `resumeFromStart()`，因为「40 秒继续播放」那句 toast 不能把用户刚按下的 25 秒顶掉。
 
 ### 打真后端的端到端测试（`e2e/real/`）
 

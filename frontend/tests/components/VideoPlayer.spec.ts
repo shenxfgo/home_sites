@@ -167,7 +167,78 @@ describe('VideoPlayer seeking', () => {
 
     expect(video.currentTime).toBe(0)
   })
+
+  it('replays a bar click that landed before the duration was known', async () => {
+    const { wrapper, video, bar, measurable } = await mountBlindPlayer()
+
+    bar.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, bubbles: true }))
+    expect(video.currentTime).toBe(0)
+
+    await measurable(100)
+    expect(video.currentTime).toBe(50)
+    expect(wrapper.find('.progress-fill').attributes('style')).toContain('width: 50%')
+
+    // 松开指针后填充条留在补做的位置，不回弹到 0
+    bar.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, bubbles: true }))
+    expect(wrapper.find('.progress-fill').attributes('style')).toContain('width: 50%')
+  })
+
+  it('lets that click outrank the stored resume position', async () => {
+    const { wrapper, video, bar, measurable } = await mountBlindPlayer({ startAt: 40 })
+
+    bar.dispatchEvent(new MouseEvent('pointerdown', { clientX: 300, bubbles: true }))
+    await measurable(100)
+
+    // 40 秒那条 toast 不能把用户刚按下的 25 秒顶掉
+    expect(video.currentTime).toBe(25)
+    expect(wrapper.emitted('resumed')).toBeUndefined()
+  })
+
+  it('drops the remembered click when a new file starts loading', async () => {
+    const { video, bar, wrapper, measurable } = await mountBlindPlayer({ startAt: 40 })
+
+    bar.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, bubbles: true }))
+    await wrapper.find('video').trigger('loadstart')
+    await measurable(100)
+
+    // 这一击属于上一文件，不该落到新文件上；续播位置照旧
+    expect(video.currentTime).toBe(40)
+  })
+
+  it('keeps the click unreplayed when the file reports no measurable length', async () => {
+    const { wrapper, video, bar, measurable } = await mountBlindPlayer()
+
+    bar.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, bubbles: true }))
+    bar.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, bubbles: true }))
+    await measurable(Infinity)
+
+    // 直播这类量不出长度的文件：补做照样赋不动播放头，界面也不能跟着算出 NaN
+    expect(video.currentTime).toBe(0)
+    expect(wrapper.find('.progress-fill').attributes('style')).toContain('width: 0%')
+  })
 })
+
+/** 挂一个「进度条已上屏、时长还不知道」的播放器，由调用方决定元数据何时到达。 */
+async function mountBlindPlayer(extraProps: Record<string, unknown> = {}) {
+  const wrapper = mount(VideoPlayer, {
+    props: { videoId: 1, videoUrl: '/api/videos/1/stream', ...extraProps },
+    attachTo: document.body,
+  })
+  mounted.push(wrapper)
+  await flushPromises()
+
+  const video = wrapper.find('video').element as HTMLVideoElement
+  const player = wrapper.find('.video-player').element as HTMLElement
+  player.getBoundingClientRect = () => rect(0, 1200)
+  const bar = wrapper.find('.progress-bar').element as HTMLElement
+  bar.getBoundingClientRect = () => rect(200, 400)
+
+  const measurable = async (duration: number) => {
+    Object.defineProperty(video, 'duration', { value: duration, configurable: true })
+    await wrapper.find('video').trigger('loadedmetadata')
+  }
+  return { wrapper, video, bar, measurable }
+}
 
 describe('VideoPlayer A-B loop', () => {
   beforeEach(() => {

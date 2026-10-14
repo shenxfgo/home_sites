@@ -73,6 +73,8 @@ let controlsTimeout: ReturnType<typeof setTimeout> | null = null
 let progressInterval: ReturnType<typeof setInterval> | null = null
 let hasRecordedPlay = false
 let resumedThisLoad = false
+/** Rail position (percent) clicked before the file was measurable, replayed on `loadedmetadata`. */
+let pendingSeekPercent: number | null = null
 /** Cue times before any offset was applied, so moving the delay never drifts. */
 const cueBases = new Map<string, Array<[number, number]>>()
 
@@ -258,7 +260,29 @@ function handleMetadata() {
   duration.value = videoRef.value.duration
   loading.value = false
   applyPrefs()
-  resumeFromStart()
+  if (!applyPendingSeek()) resumeFromStart()
+}
+
+/**
+ * Replays the rail click that landed before the file was measurable.
+ *
+ * Returning true means this load's playhead is now where the user pointed, which
+ * outranks the stored resume position — and the toast that comes with it.
+ */
+function applyPendingSeek(): boolean {
+  const video = videoRef.value
+  if (pendingSeekPercent === null || !video) return false
+  const percent = pendingSeekPercent
+  pendingSeekPercent = null
+  if (!isMeasurable()) return false
+  video.currentTime = (percent / 100) * duration.value
+  handleTimeUpdate()
+  return true
+}
+
+/** Whether the file can be measured yet: a stream without an end reports Infinity. */
+function isMeasurable() {
+  return isFinite(duration.value) && duration.value > 0
 }
 
 /**
@@ -270,7 +294,7 @@ function handleMetadata() {
 function resumeFromStart() {
   const video = videoRef.value
   const at = props.startAt
-  if (resumedThisLoad || !video || at == null || !isFinite(duration.value) || duration.value <= 0) {
+  if (resumedThisLoad || !video || at == null || !isMeasurable()) {
     return
   }
   if (at <= 3 || at >= duration.value - 5) return
@@ -323,6 +347,7 @@ function handleLoadStart() {
   hasError.value = false
   errorMessage.value = ''
   resumedThisLoad = false
+  pendingSeekPercent = null
 }
 
 function handleLoadedData() {
@@ -339,14 +364,19 @@ function handleError(e: Event) {
 function seekToPosition(clientX: number) {
   const video = videoRef.value
   const bar = progressBarRef.value
-  if (!video || !bar || !isFinite(duration.value) || duration.value <= 0) return
+  if (!video || !bar) return
 
   const rect = bar.getBoundingClientRect()
   if (rect.width <= 0) return
 
-  const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-  seekPercent.value = percent * 100
-  video.currentTime = percent * duration.value
+  const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * 100
+  seekPercent.value = percent
+  if (!isMeasurable()) {
+    pendingSeekPercent = percent
+    return
+  }
+  // 走到这里挂起必已为空：让时长变得可量的只有 handleMetadata，它先一步把挂起交掉了
+  video.currentTime = (percent / 100) * duration.value
 }
 
 function startSeek(e: PointerEvent) {
