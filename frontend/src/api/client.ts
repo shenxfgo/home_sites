@@ -33,7 +33,13 @@ function fieldOf(item: ValidationErrorItem): string {
   return names[names.length - 1] ?? ''
 }
 
-/** pydantic 的错误类型 → 中文说法；没列出的退回后端原文，至少还是一句话。 */
+/**
+ * pydantic 的错误类型 → 中文说法；没列出的退回后端原文，至少还是一句话。
+ *
+ * 表里只留后端今天真发得出的代号（#219 按第六块面板 ⑤甲 删掉四格零产口的翻译）。
+ * 代价记在这儿：将来若给某个字段加 `gt=` / `lt=` 或列表长度约束，退回的就是 pydantic
+ * 自己那句原文，而它是英文的（实测 `Input should be greater than 5`）。
+ */
 function reasonOf(item: ValidationErrorItem): string {
   const ctx = (item.ctx && typeof item.ctx === 'object' ? item.ctx : {}) as Record<string, unknown>
   const fallback = typeof item.msg === 'string' && item.msg ? item.msg : '输入不合法'
@@ -46,18 +52,10 @@ function reasonOf(item: ValidationErrorItem): string {
       return typeof ctx.min_length === 'number' ? `长度至少 ${ctx.min_length} 个字符` : fallback
     case 'string_too_long':
       return typeof ctx.max_length === 'number' ? `长度最多 ${ctx.max_length} 个字符` : fallback
-    case 'too_short':
-      return typeof ctx.min_length === 'number' ? `至少需要 ${ctx.min_length} 项` : fallback
-    case 'too_long':
-      return typeof ctx.max_length === 'number' ? `最多 ${ctx.max_length} 项` : fallback
     case 'greater_than_equal':
       return ctx.ge === undefined ? fallback : `不能小于 ${ctx.ge}`
     case 'less_than_equal':
       return ctx.le === undefined ? fallback : `不能大于 ${ctx.le}`
-    case 'greater_than':
-      return ctx.gt === undefined ? fallback : `必须大于 ${ctx.gt}`
-    case 'less_than':
-      return ctx.lt === undefined ? fallback : `必须小于 ${ctx.lt}`
     case 'int_parsing':
       return '必须是整数'
     case 'bool_parsing':

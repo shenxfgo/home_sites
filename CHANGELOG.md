@@ -2,6 +2,18 @@
 
 ## 2026-10-14
 
+### ⑤甲落地：`reasonOf` 表里那四格零产口的翻译删掉了（#219）
+
+- **来源**：第六块面板 ⑤，用户选「甲：删掉」。#217 的普查和 #222 的电池两次量到同一件事——`too_short` / `too_long` / `greater_than` / `less_than` 这四格**既没有产口，也没有一条用例能改坏它**；#222 那 14 格里唯一四格绿的，正好就是这四格。
+- **产口这一头本轮重新量过（不是沿用 #217 的结论）**：`backend/openapi.json` 里 `minItems` = **0**、`maxItems` = **0**、`exclusiveMinimum` = **0**、`exclusiveMaximum` = **0**；同一份快照里 `minimum` 14、`maximum` 8、`minLength` 17、`maxLength` 22、`pattern` 3——留下的那几格（`greater_than_equal` / `less_than_equal` / `string_too_short` / `string_too_long` / `string_pattern_mismatch`）对得上这五种约束，删掉的那四格对的那两种约束**全仓一个也没声明过**。
+- **「哪种约束发哪个代号」不是猜的，是量出来的**：另开一份一次性探针（跑完即删）把 `Annotated[int, Field(gt=5)]`、`Field(lt=5)` 和列表上的 `min_length` 各喂一次坏值，收上来的 `type` 依次是 `greater_than`、`less_than`、`too_short`，`msg` 分别是 `Input should be greater than 5` / `Input should be less than 5` / `List should have at least 2 items after validation, not 1`。这一条同时把**删除的代价**摊开了：这四格的 `msg` 是 pydantic 自带的**英文**，兜住它们的 `default` 分支退回原文，于是将来谁真加了这类约束，界面上就是一句英文。
+- **这一单没有「先红后绿」可看，而这件事要说明白**：删除没有形状可红，和 #189、#205 那两单同一类。等价证据是两个读数相等：改前 367、改后 **367 passed（37 份 spec）**，`npm run typecheck:test` 干净；另一条独立的纸面证据同向——全仓 `tests/` + `e2e/` + `src/` grep 那四个代号名与它们的中文措辞（`至少需要 … 项` / `必须大于` / `必须小于`），命中只有 `client.ts` 自己那八行，唯一断言了 `长度最多 50 个字符` 的那条用例走的是留在表里的 `string_too_long`。
+- **代价写在函数头上，不只写在流水账里**：`reasonOf` 的注释现在明说「表里只留后端今天真发得出的代号」以及那句英文退回什么时候会露出来。面板 ⑤ 的乙（加第六条静态守卫，从 `openapi.json` 推导可发代号集合）本来拦的就是这件事，用户选的是甲，所以**这一格今天没有人拦**——这是选择的口径，不是遗漏。
+- **替身 e2e 与真后端 e2e 这一单没重跑，理由是量的**：`e2e/fixtures.ts` 里 `422` 出现 **0 次**，替身面根本走不到 `reasonOf`；真后端那 26 条本轮 ⓪甲 已在同一棵树上跑过（**26 passed / 3.0m**），它们钉的是 `cannot_be_cleared` 与后端自己的中文 detail，不是这四格，且 `e2e/` 全目录搜那四个代号名与中文措辞零命中。
+- **账目**：`frontend/src/api/client.ts` 105 → **103 行**、纯 LF（裸 CR 0 个）、4086 字节、md5 `778dcc06e9a616bb3ba276839467eae6`（八行 `case` 删除，函数头那句单行注释换成一段说明代价的块注释）；`frontend/CLAUDE.md` 里 #217、#222 那两条记录各补一句处置去向。面板 ⑤ 至此消费完，剩下的 ②③④ 是 #220（默认色收一处）、#226（`tag_ids` 显式 null）、#224（那句不可达的说明）。
+
+## 2026-10-14
+
 ### ①甲落地：取色器回写的 8 位 hex 在前端截成 6 位，用户挑的颜色从此存得下（#218）
 
 - **这单的来源是第六块面板**：#217 出题为 ①，用户在对话框里选「甲：前端把取色器回写的 8 位截成 6 位」。#217 量到的事实是 `show-alpha` + `color-format="hex"` 下 element-plus 2.14.3 写回 `v-model` 的**永远是 8 位**——面板底部预设色块 + 页脚「确定」发出 `{"color":"#67c23aff"}`，手打 `#ff0000` 发 `{"color":"#ff0000ff"}`，把透明度条拉到一半发 `#7c6cff80`；而 `TagCreate` 的 pattern 是 `^#[0-9a-fA-F]{6}$`，三个全拒（对真 schema 量到的 `string_pattern_mismatch`）。也就是说「挑一个颜色」这个动作今天在界面上**完全存不下去**，不是某一格存不下去。
