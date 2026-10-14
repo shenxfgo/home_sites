@@ -71,9 +71,9 @@ async def test_an_empty_tag_list_clears_the_links_and_leaves_the_tag_rows_alone(
 ):
     """`tag_ids: []` 是一次真正的写，不是"什么都不做"。
 
-    空串和 `null` 在这一路上是两种东西（下面那一条钉另一半），而且拆标签只拆链接：标签本身还得在
-    `tags` 表里，别的影片上的同名关系不能跟着掉。摘掉 `video.tags = tags` 前面那句查重、或把
-    `if tag_ids is not None` 写成 `if tag_ids`，红的是这一条。
+    `null` 与空串在这一路上是**同一件事**（#226 ③甲 起；另一半由后面那三条钉着），而拆标签只拆
+    链接：标签本身还得在 `tags` 表里，别的影片上的同名关系不能跟着掉。摘掉 `video.tags = tags`
+    前面那句查重、或把"这条请求带了 tag_ids"那道判据写成看值不看键，红的是这一条。
     """
     video = await ensure_video(db_session)
     keep = await _tag(client, "纪录片")
@@ -251,23 +251,72 @@ async def test_a_tag_only_put_leaves_updated_at_where_it_was_while_a_title_edit_
 
 
 @pytest.mark.asyncio
-async def test_an_explicit_null_tag_list_is_refused_rather_than_read_as_no_change(
+async def test_an_explicit_null_tag_list_clears_the_tags_rather_than_being_refused(
     client, db_session
 ):
-    """`{"tag_ids": null}` 是 400，不是"什么也不改"——它和 `[]` 是两回事。
+    """`{"tag_ids": null}` 是一次真写：把标签清空，不再是那句 400（#226 ③甲）。
 
-    闸门那句是 `if not update_data and tag_ids is None`：`model_dump(exclude_unset=True)`
-    让"没带这个键"和"带了 null"都落到 `tag_ids is None`，于是两者都 400；
-    而 `[]` 是带了、且不是 None，走成真写。
-    一个客户端如果把 `undefined` 序列化成 `null`，它想表达的"只改别的字段"会被拒在门外，这一条钉住
-    今天确实如此。
+    `VideoUpdate.tag_ids` 声明的是 `list[int] | None`，null 是契约里合法的输入，可它从前和
+    "根本没带这个键"一起被 `update_data.pop("tag_ids", None)` 收进同一个 `None`，于是两者同回
+    400——一个合法的形状在这条路上没有出口。判据改成**键在不在**：带了 null 等于带了空串，
+    没带才是"这一串不改"。标签行本身照旧留在 `tags` 表里，与 `[]` 那一条同一口径。
     """
     video = await ensure_video(db_session)
+    keep = await _tag(client, "被摘掉的名字")
+    await client.put(f"/api/videos/{video.id}", json={"tag_ids": [keep["id"]]})
 
     response = await client.put(f"/api/videos/{video.id}", json={"tag_ids": None})
 
-    assert response.status_code == 400, response.text
-    assert response.json()["detail"], "400 却没人说出原因"
+    assert response.status_code == 200, response.text
+    assert response.json()["tags"] == [], response.json()["tags"]
+    assert await _link_ids(db_session, video.id) == []
+    rows = await db_session.execute(select(Tag.id).where(Tag.id == keep["id"]))
+    assert rows.scalar_one() == keep["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_null_tag_list_beside_a_field_writes_both_halves(
+    client, db_session
+):
+    """`{"title": …, "tag_ids": null}` 两半都写——这就是 ③甲 接受的价格，写在用例里。
+
+    一个把 `undefined` 序列化成 `null` 的客户端本来想说的是"只改标题"，今天它同时把标签摘空了。
+    这一条钉的是**处置之后**的形状：null 与 `[]` 同义，不分"只有标签"和"连着字段一起"两种场合。
+    """
+    video = await ensure_video(db_session)
+    tag = await _tag(client, "跟着掉的")
+    await client.put(f"/api/videos/{video.id}", json={"tag_ids": [tag["id"]]})
+
+    response = await client.put(
+        f"/api/videos/{video.id}", json={"title": "换了名也摘了标签", "tag_ids": None}
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["title"] == "换了名也摘了标签", body
+    assert body["tags"] == [], body["tags"]
+    assert await _link_ids(db_session, video.id) == []
+
+
+@pytest.mark.asyncio
+async def test_omitting_the_tag_ids_key_still_leaves_the_existing_tags_alone(
+    client, db_session
+):
+    """另一半必须同时钉住，否则这一单只是把 400 换成了误删：**没带这个键就是不改**。
+
+    `{"title": …}` 单独发一次，原有的标签一根汗毛不动。把判据从"键在不在"退回"值是不是 null"，
+    红的就是这一条和上面那两条里的对应一半。
+    """
+    video = await ensure_video(db_session)
+    tag = await _tag(client, "不该动")
+    await client.put(f"/api/videos/{video.id}", json={"tag_ids": [tag["id"]]})
+
+    response = await client.put(f"/api/videos/{video.id}", json={"title": "只改标题"})
+
+    assert response.status_code == 200, response.text
+    assert [t["id"] for t in response.json()["tags"]] == [tag["id"]], response.json()["tags"]
+    assert await _link_ids(db_session, video.id) == [tag["id"]]
+
 
 
 @pytest.mark.asyncio

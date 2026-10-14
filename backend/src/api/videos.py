@@ -240,10 +240,14 @@ async def update_video(
     """Update video information."""
     update_data = data.model_dump(exclude_unset=True)
 
-    # Handle tag assignment separately
-    tag_ids = update_data.pop("tag_ids", None)
+    # 标签那一半看的是**键在不在**，不是值是不是 null（#226 ③甲）。`VideoUpdate.tag_ids`
+    # 声明的是 `list[int] | None`，null 是契约里合法的输入，意思是"这一串摘空"，和 `[]`
+    # 同一件事；"这一串不改"从此只有一种写法——不带这个键。从前那句 `pop(..., None)` 让
+    # "带了 null"和"根本没带"落到同一个 None，于是前者单独发时吃 400、跟着字段发时被静默丢掉。
+    tags_given = "tag_ids" in update_data
+    tag_ids = update_data.pop("tag_ids", None) or []
 
-    if not update_data and tag_ids is None:
+    if not update_data and not tags_given:
         raise HTTPException(status_code=400, detail="没有需要更新的字段")
 
     # Resolve the tag list first: a request that names a tag which no longer exists is
@@ -251,7 +255,7 @@ async def update_video(
     # replaces the entire set, so an unknown id left unchecked would quietly wipe the
     # tags this video already had.
     new_tags: list[Tag] | None = None
-    if tag_ids is not None:
+    if tags_given:
         result = await session.execute(select(Tag).where(Tag.id.in_(tag_ids)))
         new_tags = list(result.scalars().all())
         missing = sorted(set(tag_ids) - {tag.id for tag in new_tags})

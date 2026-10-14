@@ -2,6 +2,21 @@
 
 ## 2026-10-14
 
+### ③甲落地：`VideoUpdate.tag_ids` 的显式 null 从此读作「清空标签」（#226）
+
+- **来源**：第六块面板 ③，用户选「甲：`VideoUpdate.tag_ids` 的显式 null 当成清空标签」。这一题是 #220 拆出来的——收 `#409eff` 那三处时量到 `tag_ids` 上「带了 null」和「根本没带」在路由里塌成同一个 `None`；#217 的普查把它记成了「null≡省略」那一格。
+- **改前的两块形状都是当场跑出来的，不是推的**：单独发 `{"tag_ids": null}` 吃 **400「没有需要更新的字段」**；跟着字段发 `{"title": …, "tag_ids": null}` 回 **200，标题写进库里、标签那一半被静默丢掉**。后半比前半坏——接口回的话和库里做的事各说各话，与 #176 那半截行、#177 那条假进度同一族。这是 #211 那一族（差量 PUT 的显式 null 打穿列）留在 `tag_ids` 上的最后半格。
+- **改的代码是一句判据**：`update_data.pop("tag_ids", None)` 之前先记 `tags_given = "tag_ids" in update_data`，闸门改成 `if not update_data and not tags_given`，写的那一半改成 `if tags_given`。从此 `null` ≡ `[]` ≡ 一次**清空**的真写，而「这一串不改」只有一种写法——**不带这个键**。`src/api/videos.py` 句数 **156 → 157**，改前改后都是 0 缺 / 100%。
+- **接受的价格钉在用例里，不只写在这里**：`{"title": …, "tag_ids": null}` 从今天起是「改标题**并把标签摘空**」，两半都真写（`test_a_null_tag_list_beside_a_field_writes_both_halves`）。这是把 null 定义成清空的**后果**，不是本单新加的行为。前端不付这一笔，而且是量过的不是猜的：`VideoDetail.vue` 只发字段半，`src/api/tags.ts:36` 走的是 append 那头，真后端 e2e 里两条裸 `JSON.stringify` 发的是 `{tag_ids: [一个号]}`（`library.real.spec.ts:371` 与 `:691`），全仓没有一个界面发得出 PUT 的 null（#217 逐个数过）——**所以这一单没有重跑 26 条真后端 e2e 和 105 条替身 e2e 的理由，理由就是这三处 grep**。
+- **用例 11 条 → 13 条，三颗钉子各管一句**（`tests/test_api/test_video_tag_put_endpoint.py`）：null 清空（200 + 响应里 `tags` 是空的 + `video_tags` 里没有链接行 + `tags` 表里那个标签**还在**）、null 跟着字段（两半都写）、**不带这个键就是不改**（原有的标签一条不少）。顺带就地更正 `[]` 那条的 docstring——它原先写着「`null` 与空串在这一路上是两回事」，那句话从今天起是错的，新的 docstring 同时把「另一半由后面那三条钉着」写清楚。
+- **改后电池 6 格 = 基线 + 5 格**（内存 SQLite，每格跑前按开工字节还原，结束 md5 复核 byte-identical）：基线 **1107 passed + 1 skipped（118.00s）**；**V0 判据整个退回改前 → 2 红**（这一格就是「红在改前的 HEAD 上」，当场量到）；**V1 判据改成看值 `bool(tag_ids)` → 3 红**，多出来的那颗是 `[]`——它会被当成「没带」；**V2 闸门少掉字段那一半 → 10 红**；**V3 只把「写的那一半」改成看值 → 1 红**，红的正是「不带这个键就是不改」那条，它是这半句在全库唯一的签字；**V4 等价对照 `or [] → or list()` → 全绿**，这是设计好的对照，不是洞。
+- **全量、快照与静态检查**：PG 全量 **1108 passed / 384.25s**，TOTAL **4733 句 / 42 未覆盖 / 99.11%**，那 42 格清单与 #220 那份一字不差（`api/users.py 155-156`、`e2e_seed.py 181-284` 那 39 格故意留白、`video_service.py 404`）；SQLite 分支同日 **1107 passed + 1 skipped**；最终树上 `--collect-only` **1108**（1106 → 1108 正是本单两条新入口，#220 那单是 0 条）。`backend/openapi.json` 用 `--out` 指到临时文件重导一次再 `cmp`：**逐字节相同**（md5 `7f96d240e61a944391d1013186fa14d5` / 5697 行 / 148601 字节），符合预期——本单没动任何声明，只动路由函数体里那句判据。`ruff check` 两份文件干净。
+- **为什么覆盖率对这一格一个字也没说**：`src/api/videos.py` 改前改后都是 100%，而那两种错误形状各自躺在同一句 `if` 的两个分支里——两条分支都被走过，只是走的时候没带 null。与 #220 同一句话：**这一单买的是签字的形状，不是覆盖的形状**；真正的证据是 V0 那 2 红，不是「全量绿」。
+- **账目**：`backend/src/api/videos.py` 333 → **337 行**、纯 CRLF（裸 LF 0 个）、11591 → **12071 字节**、md5 `aef05dabf527548fd397bcf3995a355f` → `9e0e5be0fc3b444475e13e5d485ac0f5`（改前那一份是 `git show HEAD:` 的库内字节按 `core.autocrlf` 还原成工作树形状后量的，不是凭记忆抄的）；`backend/tests/test_api/test_video_tag_put_endpoint.py` 289 → **338 行**、纯 LF（裸 CR 0 个）、14144 → **16241 字节**、md5 `9dccf9f24e1001e90c4a2171afe29b8d` → `dc910a34255ae2e92f760c71c838e0f8`（11 条 → 13 条，用 `--collect-only` 逐文件数过）；`backend/CLAUDE.md` **874 行**、纯 LF、**228192 字节**、md5 `6e0230d5f4fc9327e0a6565e19b38ebc`（这一族的头、#211 那句「`null` 仍然 400」的处置、薄位置清单顶部各动了一处）。本文件 2276 行、纯 CRLF、734113 字节。
+- **面板状态**：第六块面板 ①②③⑤ 已落地（#218 / #220 / 本单 / #219），④甲 = #224（`UserPreference` 的 repr 不动、只留说明，因为那条分支在真代码路径上够不着）随后单独一单，⑪甲 是「不做事」。这一格之后面板上没有待答的题了。
+
+## 2026-10-14
+
 ### ②甲落地：默认标签色后端三处收一处，`models/tag.py` 当家（#220）
 
 - **来源**：第六块面板 ②，用户选「甲：后端那三处 `#409eff` 收成一处，`models/tag.py` 当家」。**开工前先量了这三处各自今天被谁签着**（内存 SQLite 整仓，四格 = 基线 + 三格各改坏一处，每格跑前按开工字节还原）：基线 **1105 passed + 1 skipped（111.06s）**；改请求模型默认（当时 `api/tags.py:24`）**3 红**——`test_api/test_tags.py::test_colour_defaults_when_the_body_omits_it` 加 `test_openapi_snapshot.py` 那两条；改列默认（当时 `models/tag.py:25` 的 `default="#409eff"`）**整片绿**；改服务层形参默认（当时 `tag_service.py:52`）**整片绿**。
