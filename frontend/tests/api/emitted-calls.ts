@@ -10,8 +10,10 @@ import client from '@/api/client'
  *
  * 拿法是不 mock：把 `client.defaults.adapter` 换成记录器，axios 自己先把 `baseURL + url`
  * 拼成完整地址，所以拿到的是浏览器真正请求的那一句 `/api/...`（`config.url` 到适配器这里
- * 还没拼前缀，实测是 `/videos/new`，所以要走 `client.getUri(config)`；原文也一并记下来，
- * 给 #121 那三条形状规则用）。
+ * 还没拼前缀，所以要走 `client.getUri(config)`；原文也一并记下来，给 #121 那三条形状规则用）。
+ * 举一条实测的：`listSubtitles` 到适配器这里是 `/videos/1/subtitles`，`getUri` 拼完才是
+ * `/api/videos/1/subtitles`。（#232 删掉 `getNewVideos` 之前这里举的是 `/videos/new`，那条
+ * 地址今天前端已经发不出了，换成还发得出的一条。）
  *
  * 模块清单从文件系统推导，不手写——#121 的教训：手写 `MODULES` 那份声称"遍历所有 api 模块"，
  * 实际只有 8 份，漏掉的连双前缀护栏都没有。glob 让"漏一份"在结构上不可能。
