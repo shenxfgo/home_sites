@@ -43,10 +43,3 @@ export const SOURCE_TYPE_LABELS: Record<SourceType, string> = {
   nas: 'NAS',
   minio: 'S3 / MinIO',
 }
-
-/** Icon name for each source type. */
-export const SOURCE_TYPE_ICONS: Record<SourceType, string> = {
-  local: 'FolderOpened',
-  nas: 'Connection',
-  minio: 'Box',
-}

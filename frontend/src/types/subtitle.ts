@@ -8,13 +8,6 @@ export interface Subtitle {
   created_at: string
 }
 
-/** Request body for registering an existing subtitle file as a track. */
-export interface SubtitleCreate {
-  filepath: string
-  language?: string | null
-  label?: string | null
-}
-
 /** A subtitle track muxed into the video file itself. */
 export interface EmbeddedSubtitleTrack {
   stream_index: number

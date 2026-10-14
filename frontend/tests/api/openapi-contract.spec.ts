@@ -153,10 +153,11 @@ describe('api URLs against the backend route table', () => {
   })
 
   it('walks the modules and reaches the real /api prefix', () => {
-    // #123 实测 12→14 份模块共 72 次请求；#124 又记上 4 条不经过 axios 的构造器，共 76 次。
+    // #123 实测 12→14 份模块共 72 次请求；#124 又记上 4 条不经过 axios 的构造器。
     // 下限挡的是"遍历器换形状了却没发现"：构造器那一段要是哪天不再返回字符串，
     // 记数会静默掉下来，所以这里同时钉住两者各自的数量。
-    expect(calls.length).toBeGreaterThanOrEqual(74)
+    // #232 删掉七条零调用方的封装前实测 77 条（注释里的 76 已经少算一条），删后 70 条。
+    expect(calls.length).toBeGreaterThanOrEqual(67)
     const wrongPrefix = calls.filter((call) => !call.url.startsWith('/api/'))
     expect(wrongPrefix.map(label)).toEqual([])
   })

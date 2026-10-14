@@ -92,9 +92,9 @@ beforeAll(async () => {
 describe('stub fixtures against the addresses the app emits', () => {
   it('walks the same set of modules as the route-table guard', () => {
     // 两份守卫共用一份遍历器，但"共用"这件事本身也得钉住：glob 走错目录时这里会变成
-    // 零条地址、零条违规的一份空测试（#121 的教训）。实测 14 份模块共 76 条地址。
+    // 零条地址、零条违规的一份空测试（#121 的教训）。#232 删掉七条封装后实测 70 条地址。
     expect(moduleKeys.length).toBeGreaterThanOrEqual(12)
-    expect(calls.length).toBeGreaterThanOrEqual(74)
+    expect(calls.length).toBeGreaterThanOrEqual(67)
   })
 
   it('keeps the registered sample arguments alive', () => {
