@@ -3,7 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.models.tag import Tag, video_tags
+from src.models.tag import DEFAULT_TAG_COLOR, Tag, video_tags
 from src.models.video import Video
 
 
@@ -49,7 +49,7 @@ class TagService:
             raise BlankTagNameError("标签名不能为空")
         return cleaned
 
-    async def create(self, name: str, color: str = "#409eff") -> Tag:
+    async def create(self, name: str, color: str = DEFAULT_TAG_COLOR) -> Tag:
         """Create a new tag."""
         name = self._clean_name(name)
         if await self._existing_tag_id(name) is not None:

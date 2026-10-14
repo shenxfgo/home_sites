@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.videos import VideoResponse
 from src.database import get_session
+from src.models.tag import DEFAULT_TAG_COLOR
 from src.services.tag_service import BlankTagNameError, DuplicateTagNameError, TagService
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
@@ -21,7 +22,7 @@ class TagCreate(BaseModel):
     """Request model for creating a tag."""
 
     name: str = Field(..., min_length=1, max_length=100)
-    color: str = Field(default="#409eff", pattern="^#[0-9a-fA-F]{6}$")
+    color: str = Field(default=DEFAULT_TAG_COLOR, pattern="^#[0-9a-fA-F]{6}$")
 
 
 class TagUpdate(BaseModel):

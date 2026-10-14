@@ -480,8 +480,14 @@ async def test_scan_records_series_coordinates_and_one_shared_tag(db_session):
         assert [tag.name for tag in first.tags] == ["海边的日子", "NC-Raws"]
         assert by_title["夜空列车"].tags == []
 
-        tags = await db_session.execute(select(Tag).where(Tag.name == "海边的日子"))
-        assert len(tags.scalars().all()) == 1
+        tags = (
+            await db_session.execute(select(Tag).where(Tag.name == "海边的日子"))
+        ).scalars().all()
+        assert len(tags) == 1
+        # 自动建的标签不走 `TagService.create`，这一格颜色的唯一出处就是列默认（#220 ②甲）。
+        # 这里写死字面量而不是引用 `DEFAULT_TAG_COLOR`，是量出来的：拿常量比过去的那一版，
+        # 把常量整个改坏时这一格不红——自己和自己对上了，等于没签。
+        assert tags[0].color == "#409eff"
 
 
 @pytest.mark.asyncio

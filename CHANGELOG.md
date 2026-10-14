@@ -2,6 +2,19 @@
 
 ## 2026-10-14
 
+### ②甲落地：默认标签色后端三处收一处，`models/tag.py` 当家（#220）
+
+- **来源**：第六块面板 ②，用户选「甲：后端那三处 `#409eff` 收成一处，`models/tag.py` 当家」。**开工前先量了这三处各自今天被谁签着**（内存 SQLite 整仓，四格 = 基线 + 三格各改坏一处，每格跑前按开工字节还原）：基线 **1105 passed + 1 skipped（111.06s）**；改请求模型默认（当时 `api/tags.py:24`）**3 红**——`test_api/test_tags.py::test_colour_defaults_when_the_body_omits_it` 加 `test_openapi_snapshot.py` 那两条；改列默认（当时 `models/tag.py:25` 的 `default="#409eff"`）**整片绿**；改服务层形参默认（当时 `tag_service.py:52`）**整片绿**。
+- **两片绿是两种绿，这一分别决定了本单要写几行码**：列默认那片是**够得着的洞**——`scan_service.py:144` 那句 `Tag(name=name)` 根本不走 `TagService.create`，扫描自动建出来的标签颜色**只可能来自列默认**，而全仓没有一条用例看过那一格的颜色。形参那片是**压根没人敲得着**——`TagService` 今天只在 `api/tags.py:77` 实例化一次，`create` 只在 `:99` 被调用一次且永远显式带 `color=data.color`，那条默认值全仓没有第二个调用方；它是不可达，不是洞。**所以「三处收一处」若只收口不补钉子，那个唯一的家仍旧只有请求模型那三格签着，M1 那片洞原样留着。**
+- **改的代码一共四行**：`models/tag.py` 在 import 之后新增模块常量 `DEFAULT_TAG_COLOR = "#409eff"`（顶上带一段说明「三个里唯一真往库里写颜色的是这一处」的注释），列默认、`TagCreate.color`、`TagService.create` 的形参默认各问它一次；`api/tags.py` 与 `tag_service.py` 各加一条 import。改完 `grep -rn -i 409eff backend/src` 命中只剩**那一个家**。全仓剩下的别处都量过：`frontend/src/views/Tags.vue:18` 前端自己的同名常量（面板问的是后端那三处，甲没管前端，本单不动，于是前端与后端今天仍是两个家）、`frontend/src/components/NotificationCenter.vue:159` 的 `new_video: '#409eff'` 是通知类型的强调色而不是标签默认色、以及测试里那些**故意写死的字面量**（`backend/tests/test_api/test_tags.py:15` 的 `DEFAULT_COLOR`、`test_db_transfer.py` 的播种行、本单新加那一格）。
+- **新钉子踩了自己一个坑，记下来是因为它差点让整单白做**：第一版把那句写成 `assert tags[0].color == DEFAULT_TAG_COLOR`——拿常量去比常量，把常量整个改坏时这一格**不红**，自己和自己对上了，等于没签。当场被下面 P1 的红数抓住（只红 3 条而不是 4 条），改成写死 `== "#409eff"` 之后才红。这句话就抄在那条用例旁边的注释里，因为下一个想「顺手把它换成常量」的人从代码上看不出任何区别。
+- **改后电池 5 格 = 基线 + 4 格**（同一份脚本、同样每格前还原开工字节、结束时 md5 复核 byte-identical）：基线 **1105 passed + 1 skipped（117.69s）**。**P1 改那唯一的家 → 4 failed**（`test_tags` 那条 + `test_openapi_snapshot` 两条 + 新的扫描那条）——这一格就是「收口没丢签字、洞也补上了」的证明：开工前 M2 的三条红一条没少，外加把 M1 那片绿变成了一格红。**P2 让请求模型重新写死一个字面量 → 3 failed**，说明 `api/tags.py` 那条 import 真在承重。**P4 让列默认重新写死一个字面量（常量还在）→ 1 failed**，红的正是新加的那格——它是列默认今天**唯一**的签字。**P3 让服务层形参重新写死一个字面量 → 整片绿**，与开工前的 M3 同因（不可达），所以那一处 import 是**口径**不是闸门：这一格今天没有人拦，这是选择的记录，不是遗漏。
+- **全量、快照与静态检查**：PG 全量 **1106 passed / 839.93s**，TOTAL **4732 句 / 42 未覆盖 / 99.11%**——句数 **+2**（`models/tag.py` 15→16 的那行常量赋值、`api/tags.py` 86→87 的那条 import，逐文件用 coverage 自己的 `PythonParser` 量过），42 格未覆盖清单与 #215 那份一字不差；用例总数没变，最终树上 `pytest --collect-only` 仍报 **1106 collected**，三个文件的定点跑是 **87 passed（6.75s，内存 SQLite）**。`backend/openapi.json` **重新导出后逐字节相同**（md5 `7f96d240e61a944391d1013186fa14d5`，全文 `409eff` 命中 1 次），因为进快照的是渲染后的默认值而那个值一个字符也没动。`ruff check` 干净；mypy 报 34 errors / 13 files，在一次性 worktree 里对 HEAD 量到**同一个数**，所以那是本单之前就存在的基线，不是新引入的。
+- **为什么 PG 全量之后没再重跑一次**：PG 那一趟之后树上只剩一次改动，而且落在测试文件内部（把那句自比常量的断言换成字面量、补三行注释）。coverage 只统计 `src/`，所以句数与百分比不受影响；用例数由 `--collect-only` 在最终树上复量过（1106）。**这一单真正的力气是测试里那一红**，而它由 5 格电池里两次真实读数签着（P1 4 红 / P4 1 红），不是由「全量绿」签着。
+- **账目**：`backend/src/models/tag.py` 36 → **43 行**、纯 LF（裸 CR 0 个）、1175 → **1619 字节**、md5 `ee79f7a6b228ffe367463c6b71dfa1e5` → `2bc66c3049fa0b2ca5c4674b36f8fd1b`；`backend/src/api/tags.py` 188 → **189 行**、纯 CRLF（裸 LF 0 个）、6680 → **6734 字节**、md5 `f533875513e8698c1d3aa20b31551b22` → `408546d39318c2897dba21dc943064dd`；`backend/src/services/tag_service.py` **159 行不变**、纯 CRLF、6440 → **6467 字节**、md5 `5e230d50c547a8d1c110f43862af3f68` → `892cb16dc9d8c7144c8acda1b486c96d`；`backend/tests/test_services/test_scan_service.py` 1316 → **1322 行**、纯 CRLF、55936 → **56350 字节**、md5 `78453015af6e02a9792c234d5e808e9b` → `e7c93582c9a889d5d7ca70be34afc344`。面板剩下的 ③④ 是 #226（`VideoUpdate.tag_ids` 显式 null 当成清空）与 #224（`UserPreference` 的 repr，只留说明）。
+
+## 2026-10-14
+
 ### ⑤甲落地：`reasonOf` 表里那四格零产口的翻译删掉了（#219）
 
 - **来源**：第六块面板 ⑤，用户选「甲：删掉」。#217 的普查和 #222 的电池两次量到同一件事——`too_short` / `too_long` / `greater_than` / `less_than` 这四格**既没有产口，也没有一条用例能改坏它**；#222 那 14 格里唯一四格绿的，正好就是这四格。
