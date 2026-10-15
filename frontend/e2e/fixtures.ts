@@ -552,17 +552,18 @@ export async function mockApi(
   const findQueue = (id: number) => queues.find((list) => list.id === id)
 
   /**
-   * 标签、视频源、字幕这三面也有写请求了，所以各装一份副本（和 `userRows` 同一个理由）：
-   * 请求改的是这份，模块级那份 `sources`/`subtitles` 不动——界面用例也 import 它们来对照，
-   * 跨用例被改脏就废了。#128 之前这三面只有读：建标签、改视频源、挂字幕那几条地址
-   * 全落在兜底那句 `未预置的接口` 上，而 82 条替身用例一条也没请求过它们，所以没人红。
+   * 标签与视频源这两面有写请求，所以各装一份副本（和 `userRows` 同一个理由）：请求改的是这份，
+   * 模块级那份 `sources` 不动——界面用例也 import 它们来对照，跨用例被改脏就废了。
+   * #128 之前这两面只有读：建标签、改视频源那几条地址全落在兜底那句 `未预置的接口` 上，
+   * 而 82 条替身用例一条也没请求过它们，所以没人红。
+   *
+   * 字幕那面在 #235 回到只有读：挂字幕/删字幕那两条分支被反向守卫判成「界面发不出」而删掉，
+   * 于是 `subtitleRows` 那份副本和 `nextSubtitleId` 那个计数器都失去了存在理由，一起删。
    */
   const tagRows = [{ id: 1, name: '动作片', color: '#7c6cff' }]
   const sourceRows = sources.map((row) => ({ ...row }))
-  const subtitleRows = subtitles.map((row) => ({ ...row }))
   let nextTagId = 100
   let nextSourceId = 100
-  let nextSubtitleId = 100
 
   /** 整份系统配置的样子。`GET /settings` 与 `GET /settings/{key}` 同源，不抄两遍。 */
   const systemSettings: Record<string, string | number | boolean> = { ...SEEDED_SETTINGS }
@@ -798,7 +799,6 @@ export async function mockApi(
         )
         return respond(route, { items, total: items.length, page: 1, page_size: 20 })
       }
-      if (path === '/videos/new') return respond(route, [])
       if (path === '/videos/series') {
         // `seriesProgress.next` 指的是模块级种子，直接回就等于把标签停在了安装前的那份上。
         return respond(
@@ -820,7 +820,7 @@ export async function mockApi(
       if (subtitleList) {
         return respond(
           route,
-          subtitleRows.filter((item) => item.video_id === Number(subtitleList[1])),
+          subtitles.filter((item) => item.video_id === Number(subtitleList[1])),
         )
       }
       if (/^\/videos\/\d+\/stream$/.test(path)) {
@@ -835,11 +835,6 @@ export async function mockApi(
       }
       if (/^\/videos\/\d+\/thumbnail$/.test(path)) {
         return route.fulfill({ status: 200, contentType: 'image/png', body: TINY_PNG })
-      }
-      const sourceRow = /^\/sources\/(\d+)$/.exec(path)
-      if (sourceRow) {
-        const found = sourceRows.find((row) => row.id === Number(sourceRow[1]))
-        return found ? respond(route, found) : respond(route, { detail: '视频源不存在' }, 404)
       }
       if (path === '/sources') {
         const activeOnly = url.searchParams.get('active_only') === 'true'
@@ -899,31 +894,10 @@ export async function mockApi(
           page_size: 20,
         })
       if (path === '/tags') return respond(route, tagRows.map(tagBody))
-      const tagVideos = /^\/tags\/(\d+)\/videos$/.exec(path)
-      if (tagVideos) {
-        const id = Number(tagVideos[1])
-        if (!tagRows.some((tag) => tag.id === id)) {
-          return respond(route, { detail: '标签不存在' }, 404)
-        }
-        return respond(
-          route,
-          aliveVideos().filter((video) => video.tags.some((item) => item.id === id)),
-        )
-      }
-      const tagRow = /^\/tags\/(\d+)$/.exec(path)
-      if (tagRow) {
-        const found = tagRows.find((tag) => tag.id === Number(tagRow[1]))
-        return found ? respond(route, tagBody(found)) : respond(route, { detail: '标签不存在' }, 404)
-      }
       if (path === '/watchlists') {
         const videoId = url.searchParams.get('video_id')
         const held = videoId ? queues.filter((list) => list.video_ids.includes(Number(videoId))) : queues
         return respond(route, held.map(queueBody))
-      }
-      const queueRow = /^\/watchlists\/(\d+)$/.exec(path)
-      if (queueRow) {
-        const found = findQueue(Number(queueRow[1]))
-        return found ? respond(route, queueBody(found)) : respond(route, { detail: '片单不存在' }, 404)
       }
       if (path === '/settings') return respond(route, systemSettings)
       const settingRow = /^\/settings\/([\w.-]+)$/.exec(path)
@@ -1005,22 +979,6 @@ export async function mockApi(
         sourceRows.push(created)
         return respond(route, created, 201)
       }
-      const subtitleAdd = /^\/videos\/(\d+)\/subtitles$/.exec(path)
-      if (subtitleAdd) {
-        const body = JSON.parse(request.postData() ?? '{}')
-        const created = {
-          id: nextSubtitleId++,
-          video_id: Number(subtitleAdd[1]),
-          language: body.language ?? null,
-          filepath: body.filepath ?? '',
-          label: body.label ?? null,
-          created_at: new Date().toISOString(),
-        }
-        subtitleRows.push(created)
-        return respond(route, created, 201)
-      }
-      // 后端这三条 ACK 都是 200 + `{status: 'ok'}`（`src/api/videos.py`）。
-      if (/^\/videos\/new\/\d+\/viewed$/.test(path)) return respond(route, { status: 'ok' })
       const videoTagAdd = /^\/tags\/video\/(\d+)$/.exec(path)
       if (videoTagAdd) {
         const id = Number(videoTagAdd[1])
@@ -1038,6 +996,8 @@ export async function mockApi(
         }
         return route.fulfill({ status: 204, body: '' })
       }
+      // 后端这三条 ACK（`/videos/{id}/play`、`/videos/{id}/progress`、`/videos/new/{id}/viewed`）
+      // 真回的是 200 + `{status: 'ok'}`（`src/api/videos.py`）；界面不读响应体，这里回得比它松。
       if (/^\/videos\/\d+\/(play|progress)$/.test(path)) return respond(route, { ok: true })
       if (/^\/favorites\/\d+$/.test(path)) return respond(route, { ok: true })
       if (path === '/watchlists') {
@@ -1149,17 +1109,6 @@ export async function mockApi(
           id,
           links.filter((tagId) => tagId !== Number(videoTagTake[2])),
         )
-        return route.fulfill({ status: 204, body: '' })
-      }
-      const subtitleTake = /^\/videos\/(\d+)\/subtitles\/(\d+)$/.exec(path)
-      if (subtitleTake) {
-        const index = subtitleRows.findIndex(
-          (row) =>
-            row.id === Number(subtitleTake[2]) &&
-            row.video_id === Number(subtitleTake[1]),
-        )
-        if (index === -1) return respond(route, { detail: '字幕不存在' }, 404)
-        subtitleRows.splice(index, 1)
         return route.fulfill({ status: 204, body: '' })
       }
       const tagErase = /^\/tags\/(\d+)$/.exec(path)

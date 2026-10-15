@@ -1,9 +1,10 @@
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-
 import { beforeAll, describe, expect, it } from 'vitest'
 
+import {
+  candidates,
+  operationFor,
+  templateFor,
+} from './openapi-schema'
 import {
   moduleKeys,
   querySurfaces,
@@ -35,96 +36,10 @@ import {
  * 也不在遍历器塞进去的 `1` 里（序列化不了就被丢掉），所以 #122/#124 各记下了一份「没签到的键」。
  * 现在由 `querySurfaces()` 用哨兵探出这类函数，再把它参数类型接口上声明的整套键逐个发出去核对。
  * 症状不是报错：实测 `?searsh=abc` 回 200、回的是**没筛过的**第一页，筛选就此无声失效。
+ *
+ * schema 的读法、候选模板与路径参数类型收窄那套机器在 `openapi-schema.ts`——那份守卫和
+ * `stub-coverage.spec.ts` 的反向那半共用它，抄第二份就会漂移（#121 拒手写清单的同一个理由）。
  */
-
-interface ParameterObject {
-  name: string
-  in: string
-  schema?: { type?: string }
-}
-
-interface OperationObject {
-  parameters?: ParameterObject[]
-}
-
-interface PathItem {
-  parameters?: ParameterObject[]
-  get?: OperationObject
-  post?: OperationObject
-  put?: OperationObject
-  delete?: OperationObject
-  patch?: OperationObject
-}
-
-interface OpenApiSchema {
-  paths: Record<string, PathItem>
-}
-
-// jsdom 环境里 `new URL(..., import.meta.url)` 返回的是 jsdom 的 URL 实例，
-// `readFileSync` 认不出它的 `file:` scheme（实测 `ERR_INVALID_URL_SCHEME`），所以走
-// fileURLToPath + path.resolve 这条纯 Node 的路。
-const schemaPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../backend/openapi.json')
-
-const schema = JSON.parse(readFileSync(schemaPath, 'utf8')) as OpenApiSchema
-
-const METHODS = ['get', 'post', 'put', 'delete', 'patch']
-
-/** 找出所有候选模板：段数相同、字面段相同，`{x}` 接受任意一段。 */
-function candidates(url: string): string[] {
-  const segments = url.split('?')[0].split('/').filter((s) => s !== '')
-  return Object.keys(schema.paths).filter((template) => {
-    const tSegments = template.split('/').filter((s) => s !== '')
-    if (tSegments.length !== segments.length) return false
-    return tSegments.every((segment, i) => segment.startsWith('{') || segment === segments[i])
-  })
-}
-
-function segmentsOf(url: string): string[] {
-  return url.split('?')[0].split('/').filter((s) => s !== '')
-}
-
-function operationFor(template: string, method: string): OperationObject | undefined {
-  if (!METHODS.includes(method)) return undefined
-  // 路径项上除了五个动词还挂着 `parameters`，所以这里过一次收窄取值，
-  // 而不是 `item[method as keyof PathItem]` 那种把 union 摊回去的写法。
-  const item = schema.paths[template] as unknown as Record<string, unknown>
-  const value = item[method]
-  return value && typeof value === 'object' ? (value as OperationObject) : undefined
-}
-
-function declaredParams(template: string, operation: OperationObject): ParameterObject[] {
-  return [...(schema.paths[template].parameters ?? []), ...(operation.parameters ?? [])]
-}
-
-/**
- * 具体值要过模板声明的路径参数类型。这一条不是装饰：`/videos/duplicates` 写成
- * `/videos/duplicate` 时，形状上仍然命中 `/api/videos/{video_id}`，而 `video_id` 声明是
- * integer，`duplicate` 不是整数——真后端会回 422 而不是 404，形状规则看不见这个差别
- * （实测变异 ④ 因此演成绿的，加上本条才红）。
- */
-function pathValuesFit(template: string, operation: OperationObject, url: string): boolean {
-  const tSegments = template.split('/').filter((s) => s !== '')
-  const values = segmentsOf(url)
-  const params = declaredParams(template, operation).filter((p) => p.in === 'path')
-  return tSegments.every((segment, i) => {
-    if (!segment.startsWith('{')) return true
-    const name = segment.slice(1, -1)
-    const type = params.find((p) => p.name === name)?.schema?.type
-    const value = decodeURIComponent(values[i])
-    if (type === 'integer' || type === 'number') return /^-?\d+$/.test(value)
-    if (type === 'boolean') return value === 'true' || value === 'false'
-    return true
-  })
-}
-
-/** 该 URL 是否命中某个"声明了此方法、且路径参数类型收得下"的模板。 */
-function templateFor(url: string, method: string): string | undefined {
-  const lower = method.toLowerCase()
-  return candidates(url).find((template) => {
-    const operation = operationFor(template, lower)
-    return operation !== undefined && pathValuesFit(template, operation, url)
-  })
-}
 
 function matchedTemplate(call: Recorded): string | undefined {
   return templateFor(call.url, call.method)
