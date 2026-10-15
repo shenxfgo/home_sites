@@ -2,6 +2,20 @@
 
 ## 2026-10-15
 
+### 收尾补记：桌面上那 13 个提交快进推上 origin（本轮第三次推送授权，本单不改码）
+
+- **来源与授权**：用户原话「push the 13 local commits to origin/main」。这是本轮第三次推送授权（第一次 #192 的 `3e8828a..8388974`、第二次 #223 的 `8388974..d2b66ec`），同样一次用完即止——下一次推送仍要他的原话。本单一行业务源码、一份测试都没动。
+- **推前先核对远端没动**：`git fetch origin` 后 `git rev-list --left-right --count origin/main...HEAD` = **`0 13`**（远端一条旁支都没有），`git branch -vv` 回 `[origin/main: ahead 13]`。所以这是一次纯快进，没有 `--force`、没有 rebase、没有 `--no-verify`。
+- **推走的内容**：`git push origin main` → `d2b66ec..9c13b32  main -> main`。那 13 个提交是 #218 `daf4a0c`、#219 `a0cdabb`、#220 `97e4ac6`、#226 `c0c43b8`、#224 `6b9a80e`、#227 `75af36f`、#229 `91870a4`、#231 `189d9ad`、#232 `6a9ac87` 加它的文档跟随提交 `63c7ddd`、#233 `af285b7`、#234 `e7ae74c`、#235 `9c13b32`；`git diff --shortstat d2b66ec..9c13b32` = **29 files changed, 889 insertions(+), 279 deletions(-)**，按目录数是 `frontend/` 19 份、`backend/` 8 份、仓库根的 `CHANGELOG.md` 与 `CLAUDE.md` 各 1 份。
+- **要出去的东西先筛过一遍**：`git diff --name-only d2b66ec..9c13b32` 拿 `env|secret|credential|ini|password` 筛，命中 **0** 份——29 份全是源码、测试与文档，没有 `.env`、没有建库模板里的口令位、没有本机路径。#223 那次扫的是 diff 正文的命中（结果是全测试假字面量），这一单以文件名为先，因为正文自 `d2b66ec` 起一句没改过。
+- **推后复核**：再 `git fetch`，`git rev-list --left-right --count origin/main...HEAD` = **`0 0`**，`git rev-parse origin/main` = `9c13b3254aca9a41155f43aeb14fa284356cc856`——远端尖与本地尖是同一条。
+- **一处顺序上的差别要记清，它带着一个后果**：#192 与 #223 都是「先把账写进本文件、提交 ledger、再推」，所以那条推送记录本身跟着推送一起上去了；这一次是「他先要推送，这条账后补」。后果是**本条不在刚推走的那 13 个里**，它落成的提交在 origin 上还缺着，要等他下一次原话才补得上。
+- **没被带上去的东西（一个字都没动它们）**：`git status --short` 里并行会话留下的那几处照原样未提交——`backend/.gitignore`、`backend/pyproject.toml`、`backend/tests/conftest.py`、未跟踪的 `backend/.pytest-tmp/`，外加 `backend/src/api/transcode.py` 与 `backend/src/storage/__init__.py` 那两份 `git diff` 打空的 autocrlf 幻象（#223 与 #235 各记过一次同名）。推送从不带未提交的内容，所以这半件事仍在这张桌上等处置。
+- **读数一律没动**：`npx vitest run tests/api` **57 passed（11 份文件）**、整套 Vitest **374 passed（37 份文件）**、替身 e2e **107 passed**、`vue-tsc` 两处 rc=0、后端 **1108 passed** / TOTAL **99.11%**——全部沿用 #235 的实测，本单没有重跑它们，因为树就是 #235 提交完那条树（`git rev-parse HEAD` 与 `origin/main` 已同尖，跑与不跑量的是同一份）。
+- **顺带发现的一条没替换的占位符（本单没动它）**：#222 那条的账目里写的是 `CHANGELOG.md 2203 → **{2203 + ADDED}** 行`——那份模板的 `{2203 + ADDED}` 没被替换就提交并推上去了（`8145f95` 带上去的，origin 上那条记录里现在就有它）。要不要按 #231 那个法子做一次就地更正，交回他定；本单只把这件事钉成量过的数：全文件仅此一处，刚推走的那份 `9c13b32` 里它占第 182 行，本条插入后挪到第 196 行。
+- **记忆同步**：项目侧四份 memory（`MEMORY.md` 索引、`project-local-runtime-state.md`、`project-decided-approaches.md`、`project-feature-gaps.md`）里那句「十三个提交只在本地」改成已推、推送授权计数从两次改成三次并记上范围 `d2b66ec..9c13b32`，另给 `project-local-runtime-state.md` 追了一条这次推送的记录（推前推后读数、未带上的 leftovers、这条账晚于推送）。四份都保持纯 CRLF，每处锚点断言只命中一次。
+- **账目**：本文件 2382 → **2396** 行（本条 14 行：标题 + 空行 + 11 条要点 + 条后空行）、纯 CRLF、裸 LF 0 个、**787179** 字节；本文件不登记自己的 md5（那个数就写在文件里，一写就变）。仓库其余文件一个字节都没动。
+
 ### ②甲落地：替身夹具那道守卫补上反方向，#234 量出的那 8 条「接得住却没人发」的分支删掉（#235）
 
 - **来源**：第九块面板 ②。#234 把代价量完交回后用户答「**甲：守卫 + 删 8 条**」。做的顺序按「红在先」：先把守卫写出来、让它对着今天这 8 条红一次，再删分支转绿，再跑变异电池，最后全量复量。
