@@ -96,3 +96,6 @@ exclude_also = ["if __name__ == .__main__.:"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+# 用例的一次性 scratch 目录（tmp_path）落在本目录下的 .pytest-tmp/session，gitignore 掉了。
+# 出处和理由在 tests/conftest.py 的 pytest_configure——addopts 里写 {rootdir} 是不会展开的
+# （pytest 9.1.1 实测：它会被当成字面量目录名），所以只能由 conftest 拿 rootpath 去锚。

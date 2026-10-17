@@ -21,3 +21,7 @@ data/
 *.db-journal
 .env
 .env.local
+# pytest 的一次性 scratch 目录（出处见 pyproject 的 addopts）。
+# 目录本身要跟着检出走，因为 pytest 建 basetemp 时不带 parents，父目录必须已存在。
+.pytest-tmp/*
+!.pytest-tmp/.gitkeep

@@ -54,6 +54,21 @@ def pytest_report_header(config) -> str:  # noqa: ARG001
     dialect = TEST_DATABASE_URL.split("://", 1)[0].split("+", 1)[0]
     return f"测试库: 真库 {dialect}（TEST_DATABASE_URL 来自环境或 backend/.env）"
 
+
+def pytest_configure(config) -> None:
+    """把 `tmp_path` 的一次性目录收进项目里的 `.pytest-tmp/session`。
+
+    默认的 basetemp 落在系统临时目录，跑法一多就在盘上攒出一片没人认领的 scratch
+    （这台机器的 D: 根目录就攒过 15 个）。pytest 每次启动先把 basetemp 整个 rm_rf 再
+    建，所以固定一个名字就什么都不会留下；命令行给了 `--basetemp` 就不动它，变异电池
+    要留住红/绿证据时各开一个子目录，最后整棵 `.pytest-tmp` 一次删。
+    锚点只能放在这里：`addopts` 里写 `{rootdir}` 不会被展开（pytest 9.1.1 实测把它
+    当成字面量目录名），而建 basetemp 时不带 parents，父目录必须已经存在——所以
+    `.pytest-tmp/` 里那颗 `.gitkeep` 是要跟着检出走的，不是装饰。
+    """
+    if config.option.basetemp is None:
+        config.option.basetemp = str(Path(config.rootpath) / ".pytest-tmp" / "session")
+
 # 建表只在一次 pytest 会话里做一次：Alembic 的 DDL 是启动路径，逐用例重跑既慢，
 # 又会把一个用例的循环绑住另一个用例的连接。
 _schema_ready = False
