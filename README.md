@@ -130,6 +130,7 @@ home_sites/
 │   ├── playwright.real.config.ts
 │   └── package.json
 ├── docs/                    # 文档
+│   ├── user-manual.md      # 用户使用手册（界面、权限、备份恢复、FAQ）
 │   ├── specs/              # 设计文档
 │   └── superpowers/        # 开发计划
 ├── CLAUDE.md                # 项目规范
@@ -164,6 +165,8 @@ home_sites/
 | 调度器 | `/api/scheduler` | 定时任务（owner） |
 
 ## 🎯 使用指南
+
+> 完整的用户使用手册（含角色权限、搜索语法、播放器操作、备份与恢复、常见问题）见 [docs/user-manual.md](./docs/user-manual.md)。下面这一节只是最小上手路径。
 
 ### 1. 添加视频源
 
